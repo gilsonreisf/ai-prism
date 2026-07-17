@@ -280,6 +280,39 @@ O deploy é feito como uma **Databricks App** (`app.yaml`), que executa
 `server-dist`) já vêm pré-compilados no repositório, então a instalação de pacotes em
 produção é dispensada (`npm run build` é um no-op nesse contexto).
 
+> **Importante:** como o runtime da App roda os artefatos pré-compilados (não o
+> código-fonte), **sempre rode `npm run bundle` antes de deployar** — uma mudança em
+> `server/` ou `client/src/` só chega à App depois de reconstruir `client/dist` e
+> `server-dist/index.cjs`.
+
+#### Passo a passo do deploy (CLI)
+
+```bash
+# 0. (uma vez) autentique um profile da CLI para o workspace alvo
+databricks auth login --host https://<seu-workspace>.cloud.databricks.com -p <PROFILE>
+
+# 1. reconstrua os artefatos que a App realmente executa
+npm run bundle
+
+# 2. sincronize o projeto para a pasta de código da App no Workspace
+databricks sync . /Workspace/Users/<voce>/apps/ai-prism -p <PROFILE> --full
+
+# 3. deploy (build + start da App)
+databricks apps deploy ai-prism \
+  --source-code-path /Workspace/Users/<voce>/apps/ai-prism -p <PROFILE>
+
+# 4. confira o estado
+databricks apps get ai-prism -p <PROFILE>   # compute ACTIVE + deployment SUCCEEDED
+```
+
+### QA
+
+O pipeline de decks/planilhas tem checagens determinísticas (rodam offline, sem workspace):
+
+```bash
+npm run qa   # deck-elements + deck-composition + mine-pptx + spreadsheet QA
+```
+
 ### Variáveis de ambiente (`app.yaml`)
 
 | Variável      | Descrição                                    |
