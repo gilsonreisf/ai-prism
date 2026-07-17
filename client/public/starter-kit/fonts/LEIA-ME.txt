@@ -1,0 +1,10 @@
+Coloque aqui os arquivos de webfont da marca (.ttf, .otf, .woff ou .woff2).
+
+- Máximo de 16 arquivos, 1.5MB cada (acima disso o arquivo é ignorado no import).
+- Declare cada arquivo no _ds_manifest.json (chave "fonts": family/weight/style/files)
+  — ou, sem manifest, em blocos @font-face no colors_and_type.css.
+- As fontes são usadas na pré-visualização e no modo apresentação do AI Prism;
+  o .pptx exportado referencia as fontes por NOME (instale-as nas máquinas que
+  abrirão o PowerPoint).
+
+Depois de adicionar os arquivos, apague este LEIA-ME (ou deixe — é ignorado).

@@ -1,0 +1,291 @@
+// Genie Spaces as tools: the model asks a Genie space a natural-language
+// question, Genie plans/runs the SQL itself and answers in natural language —
+// same on-behalf-of pattern as everything else (the user's own OAuth token,
+// so only spaces they can actually see are ever listed or queried).
+import { callMcpTool } from './mcpClient.js'
+
+function host() {
+  let h = process.env.DATABRICKS_HOST || ''
+  if (h && !h.startsWith('http')) h = `https://${h}`
+  return h
+}
+
+async function apiFetch(path, opts, token) {
+  const res = await fetch(`${host()}${path}`, {
+    ...opts,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...(opts?.headers || {}),
+    },
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const msg = json?.message || json?.error || `HTTP ${res.status}`
+    throw new Error(`Genie API: ${msg}`)
+  }
+  return json
+}
+
+// Full space listing has no server-side text filter, so we page through it
+// once per user and cache briefly, then filter in-process. Capped generously
+// above what any real single-team workspace would have — this specific dev
+// workspace happens to be an enormous shared multi-tenant sandbox with
+// thousands of demo spaces, which isn't representative of production usage.
+const SPACES_CACHE_TTL_MS = 10 * 60 * 1000
+const MAX_PAGES = 15
+const spacesCache = new Map() // userEmail -> { ts, spaces }
+
+async function listAllSpaces(token) {
+  const spaces = []
+  let pageToken = null
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const qs = new URLSearchParams({ page_size: '100', ...(pageToken ? { page_token: pageToken } : {}) })
+    const json = await apiFetch(`/api/2.0/genie/spaces?${qs}`, { method: 'GET' }, token)
+    spaces.push(...(json.spaces || []))
+    pageToken = json.next_page_token
+    if (!pageToken) break
+  }
+  return spaces
+}
+
+export async function searchGenieSpaces(token, userEmail, query, limit = 20) {
+  let cached = spacesCache.get(userEmail)
+  if (!cached || Date.now() - cached.ts > SPACES_CACHE_TTL_MS) {
+    cached = { ts: Date.now(), spaces: await listAllSpaces(token) }
+    spacesCache.set(userEmail, cached)
+  }
+  const q = (query || '').trim().toLowerCase()
+  const matches = q
+    ? cached.spaces.filter(
+        (s) => s.title?.toLowerCase().includes(q) || s.description?.toLowerCase().includes(q)
+      )
+    : cached.spaces
+  return matches.slice(0, limit).map((s) => ({
+    kind: 'genie',
+    spaceId: s.space_id,
+    title: s.title,
+    description: s.description || '',
+  }))
+}
+
+const TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'QUERY_RESULT_EXPIRED'])
+
+async function pollMessage(token, spaceId, conversationId, messageId, deadlineMs) {
+  while (Date.now() < deadlineMs) {
+    const msg = await apiFetch(
+      `/api/2.0/genie/spaces/${spaceId}/conversations/${conversationId}/messages/${messageId}`,
+      { method: 'GET' },
+      token
+    )
+    if (TERMINAL_STATES.has(msg.status)) return msg
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+  throw new Error('Genie demorou demais para responder.')
+}
+
+// Parses the PROTOBUF_ARRAY-shaped statement response the query-result
+// endpoint returns (distinct from the JSON_ARRAY shape the plain SQL
+// Statement Execution API uses) into a compact markdown table.
+function formatQueryResultTable(statementResponse, maxRows = 15) {
+  const cols = (statementResponse?.manifest?.schema?.columns || []).map((c) => c.name)
+  const rows = statementResponse?.result?.data_typed_array || []
+  if (!cols.length || !rows.length) return null
+  const header = `| ${cols.join(' | ')} |`
+  const sep = `| ${cols.map(() => '---').join(' | ')} |`
+  const body = rows
+    .slice(0, maxRows)
+    .map((r) => `| ${(r.values || []).map((v) => (v?.str ?? (v?.NULL ? '' : ''))).join(' | ')} |`)
+    .join('\n')
+  const truncated = rows.length > maxRows ? `\n_(mostrando ${maxRows} de ${rows.length} linhas)_` : ''
+  return `${header}\n${sep}\n${body}${truncated}`
+}
+
+// Same PROTOBUF_ARRAY payload as formatQueryResultTable, but kept as an array
+// of plain row objects (not markdown) so the caller can turn it into real
+// chart candidates via analysis.js's chartCandidatesFromRows.
+function parseQueryResultRows(statementResponse, maxRows = 2000) {
+  const cols = (statementResponse?.manifest?.schema?.columns || []).map((c) => c.name)
+  const rawRows = statementResponse?.result?.data_typed_array || []
+  if (!cols.length || !rawRows.length) return []
+  return rawRows.slice(0, maxRows).map((r) => {
+    const obj = {}
+    const values = r.values || []
+    cols.forEach((name, i) => {
+      const v = values[i]
+      obj[name] = v?.NULL || v?.str == null ? null : v.str
+    })
+    return obj
+  })
+}
+
+/**
+ * Asks a Genie space a question, continuing `conversationId` if given (so
+ * follow-ups keep Genie's own context) or starting a fresh conversation.
+ * Returns { conversationId, resultText, queryRows } — resultText is Genie's
+ * narrative answer plus, when it ran a query, the SQL and a compact result
+ * table; queryRows is the same query result as plain row objects (or []),
+ * for the caller to turn into real chart candidates.
+ */
+export async function askGenie(token, spaceId, question, conversationId) {
+  let convId = conversationId
+  let messageId
+  if (!convId) {
+    const started = await apiFetch(
+      `/api/2.0/genie/spaces/${spaceId}/start-conversation`,
+      { method: 'POST', body: JSON.stringify({ content: question }) },
+      token
+    )
+    convId = started.conversation_id
+    messageId = started.message_id
+  } else {
+    const sent = await apiFetch(
+      `/api/2.0/genie/spaces/${spaceId}/conversations/${convId}/messages`,
+      { method: 'POST', body: JSON.stringify({ content: question }) },
+      token
+    )
+    messageId = sent.message_id
+  }
+
+  const msg = await pollMessage(token, spaceId, convId, messageId, Date.now() + 90000)
+  if (msg.status !== 'COMPLETED') {
+    throw new Error(`Genie não conseguiu responder (status: ${msg.status}).`)
+  }
+
+  const texts = []
+  let query = null
+  for (const a of msg.attachments || []) {
+    if (a.text?.content) texts.push(a.text.content)
+    if (a.query) query = a.query
+  }
+  let resultText = texts.join('\n\n') || '(Genie não retornou uma resposta em texto.)'
+  let queryRows = []
+
+  if (query) {
+    resultText += `\n\nSQL executado pelo Genie:\n\`\`\`sql\n${query.query}\n\`\`\``
+    try {
+      const qr = await apiFetch(
+        `/api/2.0/genie/spaces/${spaceId}/conversations/${convId}/messages/${messageId}/query-result`,
+        { method: 'GET' },
+        token
+      )
+      const table = formatQueryResultTable(qr.statement_response)
+      if (table) resultText += `\n\nResultado:\n${table}`
+      queryRows = parseQueryResultRows(qr.statement_response)
+    } catch {
+      // narrative answer + SQL is still useful even if the result table fetch fails
+    }
+  }
+
+  return { conversationId: convId, resultText, queryRows }
+}
+
+function genieOneUrl() {
+  return `${host()}/api/2.0/mcp/genie`
+}
+
+// Splits one markdown table row into trimmed cells, tolerating the optional
+// leading/trailing pipes GFM allows. Escaped pipes (\|) inside a cell are kept.
+function splitTableRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split(/(?<!\\)\|/)
+    .map((c) => c.trim().replace(/\\\|/g, '|'))
+}
+
+// A markdown separator row: | --- | :--: | --- | (dashes, optional colons).
+const MD_SEPARATOR_RE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/
+
+// Genie One answers only in markdown (its managed MCP exposes no query-result
+// endpoint, unlike per-space Genie). When it runs a query the result is a
+// GFM table embedded in that markdown — this pulls the LARGEST such table back
+// into plain row objects (same shape parseQueryResultRows produces for Genie
+// Spaces) so the caller can build real chart candidates from it. Cells stay
+// strings; analysis.js does the numeric/date inference, exactly as it does for
+// the per-space Genie rows. Returns [] when there's no ≥2-data-row table.
+export function parseMarkdownTableRows(markdown, maxRows = 2000) {
+  if (typeof markdown !== 'string' || !markdown.includes('|')) return []
+  const lines = markdown.split('\n')
+  let best = []
+  let i = 0
+  while (i < lines.length) {
+    // a table is a header line, a separator line, then ≥1 body lines
+    if (lines[i].includes('|') && i + 1 < lines.length && MD_SEPARATOR_RE.test(lines[i + 1])) {
+      const headers = splitTableRow(lines[i])
+      const sep = splitTableRow(lines[i + 1])
+      // header and separator must have matching column counts to be a real table
+      if (headers.length >= 2 && headers.length === sep.length) {
+        const rows = []
+        let j = i + 2
+        while (j < lines.length && lines[j].includes('|') && !MD_SEPARATOR_RE.test(lines[j])) {
+          const cells = splitTableRow(lines[j])
+          // stop at a line that clearly isn't part of the grid (prose)
+          if (cells.length < 2) break
+          const obj = {}
+          headers.forEach((name, k) => {
+            const key = name || `col${k + 1}`
+            obj[key] = cells[k] === undefined || cells[k] === '' ? null : cells[k]
+          })
+          rows.push(obj)
+          if (rows.length >= maxRows) break
+          j++
+        }
+        if (rows.length > best.length) best = rows
+        i = j
+        continue
+      }
+    }
+    i++
+  }
+  return best.length >= 2 ? best : []
+}
+
+/**
+ * Genie One: the workspace-wide managed MCP tool, spanning every Genie Space
+ * and Unity Catalog asset the user can see — unlike askGenie() above, which
+ * is scoped to one specific space. Genie's own MCP tools are ask-then-poll
+ * (`genie_ask` returns immediately with `status: in_progress`; `genie_poll_
+ * response` must be called repeatedly until a terminal status), so the
+ * polling happens here, server-side, rather than spending the calling
+ * model's own tool-call rounds on poll spam — from the tool loop's
+ * perspective this is one call that blocks until Genie is done, same as
+ * askGenie()'s own internal polling. The final markdown already carries its
+ * own "Explore in Databricks" deep link and formatting instructions for
+ * whichever model reads it next. Unlike per-space Genie, this managed MCP's
+ * tool list exposes no query-result endpoint, so when Genie One runs a query
+ * the tabular result comes back only as a markdown table inside `resultText` —
+ * parseMarkdownTableRows recovers it into `queryRows` (same shape per-space
+ * Genie yields) so the caller can build real chart candidates from it too.
+ * Returns { conversationId, resultText, queryRows }.
+ */
+export async function askGenieOne(token, question, conversationId) {
+  const url = genieOneUrl()
+  const asked = await callMcpTool(url, token, 'genie_ask', {
+    question,
+    ...(conversationId ? { conversation_id: conversationId } : {}),
+  })
+  let state = asked.structuredContent
+  if (!state) throw new Error(asked.text || 'Genie One não respondeu.')
+
+  let resultText = asked.text
+  if (state.status === 'in_progress') {
+    const deadline = Date.now() + 90000
+    while (state.status === 'in_progress' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000))
+      const polled = await callMcpTool(url, token, 'genie_poll_response', {
+        conversation_id: state.conversation_id,
+        response_id: state.response_id,
+      })
+      if (!polled.structuredContent) throw new Error(polled.text || 'Genie One não respondeu.')
+      state = polled.structuredContent
+      resultText = polled.text
+    }
+    if (state.status === 'in_progress') {
+      throw new Error('Genie One demorou demais para responder.')
+    }
+  }
+
+  return { conversationId: state.conversation_id, resultText, queryRows: parseMarkdownTableRows(resultText) }
+}

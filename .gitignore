@@ -1,0 +1,18 @@
+node_modules/
+npm-debug.log*
+.env
+.databricks/
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.claude/
+
+# Scratch de decks: fixtures pesadas + material real minerado (pptx/pdf/png) —
+# não versionado (dados potencialmente de cliente, ~26MB)
+scratch-decks/
+
+# Documentos internos de design/roadmap — não versionados no repo público
+docs/
+
+# Keep client/dist — it is the deployed frontend build

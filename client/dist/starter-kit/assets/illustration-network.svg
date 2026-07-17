@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" fill="none">
+  <g stroke="#FF5F46" stroke-width="1.4" opacity="0.85">
+    <path d="M40 180 L120 60 L200 140 L280 40 M120 60 L200 40 M120 60 L60 40 M200 140 L260 180"/>
+  </g>
+  <g fill="#FF3621"><circle cx="40" cy="180" r="7"/><circle cx="120" cy="60" r="9"/><circle cx="200" cy="140" r="7"/><circle cx="280" cy="40" r="9"/></g>
+  <g fill="#00A972"><circle cx="200" cy="40" r="6"/><circle cx="60" cy="40" r="5"/><circle cx="260" cy="180" r="6"/></g>
+</svg>

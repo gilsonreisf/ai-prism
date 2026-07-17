@@ -1,0 +1,38 @@
+{
+  "namespace": "acme_design_system",
+  "tokens": [
+    { "name": "--acme-navy", "kind": "color", "value": "#1B3139" },
+    { "name": "--acme-navy-deep", "kind": "color", "value": "#0B2026" },
+    { "name": "--acme-lava", "kind": "color", "value": "#FF3621" },
+    { "name": "--acme-coral", "kind": "color", "value": "#FF5F46" },
+    { "name": "--acme-oat-light", "kind": "color", "value": "#F9F7F4" },
+    { "name": "--acme-oat-medium", "kind": "color", "value": "#EEEDE9" },
+    { "name": "--acme-ink", "kind": "color", "value": "#11171C" },
+    { "name": "--acme-gray-text", "kind": "color", "value": "#5A6F77" },
+    { "name": "--acme-green", "kind": "color", "value": "#00A972" },
+    { "name": "--acme-yellow", "kind": "color", "value": "#FCBA33" }
+  ],
+  "brandFonts": [{ "family": "DM Sans" }],
+  "fonts": [
+    {
+      "family": "DM Sans",
+      "weight": "400",
+      "style": "normal",
+      "files": ["fonts/COLOQUE-AQUI-Regular.ttf"]
+    },
+    {
+      "family": "DM Sans",
+      "weight": "700",
+      "style": "normal",
+      "files": ["fonts/COLOQUE-AQUI-Bold.ttf"]
+    }
+  ],
+  "globalCssPaths": ["colors_and_type.css"],
+  "cards": [
+    { "path": "preview/cores.html", "group": "Colors", "title": "Paleta de cores", "description": "Tokens e usos permitidos" },
+    { "path": "slides/exemplo-slide.html", "group": "Slides", "title": "Slide de conteúdo", "description": "Exemplo de slide autorado em 1280×720" }
+  ],
+  "templates": [
+    { "name": "Capa", "entryPath": "templates/capa/index.html", "description": "Template de capa com ilustração de marca" }
+  ]
+}

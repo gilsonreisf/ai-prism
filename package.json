@@ -1,0 +1,43 @@
+{
+  "name": "ai-prism",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI Prism — multi-model LLM workspace on Databricks AI Gateway",
+  "type": "module",
+  "scripts": {
+    "dev:client": "vite",
+    "build:client": "vite build",
+    "build:server": "esbuild server/index.js --bundle --platform=node --format=cjs --target=node18 --outfile=server-dist/index.cjs --external:pg-native --external:pg-cloudflare --minify",
+    "bundle": "npm run build:client && npm run build:server",
+    "build": "node -e \"console.log('AI Prism: usando artefatos pre-compilados (client/dist + server-dist).')\"",
+    "start": "node server-dist/index.cjs",
+    "dev": "concurrently -k \"npm:dev:client\" \"node --watch server/index.js\"",
+    "qa": "node scripts/deck-elements-qa.mjs && node scripts/deck-composition-qa.mjs && node scripts/mine-pptx-qa.mjs && node scripts/spreadsheet-qa.mjs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "esbuild": "^0.24.2",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "jszip": "^3.10.1",
+    "lucide-static": "^1.22.0",
+    "mammoth": "^1.8.0",
+    "multer": "^2.0.1",
+    "pdf-parse": "^1.1.1",
+    "pg": "^8.13.1",
+    "postcss": "^8.4.49",
+    "pptxgenjs": "^4.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "recharts": "^3.9.0",
+    "rehype-highlight": "^7.0.1",
+    "remark-gfm": "^4.0.0",
+    "tailwindcss": "^3.4.17",
+    "vite": "^6.0.5",
+    "xlsx": "^0.18.5"
+  }
+}

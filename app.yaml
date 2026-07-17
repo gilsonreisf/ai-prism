@@ -1,0 +1,46 @@
+command:
+  - "node"
+  - "server-dist/index.cjs"
+
+# Minimum scopes for every API the server calls on behalf of the user:
+# model-serving (AI Gateway), genie (spaces list + Genie One MCP),
+# sql (Statement Execution: UC Function discovery/exec + built-in Python tool),
+# vector-search (endpoints/indexes/query), catalog.connections + mcp.external
+# (external MCP connections). UC Functions run via SQL, not the managed
+# functions MCP, so mcp.functions is not needed.
+user_authorization:
+  scopes:
+    - model-serving
+    - genie
+    - sql
+    - vector-search
+    - catalog.connections
+    - mcp.external
+
+env:
+  - name: NODE_ENV
+    value: 'production'
+  # bootstrap admin: this identity is always an app admin and can add other
+  # admins (users/groups) via the in-app admin panel (see server/authz.js)
+  - name: APP_OWNER_EMAIL
+    value: 'pedro.ramos@databricks.com'
+  # used by the admin-candidates autocomplete (permissions API is keyed by
+  # app NAME); set explicitly in case the runtime doesn't inject it
+  - name: DATABRICKS_APP_NAME
+    value: 'ai-prism'
+  - name: PORT
+    value: '8000'
+  - name: PGHOST
+    value: 'ep-rough-smoke-d16ogta3.database.us-west-2.cloud.databricks.com'
+  - name: PGDATABASE
+    value: 'databricks_postgres'
+  - name: PGPORT
+    value: '5432'
+  - name: PGSSLMODE
+    value: 'require'
+  - name: SQL_WAREHOUSE_ID
+    value: '75718e4268126449'
+  - name: TOOLS_CATALOG
+    value: 'main'
+  - name: TOOLS_SCHEMA
+    value: 'default'

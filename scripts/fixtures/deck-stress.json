@@ -1,0 +1,347 @@
+{
+  "title": "Stress test: overflow behavior across every dense layout in the renderer",
+  "audience": "A Very Long Client Name Holdings International S.A.",
+  "slides": [
+    {
+      "layout": "title",
+      "kicker": "An unusually long kicker label that should still fit on a single line without wrapping badly",
+      "heading": "A deliberately very long deck title that stresses the two-line assertion headline fitting logic of the cover",
+      "subheading": "A long supporting subtitle that goes on and on to make sure the cover subhead box shrinks the text rather than colliding with the footer metadata line below it."
+    },
+    {
+      "layout": "agenda",
+      "kicker": "Agenda",
+      "heading": "Seven items with long two-level content to stress the editorial list",
+      "items": [
+        {
+          "title": "First item with a fairly long title that could wrap",
+          "body": "And a support line that is also quite long and should be truncated or shrunk gracefully"
+        },
+        {
+          "title": "Second item",
+          "body": "Short"
+        },
+        {
+          "title": "Third item about something detailed",
+          "body": "More explanation text here that runs long"
+        },
+        {
+          "title": "Fourth item",
+          "body": "Support"
+        },
+        {
+          "title": "Fifth item with an even longer title to make the row shrink to fit properly",
+          "body": "Body"
+        },
+        {
+          "title": "Sixth item",
+          "body": "Body"
+        },
+        {
+          "title": "Seventh item",
+          "body": "Final support line"
+        }
+      ]
+    },
+    {
+      "layout": "cards",
+      "kicker": "Density",
+      "heading": "Six cards with long bodies stress the grid and the autofit inside each card",
+      "cards": [
+        {
+          "heading": "First card with a long heading that wraps",
+          "body": "A body text that is long enough to test the shrink-to-fit behavior inside a two-row three-column card grid without overflowing the rounded rectangle."
+        },
+        {
+          "heading": "Second card",
+          "body": "Another moderately long body to fill the card with text and test line spacing at small sizes."
+        },
+        {
+          "heading": "Third card",
+          "body": "Short body."
+        },
+        {
+          "heading": "Fourth card heading",
+          "body": "Yet another long body text used to validate that the text never escapes the card bounds even when dense."
+        },
+        {
+          "heading": "Fifth card",
+          "body": "Body."
+        },
+        {
+          "heading": "Sixth card with the longest heading of them all to stress the header row",
+          "body": "Final body text, long enough to wrap a couple of times inside the card."
+        }
+      ]
+    },
+    {
+      "layout": "table",
+      "kicker": "Wide table",
+      "heading": "A six-column ten-row table stresses column widths and row heights",
+      "columns": [
+        "Criterion",
+        "Option A",
+        "Option B",
+        "Option C",
+        "Option D",
+        "Recommended"
+      ],
+      "highlightColumn": 5,
+      "rows": [
+        [
+          "Total cost of ownership over five years",
+          "High",
+          "Medium",
+          "Medium",
+          "Low",
+          "Low"
+        ],
+        [
+          "Implementation time",
+          "9 months",
+          "6 months",
+          "7 months",
+          "4 months",
+          "4 months"
+        ],
+        [
+          "Team upskilling required",
+          "Extensive",
+          "Moderate",
+          "Moderate",
+          "Light",
+          "Light"
+        ],
+        [
+          "Vendor lock-in risk",
+          "High",
+          "High",
+          "Medium",
+          "Low",
+          "Low"
+        ],
+        [
+          "Ecosystem maturity",
+          "Mature",
+          "Growing",
+          "Mature",
+          "Mature",
+          "Mature"
+        ],
+        [
+          "Security certifications",
+          "Complete",
+          "Partial",
+          "Complete",
+          "Complete",
+          "Complete"
+        ],
+        [
+          "Regional availability",
+          "Global",
+          "Limited",
+          "Global",
+          "Global",
+          "Global"
+        ],
+        [
+          "Support model",
+          "24/7",
+          "Business hours",
+          "24/7",
+          "24/7",
+          "24/7"
+        ],
+        [
+          "Migration tooling",
+          "Basic",
+          "Basic",
+          "Good",
+          "Excellent",
+          "Excellent"
+        ],
+        [
+          "Roadmap alignment",
+          "Weak",
+          "Moderate",
+          "Strong",
+          "Strong",
+          "Strong"
+        ]
+      ]
+    },
+    {
+      "layout": "timeline",
+      "kicker": "Long phases",
+      "heading": "Five phases with long descriptions stress the column text fitting",
+      "phases": [
+        {
+          "label": "Mobilization and discovery",
+          "period": "Weeks 1–6",
+          "body": "Stakeholder interviews, system inventory, baseline metrics and success criteria definition across all business units"
+        },
+        {
+          "label": "Foundation build",
+          "period": "Weeks 7–14",
+          "body": "Platform provisioning, security model, governance structure and the first landing zones"
+        },
+        {
+          "label": "First workload wave",
+          "period": "Weeks 15–26",
+          "body": "Highest-value pipelines migrate with parallel-run validation and automated reconciliation"
+        },
+        {
+          "label": "Scale-out",
+          "period": "Weeks 27–40",
+          "body": "Remaining workloads move in factory mode with a dedicated migration squad and weekly cutovers"
+        },
+        {
+          "label": "Optimize and handover",
+          "period": "Weeks 41–52",
+          "body": "Cost tuning, runbook handover, hypercare and the internal enablement academy"
+        }
+      ]
+    },
+    {
+      "layout": "image",
+      "kicker": "Arquitetura minerada",
+      "heading": "Um diagrama vetorial minerado do design system sobrevive a crop, escala e refit de fonte",
+      "footnote": "Spec sintética equivalente à produzida por mineSlideDiagram (client/src/lib/pptxMining.js).",
+      "diagramSpec": {
+        "label": "Arquitetura da plataforma",
+        "aspect": 1.778,
+        "shapes": [
+          {
+            "x": 0.06,
+            "y": 0.28,
+            "w": 0.18,
+            "h": 0.13,
+            "geom": "roundRect",
+            "color": "#DDE3EA",
+            "line": "#335577",
+            "text": "Fontes de dados operacionais e legadas",
+            "fontPt": 10
+          },
+          {
+            "x": 0.06,
+            "y": 0.47,
+            "w": 0.18,
+            "h": 0.13,
+            "geom": "roundRect",
+            "color": "#DDE3EA",
+            "text": "Aplicações SaaS",
+            "fontPt": 10
+          },
+          {
+            "x": 0.38,
+            "y": 0.24,
+            "w": 0.27,
+            "h": 0.42,
+            "geom": "rect",
+            "color": "#1A1A2E"
+          },
+          {
+            "x": 0.38,
+            "y": 0.24,
+            "w": 0.27,
+            "h": 0.08,
+            "geom": "rect",
+            "color": "#1A1A2E",
+            "text": "Plataforma unificada",
+            "textColor": "#FFFFFF",
+            "bold": true,
+            "fontPt": 12
+          },
+          {
+            "x": 0.4,
+            "y": 0.35,
+            "w": 0.23,
+            "h": 0.08,
+            "geom": "rect",
+            "color": "#E63946",
+            "text": "Governança",
+            "textColor": "#FFFFFF",
+            "fontPt": 9
+          },
+          {
+            "x": 0.4,
+            "y": 0.46,
+            "w": 0.23,
+            "h": 0.08,
+            "geom": "rect",
+            "color": "#4A4E69",
+            "text": "Processamento",
+            "textColor": "#FFFFFF",
+            "fontPt": 9
+          },
+          {
+            "x": 0.4,
+            "y": 0.56,
+            "w": 0.23,
+            "h": 0.07,
+            "geom": "rect",
+            "color": "#4A4E69",
+            "text": "Armazenamento aberto",
+            "textColor": "#FFFFFF",
+            "fontPt": 9
+          },
+          {
+            "x": 0.78,
+            "y": 0.3,
+            "w": 0.17,
+            "h": 0.12,
+            "geom": "roundRect",
+            "color": "#DDE3EA",
+            "text": "BI e analytics",
+            "fontPt": 10
+          },
+          {
+            "x": 0.78,
+            "y": 0.48,
+            "w": 0.17,
+            "h": 0.12,
+            "geom": "hexagon",
+            "color": "#DDE3EA",
+            "text": "IA generativa",
+            "fontPt": 10
+          }
+        ],
+        "connectors": [
+          {
+            "x": 0.25,
+            "y": 0.36,
+            "w": 0.12,
+            "h": 0.06,
+            "arrow": true,
+            "color": "#335577"
+          },
+          {
+            "x": 0.25,
+            "y": 0.52,
+            "w": 0.12,
+            "h": 0.0,
+            "arrow": true,
+            "color": "#335577",
+            "flipV": true
+          },
+          {
+            "x": 0.66,
+            "y": 0.38,
+            "w": 0.11,
+            "h": 0.0,
+            "arrow": true,
+            "color": "#335577"
+          },
+          {
+            "x": 0.66,
+            "y": 0.52,
+            "w": 0.11,
+            "h": 0.02,
+            "arrow": true,
+            "color": "#335577"
+          }
+        ]
+      }
+    }
+  ]
+}

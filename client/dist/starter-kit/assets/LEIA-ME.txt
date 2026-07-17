@@ -1,0 +1,15 @@
+Esta é a ÚNICA pasta escaneada em busca de assets de marca (SVG/PNG/JPG/WebP/GIF).
+O TIPO de cada asset é decidido pelo NOME do arquivo — regras completas em INSTRUCOES.md:
+
+  *illustration*/*nodal*      → ilustração (capas e divisores)
+  bg-* / *background* / industry-*  → fundo full-bleed
+  *lockup*                    → lockup de produto/parceria
+  *-icon-* / *-icon.svg       → ícone   (ex.: acme-icon-database.svg)
+  *logo* / *symbol*           → logo principal (white → fundo escuro; full-color → claro)
+  qualquer outro nome         → "imagem" genérica (⚠ confira no relatório da importação)
+
+Limites: 48 ícones · 24 lockups · 16 ilustrações · 12 fundos · 16 imagens.
+Variantes -alt/-container/-white são puladas quando a versão principal existe.
+
+Os arquivos acme-* neste kit são placeholders: substitua pelos da sua marca
+mantendo as convenções de nome.

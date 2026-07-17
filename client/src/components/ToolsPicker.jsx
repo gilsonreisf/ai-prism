@@ -1,0 +1,336 @@
+import { useState, useRef, useEffect } from 'react'
+import * as Icon from './Icons.jsx'
+import { getJSON } from '../api.js'
+
+const refKey = (t) => {
+  if (t.kind === 'genie') return `genie:${t.spaceId}`
+  if (t.kind === 'genie-one') return 'genie-one'
+  if (t.kind === 'vector-search') return `vector-search:${t.indexName}`
+  if (t.kind === 'mcp-external') return `mcp-external:${t.connectionName}`
+  if (t.kind === 'uc') return `uc:${t.fullName}`
+  return `${t.kind}:${t.id}`
+}
+
+// One collapsible category block — search only fires for the category the
+// user actually opens, instead of hitting every tool backend on every
+// keystroke, and each asset type gets its own scoped result list.
+function ToolCategorySection({ icon, title, comingSoon, searchFn, isEnabled, onToggle, renderLabel }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+
+  useEffect(() => {
+    if (!open || comingSoon) return
+    setSearching(true)
+    const t = setTimeout(async () => {
+      try {
+        setResults(await searchFn(query.trim()))
+      } catch {
+        setResults([])
+      } finally {
+        setSearching(false)
+      }
+    }, 300)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, query, comingSoon])
+
+  return (
+    <div className="rounded-xl border border-[var(--border)] overflow-hidden mb-1.5">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 px-3 py-2.5 bg-[var(--surface-2)] hover:bg-[var(--surface-3)] transition text-left"
+      >
+        {icon}
+        <span className="text-sm font-semibold flex-1">{title}</span>
+        {comingSoon && (
+          <span className="text-[9px] uppercase font-bold tracking-wide text-[var(--faint)] border border-[var(--border)] rounded px-1.5 py-0.5">
+            Em breve
+          </span>
+        )}
+        <Icon.ChevronRight
+          size={14}
+          className={`text-[var(--faint)] transition-transform shrink-0 ${open ? 'rotate-90' : ''}`}
+        />
+      </button>
+
+      {open && (
+        <div className="p-1.5">
+          {comingSoon ? (
+            <p className="px-2 py-3 text-xs text-[var(--faint)] text-center">
+              Ainda não disponível nesta versão do AI Prism.
+            </p>
+          ) : (
+            <>
+              <div className="relative px-1.5 mb-1.5">
+                <Icon.Search size={13} className="absolute left-4 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+                <input
+                  autoFocus
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={`Buscar em ${title}…`}
+                  className="w-full rounded-lg bg-[var(--surface-2)] border border-[var(--border)] pl-8 pr-3 py-1.5 text-sm outline-none focus:border-[var(--accent)] placeholder:text-[var(--faint)]"
+                />
+              </div>
+              {searching && <p className="px-2 py-2 text-xs text-[var(--faint)] text-center">Buscando…</p>}
+              {!searching && results.length === 0 && (
+                <p className="px-2 py-2 text-xs text-[var(--faint)] text-center">
+                  {query.trim() ? 'Nada encontrado.' : 'Digite para buscar.'}
+                </p>
+              )}
+              {!searching &&
+                results.map((item) => {
+                  const active = isEnabled(item)
+                  return (
+                    <button
+                      key={refKey(item)}
+                      onClick={() => onToggle(item)}
+                      className={`w-full text-left rounded-lg px-2.5 py-2 transition flex gap-2.5 items-start ${
+                        active ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--surface-2)]'
+                      }`}
+                    >
+                      <span
+                        className={`mt-0.5 w-4 h-4 rounded-md border shrink-0 grid place-items-center ${
+                          active ? 'bg-[var(--accent)] border-[var(--accent)]' : 'border-[var(--border)]'
+                        }`}
+                      >
+                        {active && <Icon.Check size={11} className="text-white" />}
+                      </span>
+                      <span className="min-w-0 flex-1">{renderLabel(item)}</span>
+                    </button>
+                  )
+                })}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Tool picker, Databricks-Playground-style: the Python UC function is always
+ * on (pinned, non-removable) for models that support tool calling; Genie
+ * One (the workspace-wide managed MCP) is pinned right below it, on by
+ * default but toggleable; everything else is organized by asset type (Genie
+ * Spaces, UC Functions, Vector Search Indexes, External MCP Servers) — each
+ * its own collapsible block searching only its own kind. Selection lives on
+ * the session (see App.jsx), so reopening a past conversation re-enables the
+ * same tools automatically.
+ */
+export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange, disabled }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const h = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  const isEnabled = (t) => enabledTools.some((e) => refKey(e) === refKey(t))
+  const toggle = (t) => {
+    if (isEnabled(t)) onChange(enabledTools.filter((e) => refKey(e) !== refKey(t)))
+    else onChange([...enabledTools, t])
+  }
+  const genieOneEnabled = isEnabled({ kind: 'genie-one' })
+  const removableTools = enabledTools.filter((t) => t.kind !== 'genie-one')
+
+  return (
+    <div className="relative" ref={ref}>
+      {/* icon-only trigger: the "Tools" label wrapped awkwardly next to long
+          model names in the header, and the icon + count badge say the same
+          thing in a fraction of the width */}
+      <button
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+        className="relative shrink-0 p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-2)] transition disabled:opacity-50"
+        title="Tools"
+      >
+        <Icon.ToolsGlyph size={17} />
+        {enabledTools.length > 0 && (
+          <span className="absolute -top-1 -right-1 inline-flex items-center justify-center leading-none rounded-full bg-[var(--accent)] text-white text-[10px] font-bold w-4 h-4 pt-px tabular-nums">
+            {enabledTools.length}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute z-40 mt-2 w-[380px] max-w-[calc(100vw-1.5rem)] max-h-[70vh] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/40 p-1.5">
+          <div className="px-3 py-2 text-[11px] uppercase tracking-wide font-semibold text-[var(--faint)]">
+            Tools habilitadas
+          </div>
+          {modelSupportsTools ? (
+            <>
+              <div className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
+                <Icon.Terminal size={16} className="text-[var(--accent)] shrink-0" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold">Python</span>
+                  <span className="block text-xs text-[var(--faint)]">
+                    Cálculos de precisão exata — sempre disponível para este modelo
+                  </span>
+                </span>
+                <Icon.Check size={15} className="text-[var(--accent)] shrink-0" />
+              </div>
+
+              <div className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
+                <Icon.GenieOne size={20} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold">Genie One</span>
+                  <span className="block text-xs text-[var(--faint)]">
+                    Alcança todos os Genie Spaces e assets de Unity Catalog do workspace
+                  </span>
+                </span>
+                <button
+                  onClick={() => toggle({ kind: 'genie-one' })}
+                  className={`shrink-0 w-9 h-5 rounded-full transition relative ${
+                    genieOneEnabled ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
+                  }`}
+                  title={genieOneEnabled ? 'Desabilitar Genie One' : 'Habilitar Genie One'}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                      genieOneEnabled ? 'translate-x-4' : ''
+                    }`}
+                  />
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-start gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] text-[var(--faint)] mb-1">
+              <Icon.AlertTriangle size={16} className="shrink-0 mt-0.5" />
+              <span className="text-xs">Este modelo não suporta tool calling.</span>
+            </div>
+          )}
+
+          {removableTools.map((t) => (
+            <div key={refKey(t)} className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
+              {t.kind === 'genie' ? (
+                <Icon.GenieSpaces size={18} />
+              ) : t.kind === 'vector-search' ? (
+                <Icon.VectorSearch size={18} />
+              ) : t.kind === 'mcp-external' ? (
+                <Icon.McpExternal size={18} />
+              ) : t.kind === 'uc' ? (
+                <Icon.UcFunctions size={18} />
+              ) : (
+                <Icon.Wrench size={16} className="text-[var(--accent)] shrink-0" />
+              )}
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold truncate">
+                  {t.kind === 'genie'
+                    ? t.title
+                    : t.kind === 'vector-search'
+                      ? t.indexName
+                      : t.kind === 'mcp-external'
+                        ? t.connectionName
+                        : t.fullName}
+                </span>
+                {t.kind === 'genie' && t.description && (
+                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1">{t.description}</span>
+                )}
+                {t.kind === 'vector-search' && t.sourceTable && (
+                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1 font-mono">
+                    {t.sourceTable}
+                  </span>
+                )}
+                {t.kind === 'mcp-external' && t.comment && (
+                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1">{t.comment}</span>
+                )}
+              </span>
+              <button
+                onClick={() => toggle(t)}
+                className="shrink-0 p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--faint)] hover:text-[var(--text)] transition"
+                title="Remover"
+              >
+                <Icon.Close size={14} />
+              </button>
+            </div>
+          ))}
+
+          <div className="px-3 pt-2 pb-2 text-[11px] uppercase tracking-wide font-semibold text-[var(--faint)]">
+            Adicionar tools
+          </div>
+
+          <ToolCategorySection
+            icon={<Icon.GenieSpaces size={15} />}
+            title="Genie Spaces"
+            isEnabled={isEnabled}
+            onToggle={toggle}
+            searchFn={(q) => getJSON(`/api/tools/genie/search?q=${encodeURIComponent(q)}`).then((r) => r.results)}
+            renderLabel={(space) => (
+              <>
+                <span className="block text-sm font-semibold truncate">{space.title}</span>
+                {space.description && (
+                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-2">{space.description}</span>
+                )}
+              </>
+            )}
+          />
+
+          <ToolCategorySection
+            icon={<Icon.UcFunctions size={15} />}
+            title="Unity Catalog Functions"
+            isEnabled={isEnabled}
+            onToggle={toggle}
+            searchFn={(q) => getJSON(`/api/tools/search?q=${encodeURIComponent(q)}`).then((r) => r.results)}
+            renderLabel={(fn) => (
+              <>
+                <span className="block text-sm font-semibold font-mono truncate">{fn.fullName}</span>
+                {fn.comment && (
+                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-2">{fn.comment}</span>
+                )}
+                {fn.params.length > 0 && (
+                  <span className="block text-[10.5px] text-[var(--faint)] mt-1 font-mono">
+                    ({fn.params.map((p) => p.name).join(', ')})
+                  </span>
+                )}
+              </>
+            )}
+          />
+
+          <ToolCategorySection
+            icon={<Icon.VectorSearch size={15} />}
+            title="Vector Search Indexes"
+            isEnabled={isEnabled}
+            onToggle={toggle}
+            searchFn={(q) =>
+              getJSON(`/api/tools/vector-search/search?q=${encodeURIComponent(q)}`).then((r) => r.results)
+            }
+            renderLabel={(idx) => (
+              <>
+                <span className="block text-sm font-semibold truncate">{idx.indexName}</span>
+                {idx.sourceTable && (
+                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1 font-mono">
+                    {idx.sourceTable}
+                  </span>
+                )}
+              </>
+            )}
+          />
+
+          <ToolCategorySection
+            icon={<Icon.McpExternal size={15} />}
+            title="MCPs Externos"
+            isEnabled={isEnabled}
+            onToggle={toggle}
+            searchFn={(q) =>
+              getJSON(`/api/tools/mcp/external/search?q=${encodeURIComponent(q)}`).then((r) => r.results)
+            }
+            renderLabel={(conn) => (
+              <>
+                <span className="block text-sm font-semibold truncate">{conn.connectionName}</span>
+                {conn.comment && (
+                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-2">{conn.comment}</span>
+                )}
+              </>
+            )}
+          />
+        </div>
+      )}
+    </div>
+  )
+}

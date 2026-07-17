@@ -1,0 +1,431 @@
+{
+  "type": "spreadsheet",
+  "title": "Controle Financeiro Pessoal",
+  "sheets": [
+    {
+      "name": "Transações",
+      "blocks": [
+        {
+          "kind": "table",
+          "rows": [
+            [
+              "2024-01-05",
+              "Salário",
+              "Outros",
+              "Receita",
+              5000
+            ],
+            [
+              "2024-01-07",
+              "Aluguel",
+              "Moradia",
+              "Despesa",
+              1500
+            ],
+            [
+              "2024-01-10",
+              "Supermercado",
+              "Alimentação",
+              "Despesa",
+              420
+            ],
+            [
+              "2024-01-12",
+              "Combustível",
+              "Transporte",
+              "Despesa",
+              180
+            ],
+            [
+              "2024-01-15",
+              "Cinema",
+              "Lazer",
+              "Despesa",
+              60
+            ],
+            [
+              "2024-01-18",
+              "Plano de saúde",
+              "Saúde",
+              "Despesa",
+              300
+            ],
+            [
+              "2024-01-20",
+              "Curso online",
+              "Educação",
+              "Despesa",
+              150
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              ""
+            ]
+          ],
+          "columns": [
+            {
+              "role": "input",
+              "width": 80,
+              "format": "date",
+              "header": "Data"
+            },
+            {
+              "role": "input",
+              "width": 80,
+              "format": "text",
+              "header": "Descrição"
+            },
+            {
+              "role": "input",
+              "width": 80,
+              "format": "text",
+              "header": "Categoria",
+              "dropdown": [
+                "Moradia",
+                "Alimentação",
+                "Transporte",
+                "Lazer",
+                "Saúde",
+                "Educação",
+                "Outros"
+              ]
+            },
+            {
+              "role": "input",
+              "width": 80,
+              "format": "text",
+              "header": "Tipo",
+              "dropdown": [
+                "Receita",
+                "Despesa"
+              ]
+            },
+            {
+              "role": "input",
+              "width": 80,
+              "format": "currency",
+              "header": "Valor"
+            }
+          ]
+        }
+      ],
+      "freeze": {
+        "col": 0,
+        "row": 1
+      }
+    },
+    {
+      "name": "Resumo",
+      "blocks": [
+        {
+          "kind": "title",
+          "text": "Controle Financeiro Pessoal"
+        },
+        {
+          "kind": "note",
+          "text": "Preencha as células amarelas na aba Transações. Os totais e diferenças abaixo recalculam automaticamente."
+        },
+        {
+          "kind": "section",
+          "text": "Resumo do mês"
+        },
+        {
+          "kind": "table",
+          "rows": [
+            [
+              "Total de Receitas",
+              {
+                "v": "=SUMIFS(Transações!E:E,Transações!D:D,\"Receita\")",
+                "role": "formula",
+                "format": "currency"
+              }
+            ],
+            [
+              "Total de Despesas",
+              {
+                "v": "=SUMIFS(Transações!E:E,Transações!D:D,\"Despesa\")",
+                "role": "formula",
+                "format": "currency"
+              }
+            ],
+            [
+              "Saldo do período",
+              {
+                "v": "=B4-B5",
+                "role": "formula",
+                "format": "currency"
+              }
+            ]
+          ],
+          "columns": [
+            {
+              "format": "text",
+              "header": "Label"
+            },
+            {
+              "format": "currency",
+              "header": "Valor"
+            }
+          ],
+          "headerless": true
+        },
+        {
+          "kind": "spacer"
+        },
+        {
+          "kind": "section",
+          "text": "Orçamento por categoria"
+        },
+        {
+          "kind": "table",
+          "rows": [
+            [
+              "Moradia",
+              1500,
+              "=SUMIFS(Transações!$E:$E,Transações!$C:$C,A10,Transações!$D:$D,\"Despesa\")",
+              "=B10-C10",
+              "=IF([@Realizado]=0,\"N/A\",[@Realizado]/[@Orçado])"
+            ],
+            [
+              "Alimentação",
+              600,
+              "=SUMIFS(Transações!$E:$E,Transações!$C:$C,A11,Transações!$D:$D,\"Despesa\")",
+              "=B11-C11",
+              "=IF([@Realizado]=0,\"N/A\",[@Realizado]/[@Orçado])"
+            ],
+            [
+              "Transporte",
+              300,
+              "=SUMIFS(Transações!$E:$E,Transações!$C:$C,A12,Transações!$D:$D,\"Despesa\")",
+              "=B12-C12",
+              "=IF([@Realizado]=0,\"N/A\",[@Realizado]/[@Orçado])"
+            ],
+            [
+              "Lazer",
+              200,
+              "=SUMIFS(Transações!$E:$E,Transações!$C:$C,A13,Transações!$D:$D,\"Despesa\")",
+              "=B13-C13",
+              "=IF([@Realizado]=0,\"N/A\",[@Realizado]/[@Orçado])"
+            ],
+            [
+              "Saúde",
+              350,
+              "=SUMIFS(Transações!$E:$E,Transações!$C:$C,A14,Transações!$D:$D,\"Despesa\")",
+              "=B14-C14",
+              "=IF([@Realizado]=0,\"N/A\",[@Realizado]/[@Orçado])"
+            ],
+            [
+              "Educação",
+              200,
+              "=SUMIFS(Transações!$E:$E,Transações!$C:$C,A15,Transações!$D:$D,\"Despesa\")",
+              "=B15-C15",
+              "=IF([@Realizado]=0,\"N/A\",[@Realizado]/[@Orçado])"
+            ],
+            [
+              "Outros",
+              150,
+              "=SUMIFS(Transações!$E:$E,Transações!$C:$C,A16,Transações!$D:$D,\"Despesa\")",
+              "=B16-C16",
+              "=IF([@Realizado]=0,\"N/A\",[@Realizado]/[@Orçado])"
+            ],
+            [
+              "Total",
+              "=SUM(B10:B16)",
+              "=SUM(C10:C16)",
+              "=B17-C17",
+              "=IF([@Realizado]=0,\"N/A\",[@Realizado]/[@Orçado])"
+            ]
+          ],
+          "columns": [
+            {
+              "role": "input",
+              "format": "text",
+              "header": "Categoria"
+            },
+            {
+              "role": "input",
+              "format": "currency",
+              "header": "Orçado"
+            },
+            {
+              "role": "formula",
+              "format": "currency",
+              "header": "Realizado"
+            },
+            {
+              "role": "formula",
+              "format": "currency",
+              "header": "Diferença"
+            },
+            {
+              "role": "formula",
+              "format": "percent0",
+              "header": "% utilizado"
+            }
+          ]
+        }
+      ],
+      "freeze": {
+        "col": 0,
+        "row": 0
+      }
+    }
+  ]
+}

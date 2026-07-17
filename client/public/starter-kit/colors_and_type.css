@@ -1,0 +1,35 @@
+/* Tokens de cor e tipografia da ACME — fallback quando não há _ds_manifest.json
+ * (com manifest presente, os tokens de lá têm precedência).
+ * Os nomes importam: veja "Cores" em INSTRUCOES.md (navy/primary → primária,
+ * lava/accent/cta → destaque, coral/secondary → secundária, oat/bg → fundo). */
+:root {
+  --acme-navy: #1B3139;
+  --acme-navy-deep: #0B2026;
+  --acme-lava: #FF3621;
+  --acme-coral: #FF5F46;
+  --acme-oat-light: #F9F7F4;
+  --acme-oat-medium: #EEEDE9;
+  --acme-ink: #11171C;
+  --acme-gray-text: #5A6F77;
+  --acme-green: #00A972;
+  --acme-yellow: #FCBA33;
+}
+
+/* Webfonts auto-hospedadas (fallback quando não declaradas no manifest):
+@font-face {
+  font-family: 'DM Sans';
+  font-weight: 400;
+  src: url('fonts/COLOQUE-AQUI-Regular.ttf');
+}
+@font-face {
+  font-family: 'DM Sans';
+  font-weight: 700;
+  src: url('fonts/COLOQUE-AQUI-Bold.ttf');
+}
+*/
+
+body {
+  font-family: 'DM Sans', -apple-system, sans-serif;
+  color: var(--acme-ink);
+  background: var(--acme-oat-light);
+}

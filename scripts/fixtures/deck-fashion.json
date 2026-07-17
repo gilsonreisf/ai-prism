@@ -1,0 +1,121 @@
+{
+  "title": "Rewiring the merchandise engine",
+  "audience": "Maison Vela",
+  "author": "Retail Strategy Studio",
+  "narrative": "cliente → pressão do mercado → visão → prova → plano → decisão",
+  "slides": [
+    {
+      "layout": "title",
+      "kicker": "Merchandising & supply · Strategy review",
+      "heading": "Rewiring the merchandise engine",
+      "subheading": "From season-locked buying to a demand-sensing operating model — prepared for Maison Vela."
+    },
+    {
+      "layout": "agenda",
+      "kicker": "Agenda",
+      "heading": "What we'll cover today",
+      "items": [
+        {
+          "title": "The margin squeeze",
+          "body": "Markdowns and stockouts are two faces of the same forecasting gap"
+        },
+        {
+          "title": "Demand-sensing model",
+          "body": "How weekly signal replaces seasonal guesswork"
+        },
+        {
+          "title": "The pilot results",
+          "body": "12 stores, 8 weeks, one category"
+        },
+        {
+          "title": "Rollout plan",
+          "body": "Three waves to full network by next fashion year"
+        }
+      ]
+    },
+    {
+      "layout": "cards",
+      "kicker": "The margin squeeze",
+      "heading": "Three silent taxes on every collection",
+      "cards": [
+        {
+          "heading": "Markdown spiral",
+          "body": "34% of units sell below full price — planned margin evaporates in the last six weeks of season.",
+          "icon": "decline"
+        },
+        {
+          "heading": "Stockout blindness",
+          "body": "Best-sellers disappear in top doors while the same SKU idles in low-traffic stores.",
+          "icon": "people"
+        },
+        {
+          "heading": "Season lock-in",
+          "body": "Buys are committed 9 months out, before a single customer signal exists.",
+          "icon": "layers"
+        }
+      ],
+      "callout": {
+        "kicker": "The pattern",
+        "text": "Every lost point of margin traces back to deciding too early and reacting too late."
+      }
+    },
+    {
+      "layout": "stat-grid",
+      "kicker": "Pilot results",
+      "heading": "Eight weeks of demand-sensing moved the numbers that matter",
+      "stats": [
+        {
+          "value": "-18%",
+          "label": "markdown units vs. control stores",
+          "icon": "decline"
+        },
+        {
+          "value": "+6pp",
+          "label": "full-price sell-through in the pilot category",
+          "icon": "growth"
+        },
+        {
+          "value": "2.4x",
+          "label": "faster inter-store rebalancing",
+          "icon": "refresh"
+        },
+        {
+          "value": "12",
+          "label": "stores in the pilot — zero extra headcount",
+          "icon": "check"
+        }
+      ],
+      "footnote": "Pilot data, women's knitwear, FW season; network-level business case to be validated in wave one."
+    },
+    {
+      "layout": "timeline",
+      "kicker": "Rollout",
+      "heading": "Full network in three waves, value from week one",
+      "phases": [
+        {
+          "label": "Wave one",
+          "period": "Q1",
+          "body": "Top 40 doors, three categories",
+          "icon": "flag"
+        },
+        {
+          "label": "Wave two",
+          "period": "Q2",
+          "body": "Full womenswear, markdown automation",
+          "icon": "layers"
+        },
+        {
+          "label": "Wave three",
+          "period": "Q3–Q4",
+          "body": "All categories, supplier integration",
+          "icon": "globe"
+        }
+      ]
+    },
+    {
+      "layout": "closing",
+      "heading": "Let's pick the wave-one doors together",
+      "subheading": "A two-week working session locks the store list, the categories and the baseline."
+    }
+  ]
+}

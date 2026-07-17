@@ -1,0 +1,75 @@
+{
+  "type": "spreadsheet",
+  "title": "Controle Financeiro Pessoal",
+  "instructions": [
+    "Este é um template — os exemplos na aba Transações podem ser apagados.",
+    "Adicione uma linha por lançamento; os totais do Resumo se atualizam sozinhos."
+  ],
+  "sheets": [
+    {
+      "name": "Resumo",
+      "purpose": "Totais e orçamento por categoria, calculados a partir de Transações",
+      "blocks": [
+        { "kind": "title", "text": "Controle Financeiro Pessoal" },
+        { "kind": "note", "text": "Atualize os dados na aba \"Transacoes\" — os totais abaixo recalculam automaticamente" },
+        { "kind": "spacer" },
+        { "kind": "section", "text": "RESUMO GERAL" },
+        {
+          "kind": "table",
+          "headerless": true,
+          "columns": [
+            { "header": "", "key": "rotulo", "format": "text", "width": 28 },
+            { "header": "", "key": "valor", "format": "currency", "role": "formula" }
+          ],
+          "rows": [
+            ["Total de Receitas", { "v": "=SUMIFS([Transacoes!Valor],[Transacoes!Tipo],\"Receita\")", "name": "totalReceitas" }],
+            ["Total de Despesas", { "v": "=SUMIFS([Transacoes!Valor],[Transacoes!Tipo],\"Despesa\")", "name": "totalDespesas" }],
+            ["Saldo do Período", "=[#totalReceitas]-[#totalDespesas]"]
+          ]
+        },
+        { "kind": "spacer" },
+        { "kind": "section", "text": "DESPESAS POR CATEGORIA" },
+        {
+          "kind": "table",
+          "columns": [
+            { "header": "Categoria", "format": "text" },
+            { "header": "Orçado", "format": "currency", "role": "key" },
+            { "header": "Real", "format": "currency", "role": "formula" },
+            { "header": "Diferença", "format": "currency", "role": "formula" }
+          ],
+          "rows": [
+            ["Moradia", 1600, "=SUMIFS([Transacoes!Valor],[Transacoes!Categoria],[@Categoria])", "=[@Orçado]-[@Real]"],
+            ["Alimentação", 900, "=SUMIFS([Transacoes!Valor],[Transacoes!Categoria],[@Categoria])", "=[@Orçado]-[@Real]"],
+            ["Transporte", 400, "=SUMIFS([Transacoes!Valor],[Transacoes!Categoria],[@Categoria])", "=[@Orçado]-[@Real]"]
+          ]
+        }
+      ],
+      "charts": [
+        { "kind": "bar", "title": "Orçado vs Diferença por categoria", "tableBlock": 7, "categoryColumn": 0, "valueColumns": [1, 3] },
+        { "kind": "pie", "title": "Distribuição do orçado", "tableBlock": 7, "categoryColumn": 0, "valueColumns": [1] }
+      ]
+    },
+    {
+      "name": "Transacoes",
+      "purpose": "Registre aqui cada lançamento (uma linha por transação)",
+      "freeze": { "row": 1, "col": 0 },
+      "blocks": [
+        { "kind": "title", "text": "Transações" },
+        {
+          "kind": "table",
+          "columns": [
+            { "header": "Data", "format": "date", "role": "input" },
+            { "header": "Descrição", "format": "text", "role": "input" },
+            { "header": "Categoria", "format": "text", "role": "input", "dropdown": ["Moradia", "Alimentação", "Transporte", "Saúde", "Lazer"] },
+            { "header": "Tipo", "format": "text", "role": "input", "dropdown": ["Receita", "Despesa"] },
+            { "header": "Valor", "format": "currency", "role": "input" }
+          ],
+          "rows": [
+            ["2026-01-05", "Salário", "", "Receita", 5000],
+            ["2026-01-05", "Aluguel", "Moradia", "Despesa", 1500]
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "title": "From Azure Synapse to Databricks",
+  "slides": [
+    {
+      "layout": "title",
+      "heading": "From Azure Synapse to Databricks",
+      "subheading": "Migration proposal for Murphy USA"
+    },
+    {
+      "layout": "agenda",
+      "heading": "Agenda",
+      "bullets": [
+        "Why migrate now",
+        "Synapse vs Databricks",
+        "Target architecture",
+        "Business case and ROI",
+        "Migration timeline",
+        "Next steps"
+      ]
+    },
+    {
+      "layout": "bullets",
+      "heading": "The Challenge of Modern Analytics",
+      "bullets": [
+        "Data lives in separate silos across Synapse services",
+        "ML workloads need a separate stack",
+        "Performance degrades as data volume grows",
+        "Governance is fragmented across tools"
+      ]
+    },
+    {
+      "layout": "cards",
+      "heading": "Key Advantages of Databricks",
+      "cards": [
+        { "heading": "Unified platform", "body": "Analytics and AI on the same governed data." },
+        { "heading": "Performance", "body": "Photon engine accelerates SQL workloads." },
+        { "heading": "Unity Catalog", "body": "One governance layer for all data assets." },
+        { "heading": "AI/ML native", "body": "Mosaic AI for models and agents." }
+      ]
+    },
+    {
+      "layout": "comparison",
+      "heading": "Synapse vs Databricks",
+      "leftTitle": "Azure Synapse",
+      "leftBullets": ["Separate SQL and Spark pools", "Limited ML tooling", "Manual scaling"],
+      "rightTitle": "Databricks",
+      "rightBullets": ["One engine for all workloads", "Native ML and GenAI", "Serverless elastic compute"]
+    },
+    {
+      "layout": "stat-grid",
+      "heading": "Expected Impact",
+      "stats": [
+        { "value": "25%", "label": "faster time-to-insight" },
+        { "value": "40%", "label": "lower TCO" },
+        { "value": "2x", "label": "query performance" },
+        { "value": "100%", "label": "workloads governed" }
+      ]
+    },
+    {
+      "layout": "timeline",
+      "heading": "Migration Timeline",
+      "phases": [
+        { "label": "Discovery", "period": "Weeks 1-4", "body": "Assess workloads and dependencies" },
+        { "label": "Foundation", "period": "Weeks 5-8", "body": "Set up workspace and Unity Catalog" },
+        { "label": "Migration", "period": "Weeks 9-16", "body": "Move pipelines and warehouses" },
+        { "label": "Validation", "period": "Weeks 17-20", "body": "Parallel run and sign-off" },
+        { "label": "Go-live", "period": "Q4", "body": "Cutover and enablement" }
+      ]
+    },
+    {
+      "layout": "table",
+      "heading": "Capability Comparison",
+      "columns": ["Capability", "Synapse", "Databricks"],
+      "rows": [
+        ["SQL & BI", "Yes", "Yes"],
+        ["Streaming", "Partial", "Yes"],
+        ["ML / GenAI", "Limited", "Native"],
+        ["Governance", "Multiple tools", "Unity Catalog"],
+        ["Open formats", "Proprietary", "Delta / open"]
+      ]
+    },
+    {
+      "layout": "closing",
+      "heading": "Thank you",
+      "subheading": "Let's build the roadmap together"
+    }
+  ]
+}
