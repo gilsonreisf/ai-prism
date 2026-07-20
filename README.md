@@ -53,8 +53,10 @@ flowchart TB
 
 > O diagrama acima usa [Mermaid](https://mermaid.js.org/) (renderizado nativamente
 > pelo GitHub). A seta pontilhada AI Gateway → SQL Warehouse indica que o consumo de
-> tokens de cada chamada ao gateway é gravado nas *system tables*, de onde o painel
-> de **Custos de IA** lê o custo real faturado (DBU × preço) por usuário.
+> tokens de cada chamada ao gateway é gravado nas *system tables*, de onde o
+> **dashboard AI/BI de custos** (ver [`dashboards/`](dashboards/)) lê o custo real
+> faturado (DBU × preço) por usuário — fora do app, para que nenhuma consulta pesada
+> ao warehouse trave a UI.
 
 ### Autenticação (on-behalf-of)
 

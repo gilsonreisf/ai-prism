@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Deploy (create or update) the AI Prism cost dashboard as a Databricks AI/BI
+# (Lakeview) dashboard. Idempotent: pass an existing DASHBOARD_ID to update in
+# place, or omit it to create a new one (the script prints the new id to save).
+#
+# The dashboard reads Databricks SYSTEM TABLES directly (system.ai_gateway.usage
+# + system.billing.usage/list_prices), so admins audit AI Prism cost/usage in
+# AI/BI instead of inside the app — no SQL Warehouse call ever blocks the UI.
+#
+# Usage:
+#   PROFILE=E2_Demo WAREHOUSE_ID=75718e4268126449 \
+#     PARENT_PATH=/Users/you@databricks.com [DASHBOARD_ID=...] \
+#     ./dashboards/deploy.sh
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERIALIZED_FILE="$HERE/ai-costs.lvdash.json"
+
+: "${PROFILE:?set PROFILE (a databricks CLI profile, e.g. E2_Demo)}"
+: "${WAREHOUSE_ID:?set WAREHOUSE_ID (the SQL Warehouse that runs dashboard queries)}"
+DISPLAY_NAME="${DISPLAY_NAME:-AI Prism — AI costs per user}"
+
+# The Lakeview API wants serialized_dashboard as a JSON *string*, so embed the
+# file's contents as a string value. jq builds the request body safely into a
+# temp file (this CLI's --json reads a string or @file, not stdin).
+BODY_FILE="$(mktemp -t ai-prism-dashboard.XXXXXX.json)"
+trap 'rm -f "$BODY_FILE"' EXIT
+
+if [[ -n "${DASHBOARD_ID:-}" ]]; then
+  echo "Updating dashboard ${DASHBOARD_ID} on profile ${PROFILE}..."
+  jq -n --arg name "$DISPLAY_NAME" --arg wh "$WAREHOUSE_ID" \
+        --rawfile ser "$SERIALIZED_FILE" \
+        '{display_name: $name, warehouse_id: $wh, serialized_dashboard: $ser}' > "$BODY_FILE"
+  databricks api patch "/api/2.0/lakeview/dashboards/$DASHBOARD_ID" \
+    --profile "$PROFILE" --json "@$BODY_FILE"
+else
+  : "${PARENT_PATH:?set PARENT_PATH (workspace folder for a NEW dashboard, e.g. /Users/you@databricks.com)}"
+  echo "Creating dashboard \"${DISPLAY_NAME}\" under ${PARENT_PATH} on profile ${PROFILE}..."
+  jq -n --arg name "$DISPLAY_NAME" --arg wh "$WAREHOUSE_ID" --arg pp "$PARENT_PATH" \
+        --rawfile ser "$SERIALIZED_FILE" \
+        '{display_name: $name, warehouse_id: $wh, parent_path: $pp, serialized_dashboard: $ser}' > "$BODY_FILE"
+  databricks api post "/api/2.0/lakeview/dashboards" \
+    --profile "$PROFILE" --json "@$BODY_FILE"
+  echo
+  echo "Save the dashboard_id above; pass it as DASHBOARD_ID next time to update in place."
+fi

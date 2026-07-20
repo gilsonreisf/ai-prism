@@ -85,7 +85,6 @@ import { searchGenieSpaces } from './genie.js'
 import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
 import { listChatEndpoints, buildAdminCatalog, buildUserModels } from './serving.js'
-import { getUsageFromSystemTables } from './usageSystemTables.js'
 import { renderPptx } from './decks.js'
 import { renderXlsx } from './xlsx-export.js'
 
@@ -724,85 +723,6 @@ app.delete('/api/admins/:principal', auth, requireAdmin, async (req, res) => {
     await removeAppAdmin(req.email, req.token, decodeURIComponent(req.params.principal))
     invalidateAdminsCache()
     res.json({ ok: true })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-// AI cost/usage auditing (admin): aggregates persisted token usage across all
-// users and prices it with the MODELS catalog (list price per 1M tokens). The
-// pricing lives server-side so the client renders a single source of truth; the
-// raw token sums are returned too so the UI can re-slice without another call.
-// Optional ?from=&to= ISO dates window the data. Never user-scoped by design —
-// it's an admin audit surface, hence requireAdmin.
-// Derive a human label for an endpoint id. Known models get their curated
-// label; retired/unknown endpoints (present in the system tables but absent
-// from MODELS) get a title-cased fallback derived from the id — no more
-// "unpriced" holes, because cost now comes from real billing, not a price map.
-function endpointLabel(id) {
-  const m = modelById(id)
-  if (m && m.label) return m.label
-  return String(id || '')
-    .replace(/^databricks-/, '')
-    .replace(/-/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
-// Cost-dashboard queries are expensive (multi-minute on a cold warehouse), so we
-// never run them on autopilot: the UI fetches only on an explicit "refresh"
-// click. This server-side cache makes those clicks cheap and keeps concurrent
-// admins (or a double-click) from stacking duplicate heavy scans on the
-// warehouse. Keyed by window+scope; short TTL, since gateway/billing ingestion
-// lags 30-60min anyway so sub-hour freshness buys nothing.
-const usageCache = new Map() // key -> { ts, payload }
-const usageInFlight = new Map() // key -> Promise (single-flight dedupe)
-const USAGE_CACHE_TTL_MS = 10 * 60 * 1000
-
-app.get('/api/admin/usage', auth, requireAdmin, async (req, res) => {
-  try {
-    const from = req.query.from ? new Date(String(req.query.from)).toISOString() : null
-    const to = req.query.to ? new Date(String(req.query.to)).toISOString() : null
-    // scoped=true (default) → only AI Prism-tagged traffic, with a transition
-    // fallback to all traffic until the tag has propagated (see module).
-    const scoped = req.query.scoped !== '0'
-    // refresh=1 bypasses the cache (the explicit "update now" button).
-    const force = req.query.refresh === '1'
-    const key = `${from || ''}|${to || ''}|${scoped ? 1 : 0}`
-
-    const fresh = usageCache.get(key)
-    if (!force && fresh && Date.now() - fresh.ts < USAGE_CACHE_TTL_MS) {
-      res.json({ ...fresh.payload, meta: { ...fresh.payload.meta, cached: true } })
-      return
-    }
-
-    // Single-flight: if an identical query is already running, ride along with it
-    // instead of firing a second warehouse statement.
-    let job = usageInFlight.get(key)
-    if (!job) {
-      // Real billed cost from Databricks system tables, read via the SQL Warehouse
-      // — keeps analytical load off the app's Lakebase and prices every model
-      // (including retired endpoints) from actual DBU × list price, not a curated
-      // per-token map. USD is allocated to each user by their token share.
-      job = getUsageFromSystemTables(req.token, { from, to, scoped })
-        .then((stats) => {
-          const byUserModel = stats.byUserModel.map((r) => ({
-            ...r,
-            modelLabel: endpointLabel(r.model),
-          }))
-          const payload = {
-            byUserModel,
-            daily: stats.daily,
-            meta: { ...stats.meta, fetchedAt: new Date().toISOString() },
-          }
-          usageCache.set(key, { ts: Date.now(), payload })
-          return payload
-        })
-        .finally(() => usageInFlight.delete(key))
-      usageInFlight.set(key, job)
-    }
-
-    const payload = await job
-    res.json(payload)
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

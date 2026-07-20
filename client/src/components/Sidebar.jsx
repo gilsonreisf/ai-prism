@@ -124,14 +124,20 @@ export default function Sidebar({
           overlay ? 'md:z-50 md:shadow-2xl md:shadow-black/40' : 'md:static'
         } ${collapsed ? 'md:hidden' : ''} ${open ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
       >
-        {/* brand */}
+        {/* brand — clicking the logo/name goes home (starts a new chat) */}
         <div className="flex items-center gap-2.5 px-4 h-14 border-b border-[var(--border)]">
-          <Logo size={26} />
-          <div className="leading-none">
-            <div className="font-extrabold tracking-tight text-[15px]">
-              AI <span className="prism-text">Prism</span>
+          <button
+            onClick={onNew}
+            className="flex items-center gap-2.5 -m-1 p-1 rounded-lg hover:bg-[var(--surface-3)] transition"
+            title={t('sidebar.home')}
+          >
+            <Logo size={26} />
+            <div className="leading-none">
+              <div className="font-extrabold tracking-tight text-[15px]">
+                AI <span className="prism-text">Prism</span>
+              </div>
             </div>
-          </div>
+          </button>
           <button
             onClick={onClose}
             className="ml-auto md:hidden p-1.5 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]"

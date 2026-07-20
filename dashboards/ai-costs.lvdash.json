@@ -1,0 +1,319 @@
+{
+  "datasets": [
+    {
+      "name": "ai_prism_usage",
+      "displayName": "AI Prism usage & cost (allocated)",
+      "queryLines": [
+        "-- AI Prism LLM cost/usage, sourced from Databricks SYSTEM TABLES.\n",
+        "-- Real billed cost = DBU x list price, allocated to each user by their\n",
+        "-- share of the endpoint's daily tokens. Scoped to AI Prism via the\n",
+        "-- request_tags['application']='ai-prism' stamp set on every gateway call.\n",
+        "WITH cost AS (\n",
+        "  SELECT u.usage_metadata.endpoint_name AS model, u.usage_date AS day,\n",
+        "         SUM(u.usage_quantity) AS dbus,\n",
+        "         SUM(u.usage_quantity * p.pricing.default) AS usd\n",
+        "  FROM system.billing.usage u\n",
+        "  JOIN system.billing.list_prices p\n",
+        "    ON u.sku_name = p.sku_name\n",
+        "   AND u.usage_start_time >= p.price_start_time\n",
+        "   AND (p.price_end_time IS NULL OR u.usage_start_time < p.price_end_time)\n",
+        "  WHERE u.billing_origin_product = 'MODEL_SERVING'\n",
+        "    AND u.usage_metadata.endpoint_name IS NOT NULL\n",
+        "  GROUP BY 1, 2\n",
+        "),\n",
+        "total AS (\n",
+        "  SELECT endpoint_name AS model, date(event_time) AS day,\n",
+        "         SUM(input_tokens + output_tokens) AS ep_tokens\n",
+        "  FROM system.ai_gateway.usage\n",
+        "  WHERE requester_type = 'USER' AND endpoint_name IS NOT NULL\n",
+        "  GROUP BY 1, 2\n",
+        "),\n",
+        "mine AS (\n",
+        "  SELECT lower(requester) AS user_email, endpoint_name AS model,\n",
+        "         date(event_time) AS day,\n",
+        "         SUM(input_tokens) AS prompt_tokens,\n",
+        "         SUM(output_tokens) AS completion_tokens,\n",
+        "         SUM(COALESCE(try_cast(token_details.cache_read_input_tokens AS BIGINT), 0)) AS cache_read_tokens,\n",
+        "         COUNT(*) AS turns\n",
+        "  FROM system.ai_gateway.usage\n",
+        "  WHERE requester_type = 'USER' AND endpoint_name IS NOT NULL\n",
+        "    AND request_tags['application'] = 'ai-prism'\n",
+        "  GROUP BY 1, 2, 3\n",
+        ")\n",
+        "SELECT m.user_email, m.model, m.day,\n",
+        "       m.prompt_tokens, m.completion_tokens, m.cache_read_tokens, m.turns,\n",
+        "       COALESCE(c.dbus, 0) * (m.prompt_tokens + m.completion_tokens) / NULLIF(t.ep_tokens, 0) AS dbus,\n",
+        "       COALESCE(c.usd,  0) * (m.prompt_tokens + m.completion_tokens) / NULLIF(t.ep_tokens, 0) AS usd\n",
+        "FROM mine m\n",
+        "JOIN total t ON t.model = m.model AND t.day = m.day\n",
+        "LEFT JOIN cost c ON c.model = m.model AND c.day = m.day"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "ai_costs_overview",
+      "displayName": "AI costs",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "flt_day",
+            "queries": [
+              {
+                "name": "filter_flt_day_day",
+                "query": {
+                  "datasetName": "ai_prism_usage",
+                  "fields": [
+                    { "name": "day", "expression": "`day`" },
+                    { "name": "day_associativity", "expression": "COUNT_IF(`associative_filter_predicate_group`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  { "fieldName": "day", "displayName": "Period", "queryName": "filter_flt_day_day" }
+                ]
+              },
+              "frame": { "showTitle": true, "title": "Period" }
+            }
+          },
+          "position": { "x": 0, "y": 0, "width": 6, "height": 2 }
+        },
+        {
+          "widget": {
+            "name": "kpi_cost",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ai_prism_usage",
+                  "fields": [{ "name": "total_usd", "expression": "SUM(`usd`)" }],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "total_usd", "displayName": "Total cost", "format": { "type": "number-currency", "currencyCode": "USD", "decimalPlaces": { "type": "max", "places": 2 } } }
+              },
+              "frame": { "showTitle": true, "title": "Total billed cost" }
+            }
+          },
+          "position": { "x": 0, "y": 2, "width": 2, "height": 3 }
+        },
+        {
+          "widget": {
+            "name": "kpi_tokens",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ai_prism_usage",
+                  "fields": [{ "name": "total_tokens", "expression": "SUM(`prompt_tokens`) + SUM(`completion_tokens`)" }],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "total_tokens", "displayName": "Tokens", "format": { "type": "number-plain", "abbreviation": "compact", "decimalPlaces": { "type": "max", "places": 1 } } }
+              },
+              "frame": { "showTitle": true, "title": "Tokens (in + out)" }
+            }
+          },
+          "position": { "x": 2, "y": 2, "width": 2, "height": 3 }
+        },
+        {
+          "widget": {
+            "name": "kpi_dbu",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ai_prism_usage",
+                  "fields": [{ "name": "total_dbu", "expression": "SUM(`dbus`)" }],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "total_dbu", "displayName": "DBU", "format": { "type": "number-plain", "decimalPlaces": { "type": "max", "places": 1 } } }
+              },
+              "frame": { "showTitle": true, "title": "DBU" }
+            }
+          },
+          "position": { "x": 4, "y": 2, "width": 1, "height": 3 }
+        },
+        {
+          "widget": {
+            "name": "kpi_turns",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ai_prism_usage",
+                  "fields": [{ "name": "total_turns", "expression": "SUM(`turns`)" }],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "total_turns", "displayName": "Turns", "format": { "type": "number-plain", "abbreviation": "compact" } }
+              },
+              "frame": { "showTitle": true, "title": "Turns" }
+            }
+          },
+          "position": { "x": 5, "y": 2, "width": 1, "height": 3 }
+        },
+        {
+          "widget": {
+            "name": "bar_by_user",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ai_prism_usage",
+                  "fields": [
+                    { "name": "user_email", "expression": "`user_email`" },
+                    { "name": "sum_usd", "expression": "SUM(`usd`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": { "fieldName": "sum_usd", "scale": { "type": "quantitative" }, "displayName": "Cost", "format": { "type": "number-currency", "currencyCode": "USD", "decimalPlaces": { "type": "max", "places": 2 } } },
+                "y": { "fieldName": "user_email", "scale": { "type": "categorical", "sort": { "by": "x-reversed" } }, "displayName": "User" },
+                "label": { "show": true }
+              },
+              "frame": { "showTitle": true, "title": "Top users by cost" },
+              "mark": { "colors": ["#FF3621", "#4285F4", "#00A972", "#FF6A00", "#7C6FF0", "#919191"] }
+            }
+          },
+          "position": { "x": 0, "y": 5, "width": 3, "height": 6 }
+        },
+        {
+          "widget": {
+            "name": "line_by_day",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ai_prism_usage",
+                  "fields": [
+                    { "name": "day", "expression": "`day`" },
+                    { "name": "sum_usd", "expression": "SUM(`usd`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": { "fieldName": "day", "scale": { "type": "temporal" }, "displayName": "Day" },
+                "y": { "fieldName": "sum_usd", "scale": { "type": "quantitative" }, "displayName": "Cost", "format": { "type": "number-currency", "currencyCode": "USD", "decimalPlaces": { "type": "max", "places": 2 } } }
+              },
+              "frame": { "showTitle": true, "title": "Cost per day" },
+              "mark": { "colors": ["#FF3621"] }
+            }
+          },
+          "position": { "x": 3, "y": 5, "width": 3, "height": 6 }
+        },
+        {
+          "widget": {
+            "name": "bar_by_model",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ai_prism_usage",
+                  "fields": [
+                    { "name": "model", "expression": "`model`" },
+                    { "name": "sum_usd", "expression": "SUM(`usd`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": { "fieldName": "sum_usd", "scale": { "type": "quantitative" }, "displayName": "Cost", "format": { "type": "number-currency", "currencyCode": "USD", "decimalPlaces": { "type": "max", "places": 2 } } },
+                "y": { "fieldName": "model", "scale": { "type": "categorical", "sort": { "by": "x-reversed" } }, "displayName": "Model" },
+                "label": { "show": true }
+              },
+              "frame": { "showTitle": true, "title": "Cost by model" },
+              "mark": { "colors": ["#4285F4"] }
+            }
+          },
+          "position": { "x": 0, "y": 11, "width": 2, "height": 6 }
+        },
+        {
+          "widget": {
+            "name": "tbl_detail",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ai_prism_usage",
+                  "fields": [
+                    { "name": "user_email", "expression": "`user_email`" },
+                    { "name": "model", "expression": "`model`" },
+                    { "name": "sum_turns", "expression": "SUM(`turns`)" },
+                    { "name": "sum_prompt", "expression": "SUM(`prompt_tokens`)" },
+                    { "name": "sum_completion", "expression": "SUM(`completion_tokens`)" },
+                    { "name": "sum_dbu", "expression": "SUM(`dbus`)" },
+                    { "name": "sum_usd", "expression": "SUM(`usd`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  { "fieldName": "user_email", "type": "string", "displayAs": "string", "title": "User" },
+                  { "fieldName": "model", "type": "string", "displayAs": "string", "title": "Model" },
+                  { "fieldName": "sum_turns", "type": "integer", "displayAs": "number", "title": "Turns", "alignContent": "right" },
+                  { "fieldName": "sum_prompt", "type": "integer", "displayAs": "number", "title": "Input tokens", "alignContent": "right" },
+                  { "fieldName": "sum_completion", "type": "integer", "displayAs": "number", "title": "Output tokens", "alignContent": "right" },
+                  { "fieldName": "sum_dbu", "type": "float", "displayAs": "number", "numberFormat": "0.000", "title": "DBU", "alignContent": "right" },
+                  { "fieldName": "sum_usd", "type": "float", "displayAs": "number", "numberFormat": "$0.0000", "title": "Cost", "alignContent": "right" }
+                ]
+              },
+              "frame": { "showTitle": true, "title": "Detail (user x model)" }
+            }
+          },
+          "position": { "x": 2, "y": 11, "width": 4, "height": 6 }
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": { "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED" }
+  }
+}
