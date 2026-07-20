@@ -51,28 +51,37 @@ matches the app's visual language rather than a different color per chart.
 
 ## Deploy
 
-Requires an authenticated `databricks` CLI profile and `jq`.
+Usually you don't run this by hand: the **bundle deploys the dashboard for you**
+(`databricks.yml` references `./dashboards/ai-costs.lvdash.json`), so a normal
+`databricks bundle deploy` ships it into your own workspace. Use `deploy.sh` only
+when you want to push the dashboard on its own, outside the bundle.
+
+`deploy.sh` needs an authenticated `databricks` CLI profile and `jq`. Set these
+to your own values (nothing here is tied to a specific account):
+
+| Variable | What to set it to |
+| --- | --- |
+| `PROFILE` | Your `databricks` CLI profile (from `databricks auth login`). |
+| `WAREHOUSE_ID` | Any SQL Warehouse in your workspace that can query the system tables. |
+| `PARENT_PATH` | The workspace folder to create the dashboard in, e.g. `/Users/<you>@<company>.com`. |
+| `DASHBOARD_ID` | Only when updating in place — the id printed on first create. |
 
 ```bash
-# First time (creates a new dashboard, prints its id):
-PROFILE=E2_Demo \
-WAREHOUSE_ID=75718e4268126449 \
-PARENT_PATH=/Users/pedro.ramos@databricks.com \
+# First time (creates a new dashboard in your workspace, prints its id):
+PROFILE=<your-cli-profile> \
+WAREHOUSE_ID=<your-warehouse-id> \
+PARENT_PATH=/Users/<you>@<company>.com \
   ./dashboards/deploy.sh
 
 # Update in place afterwards (idempotent):
-PROFILE=E2_Demo \
-WAREHOUSE_ID=75718e4268126449 \
+PROFILE=<your-cli-profile> \
+WAREHOUSE_ID=<your-warehouse-id> \
 DASHBOARD_ID=<id-from-create> \
   ./dashboards/deploy.sh
 ```
 
-Then open the dashboard in the workspace and **Publish** it so other admins can
-view it. Each customer workspace running AI Prism deploys its own copy — the
-`.lvdash.json` is portable; only `WAREHOUSE_ID` / `PARENT_PATH` differ.
-
-### Deployed instances
-
-| Workspace | `DASHBOARD_ID` |
-| --- | --- |
-| E2_Demo (`e2-demo-field-eng`) | `01f1848bb0611596a8131a72da25315e` |
+Then open the dashboard in your workspace and **Publish** it so other admins can
+view it. Each workspace running AI Prism deploys its own copy — the `.lvdash.json`
+is fully portable, and the system tables it reads (`system.billing.*`,
+`system.serving.*`) exist in every Unity Catalog workspace. Nothing in this
+folder is bound to a particular account, warehouse, or user.
