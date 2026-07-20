@@ -80,11 +80,13 @@ function chatUrl() {
   return `${host()}/serving-endpoints/chat/completions`
 }
 
-// Stamp every gateway call so its row in system.ai_gateway.usage carries
-// request_tags['application'] = 'ai-prism'. This is what lets the admin cost
+// Stamp every gateway call so its row in system.serving.endpoint_usage carries
+// usage_context['application'] = 'ai-prism'. This is what lets the admin cost
 // dashboard scope spend to AI Prism (vs. the same users' other serving traffic
-// in a shared workspace). Propagation of usage_context → request_tags is
-// confirmed live in the gateway; the tag is additive and safe on every endpoint.
+// in a shared workspace). Verified live: usage_context lands in
+// system.serving.endpoint_usage.usage_context (a MAP) — NOT in
+// system.ai_gateway.usage.request_tags. The tag is additive and safe on every
+// endpoint (the dashboard query in dashboards/ai-costs.lvdash.json reads it).
 const USAGE_CONTEXT = { application: 'ai-prism' }
 function withUsageContext(body) {
   return { ...body, usage_context: USAGE_CONTEXT }

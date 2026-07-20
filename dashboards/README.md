@@ -9,44 +9,81 @@ tab was removed in favor of this).
 
 Real **billed** cost — `DBU × list price` from `system.billing.usage` ⋈
 `system.billing.list_prices` — allocated to each user by their share of the
-endpoint's daily tokens (`system.ai_gateway.usage`). Scoped to AI Prism via the
-`request_tags['application'] = 'ai-prism'` stamp set on every gateway call
-(see `server/llm.js`). Widgets: total cost / tokens / DBU / turns KPIs, cost by
-user, cost per day, cost by model, and a user × model detail table, all filtered
-by a period picker.
+endpoint's daily tokens (`system.serving.endpoint_usage` ⋈
+`system.serving.served_entities` for the endpoint name). Scoped to AI Prism via
+the `usage_context['application'] = 'ai-prism'` stamp set on every gateway call
+(see `server/llm.js`). **Note:** `usage_context` lands in
+`system.serving.endpoint_usage.usage_context`, *not* in
+`system.ai_gateway.usage.request_tags` — an earlier query read the wrong
+table/column and always returned "No data".
 
-> Ingestion lag: gateway ~30–40 min, billing ~1 h — the dashboard is near-real-time,
+One dataset (**`ai_prism_detail`**) — per user × endpoint × day, with `prompt_tokens`,
+`completion_tokens`, `total_tokens`, `turns`, and the allocated `dbus` / `usd` —
+feeds every widget (last 90 days).
+
+Layout (12-column grid), matching the version curated in the dashboard editor:
+
+- **Filters + headline KPIs** (top): a user multi-select and a period date-range
+  picker (default last 30 days), plus counter cards — DBUs consumed, estimated cost
+  (USD), turns, distinct users, input / output / total tokens.
+- **Detail table**: user · endpoint · day with token and turn columns.
+- **Four sections**, each a per-endpoint + per-day + per-user bar breakdown:
+  **USD**, **Tokens**, **DBUs** and **Turns**.
+
+Colors use the workspace theme's `visualizationColors` positions, so the dashboard
+matches the app's visual language rather than a different color per chart.
+
+> **Ingestion lag.** `system.serving.endpoint_usage` (tokens) and
+> `system.billing.usage` (cost) both lag ~1 h — the dashboard is near-real-time,
 > not live.
+
+> **Editing.** `ai-costs.lvdash.json` is the exact export from the Databricks
+> dashboard editor — edit there and re-export to update it; don't hand-edit the
+> JSON. `deploy.sh` pushes it to a workspace and the bundle ships it as-is.
 
 ## Files
 
-- `ai-costs.lvdash.json` — the serialized Lakeview dashboard (versioned here).
+- `ai-costs.lvdash.json` — the serialized Lakeview dashboard (source of truth),
+  exported from the Databricks dashboard editor and versioned here so the bundle
+  can ship it as-is. To change the dashboard, edit it in the editor, then export
+  and overwrite this file (File → Export, or the Lakeview API).
 - `deploy.sh` — create or update it in a workspace via the Lakeview API.
 
 ## Deploy
 
-Requires an authenticated `databricks` CLI profile and `jq`.
+Usually you don't run this by hand: the **bundle deploys _and publishes_ the
+dashboard for you**. `databricks.yml` references `./dashboards/ai-costs.lvdash.json`,
+so `databricks bundle deploy` ships it into your workspace as a draft, and the
+post-deploy auto-config job (`bundle/auto_config.py`) publishes it — so admins see
+it live with no manual step. Use `deploy.sh` only to push the dashboard on its own,
+outside the bundle (then publish it yourself, as noted below).
+
+`deploy.sh` needs an authenticated `databricks` CLI profile and `jq`. Set these
+to your own values (nothing here is tied to a specific account):
+
+| Variable | What to set it to |
+| --- | --- |
+| `PROFILE` | Your `databricks` CLI profile (from `databricks auth login`). |
+| `WAREHOUSE_ID` | Any SQL Warehouse in your workspace that can query the system tables. |
+| `PARENT_PATH` | The workspace folder to create the dashboard in, e.g. `/Users/<you>@<company>.com`. |
+| `DASHBOARD_ID` | Only when updating in place — the id printed on first create. |
 
 ```bash
-# First time (creates a new dashboard, prints its id):
-PROFILE=E2_Demo \
-WAREHOUSE_ID=75718e4268126449 \
-PARENT_PATH=/Users/pedro.ramos@databricks.com \
+# First time (creates a new dashboard in your workspace, prints its id):
+PROFILE=<your-cli-profile> \
+WAREHOUSE_ID=<your-warehouse-id> \
+PARENT_PATH=/Users/<you>@<company>.com \
   ./dashboards/deploy.sh
 
 # Update in place afterwards (idempotent):
-PROFILE=E2_Demo \
-WAREHOUSE_ID=75718e4268126449 \
+PROFILE=<your-cli-profile> \
+WAREHOUSE_ID=<your-warehouse-id> \
 DASHBOARD_ID=<id-from-create> \
   ./dashboards/deploy.sh
 ```
 
-Then open the dashboard in the workspace and **Publish** it so other admins can
-view it. Each customer workspace running AI Prism deploys its own copy — the
-`.lvdash.json` is portable; only `WAREHOUSE_ID` / `PARENT_PATH` differ.
-
-### Deployed instances
-
-| Workspace | `DASHBOARD_ID` |
-| --- | --- |
-| E2_Demo (`e2-demo-field-eng`) | `01f18403ca66179695f18e0f591cc0d0` |
+Then open the dashboard in your workspace and **Publish** it so other admins can
+view it. Each workspace running AI Prism deploys its own copy — the `.lvdash.json`
+is fully portable, and the system tables it reads (`system.billing.*`,
+`system.serving.*`) exist in every Unity Catalog workspace. Nothing in this
+folder is bound to a particular account, warehouse, or user.

@@ -43,7 +43,7 @@ flowchart TB
     SRV -->|"server/warehouse.js"| WH["📊 SQL Warehouse<br/>system tables (custos de IA)<br/>UC Functions (tools)"]
     SRV -->|"server/genie.js · externalMcp.js"| EXT["🧞 Genie Agents / Genie One<br/>🔌 MCP externo<br/>🔎 Vector Search"]
 
-    GW -.->|"tokens · request_tags"| WH
+    GW -.->|"tokens · usage_context"| WH
 
     classDef store fill:#1c2127,stroke:#3A424C,color:#e8eaed;
     classDef svc fill:#161a1f,stroke:#272d35,color:#e8eaed;

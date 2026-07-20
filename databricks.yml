@@ -81,6 +81,9 @@ resources:
               lakebase_host: ${resources.postgres_endpoints.ai_prism_pg_rw.host}
               lakebase_db: ${var.lakebase_database}
               app_name: ai-prism
+              # The bundle deploys the cost dashboard as a draft; the job publishes
+              # it so admins see it live right after deploy.
+              dashboard_id: ${resources.dashboards.ai_prism_costs.id}
 
   # --- The app itself: env wired from the resources above ---
   apps:

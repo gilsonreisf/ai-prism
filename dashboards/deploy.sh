@@ -3,20 +3,28 @@
 # (Lakeview) dashboard. Idempotent: pass an existing DASHBOARD_ID to update in
 # place, or omit it to create a new one (the script prints the new id to save).
 #
-# The dashboard reads Databricks SYSTEM TABLES directly (system.ai_gateway.usage
-# + system.billing.usage/list_prices), so admins audit AI Prism cost/usage in
-# AI/BI instead of inside the app — no SQL Warehouse call ever blocks the UI.
+# The dashboard reads Databricks SYSTEM TABLES directly (system.serving.endpoint_usage
+# + served_entities for scope/tokens, system.ai_gateway.usage for latency/token_details,
+# system.billing.usage/list_prices for cost), so admins audit AI Prism cost/usage
+# in AI/BI instead of inside the app — no SQL Warehouse call ever blocks the UI.
+# ai-costs.lvdash.json is the exact export from the Databricks dashboard editor
+# (edit it there and re-export; don't hand-edit the JSON).
+#
+# All values below are yours to set — nothing is tied to a specific account:
+#   PROFILE      your databricks CLI profile (from `databricks auth login`)
+#   WAREHOUSE_ID any SQL Warehouse in your workspace
+#   PARENT_PATH  workspace folder for a NEW dashboard, e.g. /Users/<you>@<company>.com
 #
 # Usage:
-#   PROFILE=E2_Demo WAREHOUSE_ID=75718e4268126449 \
-#     PARENT_PATH=/Users/you@databricks.com [DASHBOARD_ID=...] \
+#   PROFILE=<profile> WAREHOUSE_ID=<warehouse-id> \
+#     PARENT_PATH=/Users/<you>@<company>.com [DASHBOARD_ID=...] \
 #     ./dashboards/deploy.sh
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERIALIZED_FILE="$HERE/ai-costs.lvdash.json"
 
-: "${PROFILE:?set PROFILE (a databricks CLI profile, e.g. E2_Demo)}"
+: "${PROFILE:?set PROFILE (a databricks CLI profile, from \`databricks auth login\`)}"
 : "${WAREHOUSE_ID:?set WAREHOUSE_ID (the SQL Warehouse that runs dashboard queries)}"
 DISPLAY_NAME="${DISPLAY_NAME:-AI Prism — AI costs per user}"
 
@@ -34,7 +42,7 @@ if [[ -n "${DASHBOARD_ID:-}" ]]; then
   databricks api patch "/api/2.0/lakeview/dashboards/$DASHBOARD_ID" \
     --profile "$PROFILE" --json "@$BODY_FILE"
 else
-  : "${PARENT_PATH:?set PARENT_PATH (workspace folder for a NEW dashboard, e.g. /Users/you@databricks.com)}"
+  : "${PARENT_PATH:?set PARENT_PATH (workspace folder for a NEW dashboard, e.g. /Users/<you>@<company>.com)}"
   echo "Creating dashboard \"${DISPLAY_NAME}\" under ${PARENT_PATH} on profile ${PROFILE}..."
   jq -n --arg name "$DISPLAY_NAME" --arg wh "$WAREHOUSE_ID" --arg pp "$PARENT_PATH" \
         --rawfile ser "$SERIALIZED_FILE" \
