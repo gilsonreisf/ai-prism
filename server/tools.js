@@ -17,6 +17,7 @@ import { chartCandidatesFromRows } from './analysis.js'
 import { listMcpTools, callMcpTool } from './mcpClient.js'
 import { externalMcpUrl } from './externalMcp.js'
 import { describeVectorIndexColumns, queryVectorIndex } from './vectorSearch.js'
+import { pythonUdfDDL } from '../shared/pythonUdf.js'
 
 function host() {
   let h = process.env.DATABRICKS_HOST || ''
@@ -45,37 +46,9 @@ export const PYTHON_TOOL_FN_NAME = 'execute_python'
 let builtinReady = false
 export async function ensureBuiltinPythonTool(token) {
   if (builtinReady) return
-  const body = `
-import io, contextlib, math, statistics, decimal, fractions, cmath, random, itertools, functools, re, json as _json, datetime
-ns = {
-    "math": math, "statistics": statistics, "decimal": decimal, "fractions": fractions,
-    "cmath": cmath, "random": random, "itertools": itertools, "functools": functools,
-    "re": re, "json": _json, "datetime": datetime,
-}
-buf = io.StringIO()
-try:
-    with contextlib.redirect_stdout(buf):
-        exec(code, ns)
-except Exception as e:
-    return "ERROR: " + repr(e)
-# Cap is a runaway backstop only (a stray dump of a whole table shouldn't blow
-# up the turn), set generously so it never truncates a legitimate result — not
-# a quality limit. Speed comes from prompt caching, not from shrinking outputs.
-_LIMIT = 200000
-if "result" in ns:
-    return str(ns["result"])[:_LIMIT]
-out = buf.getvalue().strip()
-return out[:_LIMIT] if out else "(execução concluída sem saída — defina uma variável \`result\` ou use print())"
-`.trim()
-
-  await execStatement(
-    token,
-    `CREATE OR REPLACE FUNCTION ${pythonFqName()}(code STRING COMMENT 'Código-fonte Python a executar. Defina uma variável "result" com a resposta final, ou use print().')
-     RETURNS STRING
-     LANGUAGE PYTHON
-     COMMENT 'Executa código Python (math, statistics, decimal, fractions, cmath, random, itertools, functools, re, json, datetime disponíveis) e retorna a variável result como texto, ou a saída de print(). Use para cálculos que exigem precisão exata.'
-     AS $$${body}$$`
-  )
+  // The DDL lives in shared/pythonUdf.js so the deploy-time bundle job and this
+  // lazy runtime provisioning stay byte-for-byte identical.
+  await execStatement(token, pythonUdfDDL(pythonFqName()))
   builtinReady = true
 }
 

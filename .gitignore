@@ -16,3 +16,7 @@ scratch-decks/
 sandbox/
 
 # Keep client/dist — it is the deployed frontend build
+
+# Python bytecode from bundle helpers
+__pycache__/
+*.pyc
