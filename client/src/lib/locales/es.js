@@ -185,6 +185,8 @@ export default {
   'message.error': 'Error',
   'message.result': 'Resultado',
   'message.copy': 'Copiar',
+  'message.copyCode': 'Copiar código',
+  'message.copied': 'Copiado',
   'message.saveAndRegenerate': 'Guardar y regenerar',
   'message.previousVersion': 'Versión anterior',
   'message.nextVersion': 'Versión siguiente',

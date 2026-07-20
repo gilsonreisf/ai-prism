@@ -277,6 +277,64 @@ function CopyBtn({ text, label }) {
   )
 }
 
+// Recursively flattens a React node tree to its plain text — used to recover
+// the raw source of a code block for copying. After rehypeHighlight runs the
+// code is nested in <span> tokens, so we can't read a single string child; the
+// leaf text nodes are still strings, and this concatenates them in order.
+function nodeToText(node) {
+  if (node == null || node === false) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(nodeToText).join('')
+  if (node.props) return nodeToText(node.props.children)
+  return ''
+}
+
+// Extracts the language from the `language-xxx` class react-markdown puts on the
+// <code> child of a fenced block. Returns '' for a bare ``` fence.
+function langFromClass(className) {
+  const m = /language-([\w+-]+)/.exec(className || '')
+  return m ? m[1] : ''
+}
+
+// A fenced code block with a header: language label (left) + copy button
+// (right), over the highlighted code. Replaces the default <pre> in the chat
+// markdown so code reads like an IDE snippet and is one click to copy. The
+// header is skipped for a plain string child that isn't a code element (rare,
+// but keeps the override safe for any <pre> the parser emits).
+function CodeBlock({ children }) {
+  const t = useT()
+  const [done, setDone] = useState(false)
+  const codeEl = Array.isArray(children) ? children[0] : children
+  const className = codeEl?.props?.className || ''
+  const lang = langFromClass(className)
+  const raw = nodeToText(codeEl).replace(/\n$/, '')
+  return (
+    <div className="code-block">
+      <div className="code-block-header">
+        <span className="code-block-lang">{lang || 'texto'}</span>
+        <button
+          type="button"
+          onClick={() => {
+            navigator.clipboard.writeText(raw)
+            setDone(true)
+            setTimeout(() => setDone(false), 1400)
+          }}
+          className="code-block-copy"
+          title={t('message.copyCode')}
+        >
+          {done ? <Icon.Check size={13} /> : <Icon.Copy size={13} />}
+          <span>{done ? t('message.copied') : t('message.copy')}</span>
+        </button>
+      </div>
+      <pre>{children}</pre>
+    </div>
+  )
+}
+
+// Custom renderers passed to <Markdown> for the assistant answer: only `pre` is
+// overridden (fenced code blocks). Inline `code` keeps the default rendering.
+const MARKDOWN_COMPONENTS = { pre: CodeBlock }
+
 function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUser, onOpenDeck, onOpenSpreadsheet, canRegenerate, streaming, isLatest, onSubmitAnswers }) {
   const t = useT()
   const isUser = msg.role === 'user'
@@ -444,7 +502,7 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
                   // O(n²) for no benefit (nobody reads highlighted code as it's
                   // typed). Skip it while streaming; apply it once on finalize.
                   return (
-                    <Markdown key={i} remarkPlugins={[remarkGfm]} rehypePlugins={streaming ? [] : [rehypeHighlight]}>
+                    <Markdown key={i} remarkPlugins={[remarkGfm]} rehypePlugins={streaming ? [] : [rehypeHighlight]} components={MARKDOWN_COMPONENTS}>
                       {seg.text}
                     </Markdown>
                   )
