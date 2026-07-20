@@ -15,6 +15,7 @@ import { askGenie, askGenieOne } from './genie.js'
 import { getGenieConversationId, setGenieConversationId } from './db.js'
 import { chartCandidatesFromRows } from './analysis.js'
 import { listMcpTools, callMcpTool } from './mcpClient.js'
+import { externalMcpUrl } from './externalMcp.js'
 import { describeVectorIndexColumns, queryVectorIndex } from './vectorSearch.js'
 
 function host() {
@@ -57,10 +58,14 @@ try:
         exec(code, ns)
 except Exception as e:
     return "ERROR: " + repr(e)
+# Cap is a runaway backstop only (a stray dump of a whole table shouldn't blow
+# up the turn), set generously so it never truncates a legitimate result — not
+# a quality limit. Speed comes from prompt caching, not from shrinking outputs.
+_LIMIT = 200000
 if "result" in ns:
-    return str(ns["result"])[:4000]
+    return str(ns["result"])[:_LIMIT]
 out = buf.getvalue().strip()
-return out[:4000] if out else "(execução concluída sem saída — defina uma variável \`result\` ou use print())"
+return out[:_LIMIT] if out else "(execução concluída sem saída — defina uma variável \`result\` ou use print())"
 `.trim()
 
   await execStatement(
@@ -82,11 +87,19 @@ function pythonToolDef() {
       description:
         'Executa código Python para cálculos que exigem precisão exata (aritmética, álgebra, ' +
         'estatística, datas). Sempre prefira esta tool a calcular de cabeça quando o resultado ' +
-        'numérico importa. Defina uma variável "result" com a resposta final, ou use print().',
+        'numérico importa. Defina uma variável "result" com a resposta final, ou use print(). ' +
+        'A PRIMEIRA linha do código DEVE ser um comentário curto (#) que descreve o passo, escrito ' +
+        'no MESMO IDIOMA do usuário — ele vira o rótulo visível deste passo na interface.',
       parameters: {
         type: 'object',
         properties: {
-          code: { type: 'string', description: 'Código Python a executar.' },
+          code: {
+            type: 'string',
+            description:
+              'Código Python a executar. Comece com um comentário curto (#) no idioma do usuário ' +
+              'descrevendo o passo (ex.: "# Receita mensal — apenas meses completos"), pois ele é ' +
+              'usado como rótulo do passo na UI.',
+          },
         },
         required: ['code'],
       },
@@ -220,9 +233,6 @@ async function listMcpToolsCached(url, token, email) {
   return tools
 }
 
-function externalMcpUrl(connectionName) {
-  return `${host()}/api/2.0/mcp/external/${encodeURIComponent(connectionName)}`
-}
 
 /**
  * Builds the OpenAI-style tool defs + a resolver map for a set of enabled
@@ -379,13 +389,14 @@ export async function invokeTool(token, resolver, args, ctx = {}) {
 
   if (resolver.kind === 'genie') {
     const { spaceId, title } = resolver.ref
-    const { sessionId, email } = ctx
+    const { sessionId, email, onProgress } = ctx
     const existingConvId = sessionId ? await getGenieConversationId(email, token, sessionId, spaceId) : null
     const { conversationId, resultText, queryRows } = await askGenie(
       token,
       spaceId,
       args.question || '',
-      existingConvId
+      existingConvId,
+      onProgress
     )
     if (sessionId && conversationId !== existingConvId) {
       await setGenieConversationId(email, token, sessionId, spaceId, conversationId)
@@ -395,11 +406,16 @@ export async function invokeTool(token, resolver, args, ctx = {}) {
   }
 
   if (resolver.kind === 'genie-one') {
-    const { sessionId, email } = ctx
+    const { sessionId, email, onProgress } = ctx
     const existingConvId = sessionId
       ? await getGenieConversationId(email, token, sessionId, GENIE_ONE_SPACE_ID)
       : null
-    const { conversationId, resultText, queryRows } = await askGenieOne(token, args.question || '', existingConvId)
+    const { conversationId, resultText, queryRows } = await askGenieOne(
+      token,
+      args.question || '',
+      existingConvId,
+      onProgress
+    )
     if (sessionId && conversationId !== existingConvId) {
       await setGenieConversationId(email, token, sessionId, GENIE_ONE_SPACE_ID, conversationId)
     }

@@ -7,6 +7,15 @@
 // the AI Gateway normalizes tool calling across providers). If a specific
 // endpoint ever rejects the `tools` field, index.js retries that turn without
 // it rather than failing the whole request, so this flag is a hint, not a hard guarantee.
+// `promptCache` marks endpoints that honor Anthropic `cache_control` breakpoints
+// through the AI Gateway's OpenAI-compat chat/completions endpoint. Sondado ao
+// vivo (jul/2026, workspace e2-demo-field-eng): a família Claude aceita
+// `cache_control` num bloco de conteúdo (system OU tool) e devolve
+// `cache_read_input_tokens` numa repetição — cache HIT confirmado. Modelos
+// não-Claude (GPT-5.6) toleram o campo sem 400 (e já auto-cacheiam). O prefixo
+// estável de um turno (system+histórico) é reenviado a cada rodada de tool; com
+// cache, a rodada de síntese lê esse prefixo do cache em vez de reprocessá-lo —
+// acelera SEM mudar 1 byte do que o modelo vê. Ver applyCacheControl abaixo.
 // `maxOut` is the max_tokens sent on chat turns. It must clear two bars: um
 // deck completo (o maior artefato de um turno) consome bem mais que 4k tokens,
 // e modelos de raciocínio queimam parte do orçamento em thinking oculto. Não
@@ -23,10 +32,10 @@
 // (auto-discovery via GET /serving-endpoints, filtrando task=llm/v1/chat e
 // aplicando estes overrides por padrão de nome) torna esta lista automática.
 export const MODELS = [
-  { id: 'databricks-claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'Anthropic', blurb: 'Equilibrado e rápido — ótimo padrão para agentes', in: 3, out: 15, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
-  { id: 'databricks-claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'Anthropic', blurb: 'Máxima capacidade de raciocínio e análise', in: 15, out: 75, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
-  { id: 'databricks-claude-fable-5', label: 'Claude Fable 5', provider: 'Anthropic', blurb: 'Família Claude 5, geração criativa e ágil', in: 1, out: 5, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
-  { id: 'databricks-claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'Anthropic', blurb: 'Rápido e econômico', in: 0.8, out: 4, vision: true, streamUsage: true, tools: true, maxOut: 32768 },
+  { id: 'databricks-claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'Anthropic', blurb: 'Equilibrado e rápido — ótimo padrão para agentes', in: 3, out: 15, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
+  { id: 'databricks-claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'Anthropic', blurb: 'Máxima capacidade de raciocínio e análise', in: 15, out: 75, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
+  { id: 'databricks-claude-fable-5', label: 'Claude Fable 5', provider: 'Anthropic', blurb: 'Família Claude 5, geração criativa e ágil', in: 1, out: 5, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
+  { id: 'databricks-claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'Anthropic', blurb: 'Rápido e econômico', in: 0.8, out: 4, vision: true, streamUsage: true, tools: true, maxOut: 32768, promptCache: true },
   { id: 'databricks-gpt-5-6-terra', label: 'GPT-5.6', provider: 'OpenAI', blurb: 'Multimodal de fronteira e agentes complexos', in: 1.25, out: 10, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
   { id: 'databricks-gpt-5-mini', label: 'GPT-5 mini', provider: 'OpenAI', blurb: 'Rápido e de baixo custo', in: 0.25, out: 2, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
   { id: 'databricks-gemini-3-pro', label: 'Gemini 3 Pro', provider: 'Google', blurb: 'Fronteira multimodal, contexto muito longo', in: 1.25, out: 10, vision: true, streamUsage: false, tools: true, maxOut: 32768 },
@@ -45,8 +54,20 @@ const FAST_TITLE_MODEL = 'databricks-claude-haiku-4-5'
 // English-tuned gte/bge endpoints.
 const EMBED_MODEL = 'databricks-qwen3-embedding-0-6b'
 
+// Conservative flags for an endpoint that isn't in the curated MODELS list
+// (e.g. an admin enabled a newly-discovered gateway endpoint). These never
+// cause a 400: no custom temperature, no stream_options, modest max_tokens.
+// Suboptimal at worst — the cure is to curate the endpoint, one line above.
+function conservativeModel(id) {
+  return { id, label: id, provider: 'Outros', vision: false, streamUsage: false, noTemperature: true, tools: true, maxOut: 8192, promptCache: false }
+}
+
 export function modelById(id) {
-  return MODELS.find((m) => m.id === id) || MODELS[0]
+  const found = MODELS.find((m) => m.id === id)
+  if (found) return found
+  // A non-empty id that isn't curated is treated as a valid-but-unknown
+  // endpoint with safe defaults; only a missing id falls back to the default.
+  return id ? conservativeModel(id) : MODELS[0]
 }
 
 function host() {
@@ -91,6 +112,26 @@ function extractContent(content) {
   return ''
 }
 
+// Pulls a reasoning-summary fragment out of a streamed delta, if present. Two
+// shapes seen across gateways: a plain string field (`reasoning_content` /
+// `reasoning`), or a content array with a `type:"reasoning"` part. Returns ''
+// when there's nothing (the common case for models that don't expose it).
+function extractReasoning(delta) {
+  if (!delta) return ''
+  if (typeof delta.reasoning_content === 'string') return delta.reasoning_content
+  if (typeof delta.reasoning === 'string') return delta.reasoning
+  const c = delta.content
+  if (Array.isArray(c)) {
+    let out = ''
+    for (const part of c) {
+      if (part?.type === 'reasoning' && typeof part.text === 'string') out += part.text
+      else if (part?.type === 'reasoning' && typeof part.reasoning === 'string') out += part.reasoning
+    }
+    return out
+  }
+  return ''
+}
+
 export function cosineSim(a, b) {
   if (!a || !b || a.length !== b.length) return 0
   let dot = 0
@@ -118,6 +159,48 @@ function mergeToolCallDelta(acc, deltas) {
   }
 }
 
+// Attaches an Anthropic `cache_control` breakpoint to a message by coercing its
+// content into the array-of-blocks shape the gateway needs (a plain string
+// becomes one text block; an existing array gets the marker on its last block).
+// Returns a NEW message object — never mutates the caller's — so re-running per
+// round can't double-append. Assistant messages that carry only tool_calls
+// (content null/empty) have no block to mark, so they're returned untouched.
+function withCacheControl(msg) {
+  const cc = { type: 'ephemeral' }
+  if (typeof msg.content === 'string' && msg.content.length) {
+    return { ...msg, content: [{ type: 'text', text: msg.content, cache_control: cc }] }
+  }
+  if (Array.isArray(msg.content) && msg.content.length) {
+    const content = msg.content.map((b, i) =>
+      i === msg.content.length - 1 ? { ...b, cache_control: cc } : b
+    )
+    return { ...msg, content }
+  }
+  return msg
+}
+
+// Places up to two cache breakpoints (the API allows 4) on the message list so
+// a Claude turn reuses its stable prefix across tool rounds instead of
+// reprocessing it: (1) the last `system` message — in this app the narration
+// policy sits AFTER the history, so caching there covers system+blocksInstruction
+// +history+narration, the whole per-turn prefix that's identical every round;
+// (2) the last message overall — as the tool-call/result tail grows each round,
+// the prior round's tail becomes a read point. Non-destructive. Only the marked
+// messages change; the model sees byte-identical content. Confirmed live that
+// the gateway honors this for Claude (cache_read_input_tokens > 0 on repeats).
+function applyCacheControl(messages) {
+  if (!messages.length) return messages
+  let lastSystemIdx = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'system') { lastSystemIdx = i; break }
+  }
+  const lastIdx = messages.length - 1
+  return messages.map((m, i) => {
+    if (i === lastSystemIdx || i === lastIdx) return withCacheControl(m)
+    return m
+  })
+}
+
 /**
  * Stream a chat completion. Yields { delta } chunks for content tokens, and a
  * final { usage, toolCalls, finishReason } object once the stream ends.
@@ -127,7 +210,10 @@ export async function* streamChat(token, model, messages, opts = {}) {
   const info = modelById(model)
   const body = {
     model,
-    messages,
+    // Prompt caching: mark the stable prefix so tool rounds within a turn reuse
+    // it (big latency win on the synthesis round) — zero change to what the
+    // model reads. Only for endpoints sondados as honoring cache_control.
+    messages: info.promptCache ? applyCacheControl(messages) : messages,
     max_tokens: opts.maxTokens || info.maxOut || 8192,
     stream: true,
   }
@@ -188,6 +274,14 @@ export async function* streamChat(token, model, messages, opts = {}) {
       const choice = json.choices?.[0]
       if (choice?.finish_reason) finishReason = choice.finish_reason
       if (choice?.delta?.tool_calls) mergeToolCallDelta(toolCalls, choice.delta.tool_calls)
+      // Reasoning summary, if the endpoint streams it. Different gateways expose
+      // it differently — a top-level `reasoning_content`/`reasoning` string
+      // (DeepSeek-style) or a `type:"reasoning"` part inside the content array
+      // (harmony). We surface it as a distinct { reasoning } chunk so the UI can
+      // show "what the model is working on" during the long silent gap between a
+      // tool result and the next narration token — never mixed into the answer.
+      const reasoning = extractReasoning(choice?.delta)
+      if (reasoning) yield { reasoning }
       const delta = extractContent(choice?.delta?.content)
       if (delta) yield { delta }
     }

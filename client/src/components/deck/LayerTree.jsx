@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useT } from '../../lib/i18n.jsx'
 import * as Icon from '../Icons.jsx'
 import { resolvePreviewTheme } from '../DeckSlidePreview.jsx'
 import { findNode, findParent, updateNode, moveNode, nodeLabel, typeLabel } from '../../lib/deckTree.js'
@@ -51,6 +52,7 @@ function collectAncestors(elements, id, acc = []) {
 }
 
 export default function LayerTree({ elements, selectedIds = [], onSelect, onChangeElements, template }) {
+  const t = useT()
   const theme = resolvePreviewTheme(template)
   const [expanded, setExpanded] = useState(() => new Set())
   const [renaming, setRenaming] = useState(null)
@@ -221,7 +223,7 @@ export default function LayerTree({ elements, selectedIds = [], onSelect, onChan
               ev.stopPropagation()
               toggleHidden(el.id)
             }}
-            title={el.hidden ? 'Mostrar' : 'Ocultar'}
+            title={el.hidden ? t('layerTree.show') : t('layerTree.hide')}
             className={`shrink-0 w-5 h-5 grid place-items-center rounded text-[var(--faint)] hover:text-[var(--text)] ${
               el.hidden ? '' : 'opacity-0 group-hover/row:opacity-100'
             }`}
@@ -241,7 +243,7 @@ export default function LayerTree({ elements, selectedIds = [], onSelect, onChan
   }
 
   if (!elements?.length) {
-    return <p className="text-[11px] text-[var(--faint)] px-2 py-1.5">Sem elementos neste slide ainda.</p>
+    return <p className="text-[11px] text-[var(--faint)] px-2 py-1.5">{t('layerTree.empty')}</p>
   }
   return (
     <div className="py-1" onDragEnd={() => setDropHint(null)}>

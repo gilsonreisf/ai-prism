@@ -4,6 +4,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts'
 import * as Icon from './Icons.jsx'
+import { useT } from '../lib/i18n.jsx'
 import { getJSON, postJSON } from '../api.js'
 import { resolveDeckTheme, blend, contrastOn } from '../../../shared/deckTheme.js'
 import { materializeWorkbook, colLetter } from '../lib/sheetEval.js'
@@ -400,18 +401,19 @@ function selectionStats(mat, computed, sheetName, sel) {
 // spinner, the user's own instruction echoed back, and rotating step messages
 // (the request is one synchronous call, so these are indicative, not literal
 // progress — but they make the wait legible instead of a bare "Aplicando…").
-const TWEAK_STEPS = [
-  'Lendo a estrutura da planilha…',
-  'Aplicando sua instrução…',
-  'Reescrevendo as fórmulas (por nome)…',
-  'Validando o resultado…',
-  'Quase lá…',
+const TWEAK_STEP_KEYS = [
+  'sheetStudio.step.reading',
+  'sheetStudio.step.applying',
+  'sheetStudio.step.rewriting',
+  'sheetStudio.step.validating',
+  'sheetStudio.step.almost',
 ]
 function TweakOverlay({ instruction, scope }) {
+  const t = useT()
   const [step, setStep] = useState(0)
   useEffect(() => {
     setStep(0)
-    const id = setInterval(() => setStep((s) => Math.min(s + 1, TWEAK_STEPS.length - 1)), 1400)
+    const id = setInterval(() => setStep((s) => Math.min(s + 1, TWEAK_STEP_KEYS.length - 1)), 1400)
     return () => clearInterval(id)
   }, [instruction])
   return (
@@ -419,9 +421,9 @@ function TweakOverlay({ instruction, scope }) {
       <div className="w-[min(420px,86%)] rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-5 shadow-2xl">
         <div className="flex items-center gap-2.5 mb-3">
           <span className="inline-block w-4 h-4 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
-          <span className="text-sm font-semibold text-[var(--text)]">Editando com IA</span>
+          <span className="text-sm font-semibold text-[var(--text)]">{t('sheetStudio.editingWithAI')}</span>
           <span className="ml-auto text-[11px] text-[var(--faint)]">
-            {scope === 'workbook' ? 'workbook inteiro' : `aba ${scope}`}
+            {scope === 'workbook' ? t('sheetStudio.scopeWholeWorkbook') : t('sheetStudio.scopeSheet', { name: scope })}
           </span>
         </div>
         <div className="rounded-xl bg-[var(--surface)] border border-[var(--border)] px-3 py-2 text-xs text-[var(--muted)] italic mb-3 max-h-24 overflow-auto">
@@ -429,7 +431,7 @@ function TweakOverlay({ instruction, scope }) {
         </div>
         <div className="flex items-center gap-2 text-xs text-[var(--muted)]">
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
-          {TWEAK_STEPS[step]}
+          {t(TWEAK_STEP_KEYS[step])}
         </div>
       </div>
     </div>
@@ -437,6 +439,7 @@ function TweakOverlay({ instruction, scope }) {
 }
 
 export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushToast, models, model }) {
+  const t = useT()
   const [spec, setSpec] = useState(null)
   const [template, setTemplate] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -465,7 +468,7 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
         setSpec(s.spreadsheet)
         setTemplate(t.template || null)
       })
-      .catch((e) => setLoadError(e.message || 'Falha ao carregar a planilha'))
+      .catch((e) => setLoadError(e.message || t('sheetStudio.loadError')))
       .finally(() => setLoading(false))
   }, [open, spreadsheetId, loadTick])
 
@@ -525,7 +528,7 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
       document.body.appendChild(a); a.click(); a.remove()
       URL.revokeObjectURL(url)
     } catch (e) {
-      pushToast?.(e.message || 'Falha ao exportar')
+      pushToast?.(e.message || t('sheetStudio.exportError'))
     } finally {
       setExporting(false)
     }
@@ -548,7 +551,7 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
         setTimeout(() => setFlash(false), 1400)
       }
     } catch (e) {
-      pushToast?.(e.message || 'Falha ao aplicar a edição')
+      pushToast?.(e.message || t('sheetStudio.tweakError'))
     } finally {
       setTweaking(false)
     }
@@ -558,26 +561,26 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
     <div className="fixed inset-0 z-[80] flex flex-col bg-[var(--bg)] animate-fade-in">
       {/* toolbar */}
       <header className="shrink-0 h-14 flex items-center gap-3 px-4 border-b border-[var(--border)]">
-        <button onClick={onClose} className="p-2 -ml-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]" title="Fechar (Esc)">
+        <button onClick={onClose} className="p-2 -ml-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]" title={t('sheetStudio.close')}>
           <Icon.Close size={20} />
         </button>
         <Icon.SpreadsheetFile size={18} className="text-[var(--accent)]" />
-        <span className="font-semibold text-sm truncate max-w-md">{spec?.title || 'Estúdio de Planilhas'}</span>
+        <span className="font-semibold text-sm truncate max-w-md">{spec?.title || t('sheetStudio.title')}</span>
         <button
           onClick={exportXlsx}
           disabled={!spec || exporting}
           className="ml-auto flex items-center gap-1.5 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm px-3.5 py-2 transition"
         >
-          <Icon.Download size={15} /> {exporting ? 'Exportando…' : 'Exportar XLSX'}
+          <Icon.Download size={15} /> {exporting ? t('sheetStudio.exporting') : t('sheetStudio.exportXlsx')}
         </button>
       </header>
 
-      {loading && <div className="flex-1 grid place-items-center text-sm text-[var(--muted)]">Carregando planilha…</div>}
+      {loading && <div className="flex-1 grid place-items-center text-sm text-[var(--muted)]">{t('sheetStudio.loading')}</div>}
       {loadError && !loading && (
         <div className="flex-1 grid place-items-center">
           <div className="text-center">
             <div className="text-sm text-[var(--muted)] mb-3">{loadError}</div>
-            <button onClick={() => setLoadTick((t) => t + 1)} className="rounded-xl bg-[var(--accent)] text-white text-sm px-4 py-2">Tentar de novo</button>
+            <button onClick={() => setLoadTick((n) => n + 1)} className="rounded-xl bg-[var(--accent)] text-white text-sm px-4 py-2">{t('sheetStudio.retry')}</button>
           </div>
         </div>
       )}
@@ -593,14 +596,14 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
               </span>
               <span className="text-[var(--faint)] text-xs italic mr-1">fx</span>
               <div className={`flex-1 truncate text-xs ${barContent.startsWith('=') ? 'font-mono' : ''} text-[var(--text)]`}>
-                {barContent || <span className="text-[var(--faint)]">selecione uma célula para ver a fórmula</span>}
+                {barContent || <span className="text-[var(--faint)]">{t('sheetStudio.selectCellHint')}</span>}
               </div>
               {sheet?.charts?.length > 0 && (
                 <button
                   onClick={() => setShowCharts((v) => !v)}
                   className={`shrink-0 text-[11px] px-2 py-1 rounded-lg border transition ${showCharts ? 'bg-[var(--accent)] text-white border-transparent' : 'border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]'}`}
                 >
-                  {sheet.charts.length} gráfico{sheet.charts.length !== 1 ? 's' : ''}
+                  {sheet.charts.length === 1 ? t('sheetStudio.chartCountOne', { n: sheet.charts.length }) : t('sheetStudio.chartCountMany', { n: sheet.charts.length })}
                 </button>
               )}
             </div>
@@ -637,7 +640,7 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
               {showCharts && sheet?.charts?.length > 0 && (
                 <div className="absolute right-3 top-3 bottom-3 w-[380px] max-w-[46%] overflow-auto rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-3 shadow-2xl">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-semibold text-[var(--muted)]">Gráficos</span>
+                    <span className="text-xs font-semibold text-[var(--muted)]">{t('sheetStudio.charts')}</span>
                     <button onClick={() => setShowCharts(false)} className="p-1 rounded text-[var(--faint)] hover:text-[var(--text)]"><Icon.Close size={14} /></button>
                   </div>
                   {sheet.charts.map((c, i) => <SheetChart key={i} sheet={sheet} chart={c} colors={chartColors} computed={wbModel.computed} sheetName={sheetName} />)}
@@ -656,22 +659,22 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
                 <>
                   {stats.kind === 'number' && (
                     <>
-                      <Stat label="Soma" value={fmtStat(stats.sum)} />
-                      <Stat label="Média" value={fmtStat(stats.avg)} />
-                      <Stat label="Mín" value={fmtStat(stats.min)} />
-                      <Stat label="Máx" value={fmtStat(stats.max)} />
+                      <Stat label={t('sheetStudio.stat.sum')} value={fmtStat(stats.sum)} />
+                      <Stat label={t('sheetStudio.stat.avg')} value={fmtStat(stats.avg)} />
+                      <Stat label={t('sheetStudio.stat.min')} value={fmtStat(stats.min)} />
+                      <Stat label={t('sheetStudio.stat.max')} value={fmtStat(stats.max)} />
                     </>
                   )}
                   {stats.kind === 'date' && (
                     <>
-                      <Stat label="Mín" value={stats.min} />
-                      <Stat label="Máx" value={stats.max} />
+                      <Stat label={t('sheetStudio.stat.min')} value={stats.min} />
+                      <Stat label={t('sheetStudio.stat.max')} value={stats.max} />
                     </>
                   )}
-                  <Stat label="Contagem" value={stats.count} />
+                  <Stat label={t('sheetStudio.stat.count')} value={stats.count} />
                 </>
               ) : (
-                <span className="text-[var(--faint)]">Selecione um intervalo (arraste ou Shift+setas) para ver estatísticas · setas para navegar · ⌘/Ctrl+seta pula até a borda</span>
+                <span className="text-[var(--faint)]">{t('sheetStudio.statsHint')}</span>
               )}
             </div>
           </div>
@@ -679,30 +682,30 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
           {/* AI tweak sidebar */}
           <aside className="shrink-0 md:w-[340px] border-t md:border-t-0 md:border-l border-[var(--border)] p-4 flex flex-col gap-3 bg-[var(--surface-2)]">
             <div className="flex items-center gap-2 text-sm font-semibold">
-              <Icon.Sparkle size={16} className="text-[var(--accent)]" /> Editar com IA
+              <Icon.Sparkle size={16} className="text-[var(--accent)]" /> {t('sheetStudio.editWithAI')}
             </div>
             <p className="text-xs text-[var(--muted)] leading-relaxed">
-              Toda edição é feita por aqui. Descreva a mudança — ex.: "adicione uma categoria Educação", "crie uma coluna de % do orçamento usado", "some uma linha de total".
+              {t('sheetStudio.aiIntro')}
             </p>
 
             {/* scope: a clean segmented control (replaces the cramped checkbox) */}
             <div>
-              <div className="text-[11px] font-medium text-[var(--muted)] mb-1.5">Aplicar em</div>
+              <div className="text-[11px] font-medium text-[var(--muted)] mb-1.5">{t('sheetStudio.applyTo')}</div>
               <div className="flex rounded-xl bg-[var(--surface)] border border-[var(--border)] p-0.5 text-xs">
                 <button
                   onClick={() => setTweakWhole(false)}
                   disabled={tweaking}
                   className={`flex-1 truncate rounded-lg px-2.5 py-1.5 font-medium transition disabled:opacity-50 ${!tweakWhole ? 'bg-[var(--accent)] text-white' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
-                  title={`Somente a aba ${sheet?.name}`}
+                  title={t('sheetStudio.onlySheet', { name: sheet?.name })}
                 >
-                  Aba: {sheet?.name}
+                  {t('sheetStudio.sheetTab', { name: sheet?.name })}
                 </button>
                 <button
                   onClick={() => setTweakWhole(true)}
                   disabled={tweaking}
                   className={`flex-1 rounded-lg px-2.5 py-1.5 font-medium transition disabled:opacity-50 ${tweakWhole ? 'bg-[var(--accent)] text-white' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
                 >
-                  Workbook
+                  {t('sheetStudio.workbook')}
                 </button>
               </div>
             </div>
@@ -711,7 +714,7 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
               value={tweak}
               onChange={(e) => setTweak(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runTweak() }}
-              placeholder="Descreva a alteração…"
+              placeholder={t('sheetStudio.describeChange')}
               rows={4}
               disabled={tweaking}
               className="w-full resize-none rounded-xl bg-[var(--surface)] border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60"
@@ -722,20 +725,20 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
               className="flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm py-2.5 transition"
             >
               {tweaking ? (
-                <><span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-white/70 border-t-transparent animate-spin" /> Aplicando…</>
+                <><span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-white/70 border-t-transparent animate-spin" /> {t('sheetStudio.applying')}</>
               ) : (
-                <><Icon.Send size={14} /> Aplicar <span className="opacity-60 text-[11px] font-normal">⌘↵</span></>
+                <><Icon.Send size={14} /> {t('sheetStudio.apply')} <span className="opacity-60 text-[11px] font-normal">⌘↵</span></>
               )}
             </button>
 
             {flash && !tweaking && (
               <div className="flex items-center gap-1.5 text-xs text-[var(--accent)] animate-fade-in">
-                <Icon.Check size={14} /> Planilha atualizada.
+                <Icon.Check size={14} /> {t('sheetStudio.updated')}
               </div>
             )}
 
             <div className="text-[11px] text-[var(--faint)] mt-auto leading-relaxed">
-              A legenda de cores e as instruções de preenchimento estão na aba <span className="font-medium">Instruções de Uso</span> da planilha. Para editar valores à mão, exporte o XLSX e abra no Excel.
+              {t('sheetStudio.footerNotePre')}<span className="font-medium">{t('sheetStudio.footerNoteTab')}</span>{t('sheetStudio.footerNotePost')}
             </div>
           </aside>
         </div>

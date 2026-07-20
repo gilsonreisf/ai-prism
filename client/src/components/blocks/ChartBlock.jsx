@@ -18,6 +18,7 @@ import {
 } from 'recharts'
 import * as Icon from '../Icons.jsx'
 import { downloadChartAsPng } from '../../chartExport.js'
+import { useT } from '../../lib/i18n.jsx'
 
 // Palette anchored on the app's accent color, with neutral steps for extra series.
 const COLORS = ['#ff3621', '#4285F4', '#10A37F', '#FF6A00', '#7C6FF0', '#98a2b3']
@@ -58,6 +59,7 @@ function toRows(series) {
 }
 
 export default function ChartBlock({ block }) {
+  const t = useT()
   const { chartType, title, series, caption } = block
   const rows = toRows(series)
   const containerRef = useRef(null)
@@ -69,7 +71,7 @@ export default function ChartBlock({ block }) {
         <button
           onClick={() => downloadChartAsPng(containerRef.current, title)}
           className="shrink-0 p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--faint)] hover:text-[var(--text)] transition"
-          title="Exportar como imagem (PNG)"
+          title={t('chart.exportPng')}
         >
           <Icon.Download size={14} />
         </button>

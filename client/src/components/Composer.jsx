@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Icon from './Icons.jsx'
 import { createRecognizer, dictationSupported } from '../lib/speech.js'
+import { useT } from '../lib/i18n.jsx'
 
 export default function Composer({
   value,
@@ -13,6 +14,7 @@ export default function Composer({
   supportedExt,
   onOpenVoice,
 }) {
+  const t = useT()
   const fileInput = useRef(null)
   const taRef = useRef(null)
   const recRef = useRef(null)
@@ -115,7 +117,7 @@ export default function Composer({
                 doSend()
               }
             }}
-            placeholder={listening ? 'Ouvindo… fale agora' : 'Pergunte algo, ou anexe um documento…'}
+            placeholder={listening ? t('composer.listening') : t('composer.placeholder')}
             className="w-full max-h-48 resize-none bg-transparent outline-none text-[0.95rem] leading-relaxed placeholder:text-[var(--faint)]"
           />
         </div>
@@ -123,7 +125,7 @@ export default function Composer({
           <button
             onClick={() => fileInput.current?.click()}
             className="shrink-0 p-2 rounded-xl hover:bg-[var(--surface-3)] text-[var(--muted)] transition"
-            title="Anexar documentos"
+            title={t('composer.attach')}
           >
             <Icon.Paperclip size={19} />
           </button>
@@ -147,7 +149,7 @@ export default function Composer({
                   ? 'text-white bg-[var(--accent)]'
                   : 'hover:bg-[var(--surface-3)] text-[var(--muted)]'
               }`}
-              title="Ditar (voz para texto)"
+              title={t('composer.dictate')}
             >
               {listening && (
                 <span className="absolute inset-0 rounded-xl bg-[var(--accent)] animate-pulse-ring" />
@@ -159,7 +161,7 @@ export default function Composer({
           <button
             onClick={onOpenVoice}
             className="shrink-0 p-2 rounded-xl hover:bg-[var(--surface-3)] text-[var(--muted)] transition"
-            title="Modo de voz — conversar com a IA"
+            title={t('composer.voiceMode')}
           >
             <Icon.Waveform size={19} />
           </button>
@@ -168,7 +170,7 @@ export default function Composer({
             <button
               onClick={onStop}
               className="shrink-0 p-2 rounded-xl bg-[var(--surface-3)] hover:bg-[var(--border)] text-[var(--text)] transition"
-              title="Parar"
+              title={t('composer.stop')}
             >
               <Icon.Stop size={18} />
             </button>
@@ -177,7 +179,7 @@ export default function Composer({
               onClick={doSend}
               disabled={!value.trim() && files.length === 0}
               className="shrink-0 p-2 rounded-xl bg-[var(--accent)] hover:brightness-110 text-white transition disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Enviar"
+              title={t('composer.send')}
             >
               <Icon.Send size={18} />
             </button>
@@ -185,7 +187,7 @@ export default function Composer({
         </div>
       </div>
       <p className="text-center text-balance text-[11px] leading-snug text-[var(--faint)] mt-2 mb-1.5 px-2">
-        A IA pode cometer erros. Conteúdo de anexos é enviado no contexto do modelo.
+        {t('composer.disclaimer')}
       </p>
     </div>
   )

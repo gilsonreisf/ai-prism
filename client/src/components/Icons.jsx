@@ -182,3 +182,21 @@ export const Shrink = (p) => (
 export const Wand = (p) => (
   <svg {...s(p)}><path d="m15 4 5 5L8.5 20.5a2.1 2.1 0 0 1-3-3L17 6" /><path d="M15 4l5 5M9 3l.8 2.2L12 6l-2.2.8L9 9l-.8-2.2L6 6l2.2-.8zM19 13l.6 1.6L21 15l-1.4.6L19 17l-.6-1.4L17 15l1.4-.4z" /></svg>
 )
+// A faceted prism/gem — the mark for an activated skill (nods to "AI Prism").
+// Elegant line form: a hexagonal cut gem with internal facet lines that catch
+// the eye without shouting.
+export const SkillGlyph = (p) => (
+  <svg {...s(p)}>
+    <path d="M12 2.5 20 8v8l-8 5.5L4 16V8z" />
+    <path d="M12 2.5v19M4 8l8 4 8-4M12 12l-4.5 9.5M12 12l4.5 9.5" />
+  </svg>
+)
+export const Monitor = (p) => (
+  <svg {...s(p)}><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>
+)
+export const Bell = (p) => (
+  <svg {...s(p)}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0" /></svg>
+)
+export const Languages = (p) => (
+  <svg {...s(p)}><path d="M4 5h7M9 3v2c0 4.4-2.7 8-6 8M5 9c0 2.5 3 4.5 6 4.5M12 20l4-9 4 9M14.5 16h5" /></svg>
+)

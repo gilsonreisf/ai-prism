@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import * as Icon from '../Icons.jsx'
+import { useT } from '../../lib/i18n.jsx'
 
 // A compact file-chip for a generated `spreadsheet` block — NOT a full preview.
 // The chat body just announces the workbook (icon + title + "Planilha · XLSX ·
@@ -7,6 +8,7 @@ import * as Icon from '../Icons.jsx'
 // editing) or download the .xlsx directly. The rich grid/charts live in the
 // Studio, not inline. Mirrors DeckBlock's compact shape.
 export default function SpreadsheetBlock({ block, onOpenSpreadsheet }) {
+  const t = useT()
   const [exporting, setExporting] = useState(false)
   const [err, setErr] = useState('')
 
@@ -30,7 +32,7 @@ export default function SpreadsheetBlock({ block, onOpenSpreadsheet }) {
       a.remove()
       URL.revokeObjectURL(url)
     } catch (e) {
-      setErr(e.message || 'Falha ao exportar')
+      setErr(e.message || t('spreadsheetBlock.exportFailed'))
     } finally {
       setExporting(false)
     }
@@ -51,9 +53,9 @@ export default function SpreadsheetBlock({ block, onOpenSpreadsheet }) {
 
         {/* title + meta */}
         <div className="min-w-0 flex-1">
-          <div className="truncate font-semibold text-sm text-[var(--text)]">{block.title || 'Planilha'}</div>
+          <div className="truncate font-semibold text-sm text-[var(--text)]">{block.title || t('spreadsheetBlock.defaultTitle')}</div>
           <div className="text-xs text-[var(--faint)]">
-            Planilha · XLSX{sheetCount ? ` · ${sheetCount} aba${sheetCount !== 1 ? 's' : ''}` : ''}
+            {t('spreadsheetBlock.meta')}{sheetCount ? t('spreadsheetBlock.tabsSuffix', { count: sheetCount, tab: sheetCount !== 1 ? t('spreadsheetBlock.tabPlural') : t('spreadsheetBlock.tabSingular') }) : ''}
           </div>
         </div>
 
@@ -63,17 +65,17 @@ export default function SpreadsheetBlock({ block, onOpenSpreadsheet }) {
             onClick={() => canOpen && onOpenSpreadsheet?.(block.spreadsheetId)}
             disabled={!canOpen}
             className="flex items-center gap-1.5 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm px-3.5 py-2 transition"
-            title="Abrir no Estúdio de Planilhas"
+            title={t('spreadsheetBlock.openStudioTitle')}
           >
-            <Icon.Expand size={15} /> Abrir estúdio
+            <Icon.Expand size={15} /> {t('spreadsheetBlock.openStudio')}
           </button>
           <button
             onClick={exportXlsx}
             disabled={!canOpen || exporting}
             className="flex items-center gap-1.5 rounded-xl bg-[var(--surface)] border border-[var(--border)] hover:brightness-110 disabled:opacity-50 text-[var(--text)] font-medium text-sm px-3 py-2 transition"
-            title="Baixar .xlsx"
+            title={t('spreadsheetBlock.downloadTitle')}
           >
-            <Icon.Download size={15} /> {exporting ? '…' : 'Download'}
+            <Icon.Download size={15} /> {exporting ? '…' : t('spreadsheetBlock.download')}
           </button>
         </div>
       </div>

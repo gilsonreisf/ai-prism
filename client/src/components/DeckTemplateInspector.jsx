@@ -5,6 +5,7 @@ import * as Icon from './Icons.jsx'
 import TemplateSlidePreview from './TemplateSlidePreview.jsx'
 import { MinedDiagramSvg, resolvePreviewTheme, useTemplateFonts } from './DeckSlidePreview.jsx'
 import { getJSON } from '../api.js'
+import { useT } from '../lib/i18n.jsx'
 
 // Read-only "Design System" viewer for a single template — mirrors the
 // browsing experience of Claude Design's own Design System page: a sidebar of
@@ -84,11 +85,11 @@ function ReadmeSection({ template }) {
   )
 }
 
-const CORE_SWATCHES = [
-  ['primaryColor', 'Primária'],
-  ['secondaryColor', 'Secundária'],
-  ['accentColor', 'Destaque'],
-  ['backgroundColor', 'Fundo'],
+const coreSwatches = (t) => [
+  ['primaryColor', t('templateInspector.colorPrimary')],
+  ['secondaryColor', t('templateInspector.colorSecondary')],
+  ['accentColor', t('templateInspector.colorAccent')],
+  ['backgroundColor', t('templateInspector.colorBackground')],
 ]
 
 function Swatch({ name, value, sub }) {
@@ -108,20 +109,21 @@ function Swatch({ name, value, sub }) {
 }
 
 function ColorsSection({ template, cards }) {
+  const t = useT()
   const palette = template.palette || []
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
-        <div className="text-xs font-semibold text-[var(--faint)] mb-2">Aplicadas nos decks gerados</div>
+        <div className="text-xs font-semibold text-[var(--faint)] mb-2">{t('templateInspector.colorsApplied')}</div>
         <div className="grid grid-cols-4 gap-2.5">
-          {CORE_SWATCHES.map(([key, label]) => (
+          {coreSwatches(t).map(([key, label]) => (
             <Swatch key={key} name={label} value={template[key] || '#CCCCCC'} />
           ))}
         </div>
       </div>
       {palette.length > 0 && (
         <div>
-          <div className="text-xs font-semibold text-[var(--faint)] mb-2">Paleta completa do design system ({palette.length} tokens)</div>
+          <div className="text-xs font-semibold text-[var(--faint)] mb-2">{t('templateInspector.fullPalette', { n: palette.length })}</div>
           <div className="grid grid-cols-5 gap-2.5">
             {palette.map((t) => (
               <Swatch key={t.varName} name={t.name} value={t.value} sub={t.varName} />
@@ -135,18 +137,19 @@ function ColorsSection({ template, cards }) {
 }
 
 function TypeSection({ template, cards }) {
+  const t = useT()
   useTemplateFonts(template)
   const families = [...new Set((template.fontAssets || []).map((f) => f.family))]
   return (
     <div className="space-y-4 max-w-3xl">
       {[
-        ['headingFont', 'Fonte dos títulos'],
-        ['bodyFont', 'Fonte do corpo'],
+        ['headingFont', t('templateInspector.headingFont')],
+        ['bodyFont', t('templateInspector.bodyFont')],
       ].map(([key, label]) => (
         <div key={key} className="rounded-xl border border-[var(--border)] p-4">
           <div className="text-xs font-semibold text-[var(--faint)] mb-2">
-            {label} — {template[key] || 'não definida'}
-            {families.includes(template[key]) && ' · webfont carregada do design system'}
+            {label} — {template[key] || t('templateInspector.fontUndefined')}
+            {families.includes(template[key]) && ` · ${t('templateInspector.webfontLoaded')}`}
           </div>
           <div style={{ fontFamily: template[key] || 'inherit' }} className="text-2xl">
             Aa Bb Cc — do more with your data
@@ -158,8 +161,7 @@ function TypeSection({ template, cards }) {
       ))}
       {(template.fontAssets || []).length > 0 && (
         <div className="text-[11px] text-[var(--faint)]">
-          {template.fontAssets.length} arquivo(s) de fonte auto-hospedados: {families.join(', ')} — usados na
-          pré-visualização e no modo apresentação; o .pptx referencia as fontes por nome.
+          {t('templateInspector.fontFilesPrefix', { n: template.fontAssets.length })} {families.join(', ')}{t('templateInspector.fontFilesSuffix')}
         </div>
       )}
       <CardsList cards={cards} />
@@ -167,38 +169,39 @@ function TypeSection({ template, cards }) {
   )
 }
 
-const BRAND_GROUPS = [
-  ['icon', 'Ícones de produto'],
-  ['lockup', 'Lockups'],
-  ['illustration', 'Ilustrações'],
-  ['background', 'Fundos'],
-  ['image', 'Imagens e fotos'],
-  ['watermark', "Marcas d'água (nunca usadas em decks gerados)"],
+const brandGroups = (t) => [
+  ['icon', t('templateInspector.brandIcons')],
+  ['lockup', t('templateInspector.brandLockups')],
+  ['illustration', t('templateInspector.brandIllustrations')],
+  ['background', t('templateInspector.brandBackgrounds')],
+  ['image', t('templateInspector.brandImages')],
+  ['watermark', t('templateInspector.brandWatermarks')],
 ]
 
 function BrandSection({ template, cards }) {
+  const t = useT()
   const assets = template.iconAssets || []
   const byKind = (k) => assets.filter((a) => (a.kind || 'icon') === k)
   return (
     <div className="space-y-6">
       {(template.logoDataUrl || template.logoLightDataUrl) && (
         <div>
-          <div className="text-xs font-semibold text-[var(--faint)] mb-2">Logo</div>
+          <div className="text-xs font-semibold text-[var(--faint)] mb-2">{t('templateInspector.logo')}</div>
           <div className="flex gap-2.5">
             {template.logoDataUrl && (
               <div className="rounded-xl border border-[var(--border)] p-4 flex items-center justify-center" style={{ background: template.primaryColor || '#1A1A2E', minWidth: 180 }}>
-                <img src={template.logoDataUrl} alt="logo (fundo escuro)" className="h-8 object-contain" />
+                <img src={template.logoDataUrl} alt={t('templateInspector.logoDarkAlt')} className="h-8 object-contain" />
               </div>
             )}
             {template.logoLightDataUrl && (
               <div className="rounded-xl border border-[var(--border)] p-4 flex items-center justify-center" style={{ background: template.backgroundColor || '#FFFFFF', minWidth: 180 }}>
-                <img src={template.logoLightDataUrl} alt="logo (fundo claro)" className="h-8 object-contain" />
+                <img src={template.logoLightDataUrl} alt={t('templateInspector.logoLightAlt')} className="h-8 object-contain" />
               </div>
             )}
           </div>
         </div>
       )}
-      {BRAND_GROUPS.map(([kind, label]) => {
+      {brandGroups(t).map(([kind, label]) => {
         const items = byKind(kind)
         if (!items.length) return null
         const dark = kind === 'illustration'
@@ -245,13 +248,13 @@ function CardsList({ cards }) {
 // Vector diagrams mined from the template's own slides (minedStyle.diagrams)
 // — the exact art the model can drop into generated decks via `diagramRef`.
 function DiagramsSection({ template }) {
+  const t = useT()
   const diagrams = template.minedStyle?.diagrams || []
   const theme = resolvePreviewTheme(template)
   return (
     <div className="space-y-4 max-w-2xl">
       <p className="text-[11px] text-[var(--faint)]">
-        Diagramas vetoriais extraídos dos slides do arquivo importado — a IA pode reaproveitá-los
-        em slides gerados, redesenhados com as fontes do tema.
+        {t('templateInspector.diagramsIntro')}
       </p>
       {diagrams.map((d) => (
         <div key={d.id} className="rounded-xl border border-[var(--border)] overflow-hidden">
@@ -264,7 +267,7 @@ function DiagramsSection({ template }) {
           <div className="px-3 py-2 border-t border-[var(--border)]">
             <div className="text-xs font-semibold truncate">{d.label || d.id}</div>
             <div className="text-[10px] text-[var(--faint)]">
-              {d.shapes?.length || 0} formas · {d.connectors?.length || 0} conectores
+              {t('templateInspector.diagramShapes', { shapes: d.shapes?.length || 0, connectors: d.connectors?.length || 0 })}
             </div>
           </div>
         </div>
@@ -274,6 +277,7 @@ function DiagramsSection({ template }) {
 }
 
 function MinedSlidesSection({ template }) {
+  const t = useT()
   const slides = template.previewSlides || []
   const [index, setIndex] = useState(0)
   const active = slides[index] || slides[0]
@@ -301,7 +305,7 @@ function MinedSlidesSection({ template }) {
             <Icon.ChevronLeft size={18} />
           </button>
           <span className="text-xs text-[var(--faint)] flex-1 text-center">
-            Slide {index + 1} de {slides.length}
+            {t('templateInspector.slideOf', { current: index + 1, total: slides.length })}
           </span>
           <button
             onClick={() => setIndex((i) => Math.min(slides.length - 1, i + 1))}
@@ -320,6 +324,7 @@ function MinedSlidesSection({ template }) {
 // ---- main -------------------------------------------------------------------
 
 export default function DeckTemplateInspector({ template: summary, onClose }) {
+  const t = useT()
   // list rows are summaries (no readme/specimen cards) — hydrate on open
   const [full, setFull] = useState(null)
   useEffect(() => {
@@ -346,18 +351,18 @@ export default function DeckTemplateInspector({ template: summary, onClose }) {
     const assets = template.iconAssets || []
     // labels exibidos em pt-BR; os ids e as CHAVES de grupo (`c.group`, vindas
     // do manifest do bundle) permanecem originais — só o texto é traduzido
-    if (template.readme) list.push({ id: 'readme', label: 'Guia da marca (Readme)' })
-    if (cardsByGroup.has('Templates')) list.push({ id: 'templates', label: 'Modelos' })
-    if (assets.length || template.logoDataUrl) list.push({ id: 'brand', label: 'Marca' })
-    list.push({ id: 'colors', label: 'Cores' })
-    if (cardsByGroup.has('Components')) list.push({ id: 'components', label: 'Componentes' })
-    if (cardsByGroup.has('Slides')) list.push({ id: 'slides', label: 'Slides' })
-    list.push({ id: 'type', label: 'Tipografia' })
-    if (cardsByGroup.has('Spacing')) list.push({ id: 'spacing', label: 'Espaçamento' })
-    if (template.minedStyle?.diagrams?.length) list.push({ id: 'diagramas', label: 'Diagramas minerados' })
-    if (template.previewSlides?.length) list.push({ id: 'slides-modelo', label: 'Slides do modelo' })
+    if (template.readme) list.push({ id: 'readme', label: t('templateInspector.sectionReadme') })
+    if (cardsByGroup.has('Templates')) list.push({ id: 'templates', label: t('templateInspector.sectionTemplates') })
+    if (assets.length || template.logoDataUrl) list.push({ id: 'brand', label: t('templateInspector.sectionBrand') })
+    list.push({ id: 'colors', label: t('templateInspector.sectionColors') })
+    if (cardsByGroup.has('Components')) list.push({ id: 'components', label: t('templateInspector.sectionComponents') })
+    if (cardsByGroup.has('Slides')) list.push({ id: 'slides', label: t('templateInspector.sectionSlides') })
+    list.push({ id: 'type', label: t('templateInspector.sectionType') })
+    if (cardsByGroup.has('Spacing')) list.push({ id: 'spacing', label: t('templateInspector.sectionSpacing') })
+    if (template.minedStyle?.diagrams?.length) list.push({ id: 'diagramas', label: t('templateInspector.sectionDiagrams') })
+    if (template.previewSlides?.length) list.push({ id: 'slides-modelo', label: t('templateInspector.sectionModelSlides') })
     return list
-  }, [template, cardsByGroup])
+  }, [template, cardsByGroup, t])
 
   const [section, setSection] = useState('readme')
   useEffect(() => {
@@ -373,8 +378,8 @@ export default function DeckTemplateInspector({ template: summary, onClose }) {
           <Icon.Close size={20} />
         </button>
         <Icon.Eye size={18} className="text-[var(--accent)]" />
-        <span className="font-semibold text-sm">{template.name || 'Modelo'} — Design System</span>
-        {!full && <span className="text-xs text-[var(--faint)]">carregando…</span>}
+        <span className="font-semibold text-sm">{t('templateInspector.headerTitle', { name: template.name || t('templateInspector.defaultName') })}</span>
+        {!full && <span className="text-xs text-[var(--faint)]">{t('templateInspector.loadingShort')}</span>}
       </header>
 
       <div className="flex-1 flex min-h-0">

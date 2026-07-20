@@ -40,6 +40,14 @@ export async function postJSON(url, body) {
   return r.json()
 }
 
+// multipart POST (file uploads) — the browser sets the boundary header itself,
+// so we don't set Content-Type
+export async function postForm(url, formData) {
+  const r = await fetch(url, { method: 'POST', body: formData })
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`)
+  return r.json()
+}
+
 // Shared by every SSE-streaming endpoint: reads the response body, splits it
 // into `data: {...}\n\n` frames, and calls onEvent(obj) for each one.
 async function consumeSSE(res, onEvent) {

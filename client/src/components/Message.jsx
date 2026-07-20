@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -7,6 +7,7 @@ import Logo from './Logo.jsx'
 import BlockRenderer from './blocks/BlockRenderer.jsx'
 import LoadingChip from './blocks/LoadingChip.jsx'
 import { exportMessageToPdf } from '../pdfExport.js'
+import { useT } from '../lib/i18n.jsx'
 
 const MARKER = '\n\n--- ANEXOS ---'
 const FENCE_START = '```prism-block'
@@ -21,6 +22,16 @@ function stripAttachments(content) {
 // possible while streaming — resolved fences never appear raw, they're
 // swapped for a {{block:N}} placeholder in one shot) and emits a loading
 // chip in its place instead of the raw, meaningless JSON fence text.
+// Sniffs the artifact kind out of a still-typing ```prism-block fence so the
+// loading chip can name it precisely ("Preparando gráfico" vs "…apresentação").
+// The fence body is partial JSON, so we can't JSON.parse it — a tolerant regex
+// on the "type" field is enough, and we map deck→apresentação, chart→gráfico,
+// etc. Falls back to the generic label when the type hasn't been emitted yet.
+function sniffFenceKind(fenceText) {
+  const m = /"type"\s*:\s*"([a-z-]+)"/i.exec(fenceText)
+  return m ? m[1] : null
+}
+
 function pushProse(segments, s, streaming) {
   if (!streaming) {
     if (s.trim()) segments.push({ kind: 'md', text: s })
@@ -37,7 +48,8 @@ function pushProse(segments, s, streaming) {
     const before = s.slice(i, start)
     if (before.trim()) segments.push({ kind: 'md', text: before })
     const end = s.indexOf('```', start + FENCE_START.length)
-    segments.push({ kind: 'loading' })
+    const fenceText = s.slice(start, end === -1 ? undefined : end)
+    segments.push({ kind: 'loading', blockType: sniffFenceKind(fenceText) })
     if (end === -1) break // fence still open — model is still typing it
     i = end + 3
   }
@@ -83,29 +95,56 @@ function splitSegments(text, blocks, toolCalls, streaming) {
 // i.e. it's "thinking": on the first round the model is reading context and
 // deciding whether to call a tool, and between tool rounds it's deciding what
 // to do with a result. Without this the UI showed only a bare blinking cursor,
-// which reads as a frozen/failed request. Cycles through a few labels so the
-// wait feels alive.
-const THINKING_LABELS = ['Pensando', 'Analisando o pedido', 'Escolhendo a melhor abordagem', 'Preparando a resposta']
-function ThinkingIndicator({ compact = false }) {
-  const [i, setI] = useState(0)
+// which reads as a frozen/failed request. A single stable "Pensando" label +
+// the animated dots — no cycling through fabricated phrases (they never
+// reflected what the model was actually doing).
+//
+// Two honest, cheap signals so a long post-tool reasoning pause never reads as
+// frozen (the model can spend 1–2 min reasoning after a Genie call before it
+// narrates the next step): (1) an elapsed-seconds counter that starts ticking
+// once the wait passes a threshold, and (2) a live reasoning tail when the
+// endpoint streams a reasoning summary (`hint`). Both are real — never
+// fabricated. The ticker self-updates on a 1s interval only while mounted.
+function useElapsedSeconds(active) {
+  const [now, setNow] = useState(() => Date.now())
+  const startRef = useRef(Date.now())
   useEffect(() => {
-    if (compact) return
-    const id = setInterval(() => setI((n) => (n + 1) % THINKING_LABELS.length), 2200)
-    return () => clearInterval(id)
-  }, [compact])
+    if (!active) return
+    startRef.current = Date.now()
+    setNow(Date.now())
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [active])
+  return Math.floor((now - startRef.current) / 1000)
+}
+
+function ThinkingIndicator({ compact = false, hint }) {
+  const t = useT()
+  const secs = useElapsedSeconds(true)
+  // the reasoning tail (if any) is multi-line; show only the last non-empty
+  // line, trimmed — it's a glanceable "working on…" cue, not a transcript
+  const line = hint
+    ? hint.split('\n').map((s) => s.trim()).filter(Boolean).slice(-1)[0]?.slice(0, 140)
+    : ''
   return (
-    <span className="inline-flex items-center gap-2 text-[var(--muted)] text-sm">
-      <span className="inline-flex gap-1" aria-hidden>
+    <span className="inline-flex items-center gap-2 text-[var(--muted)] text-sm min-w-0">
+      <span className="inline-flex gap-1 shrink-0" aria-hidden>
         <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce" style={{ animationDelay: '0ms' }} />
         <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce" style={{ animationDelay: '150ms' }} />
         <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce" style={{ animationDelay: '300ms' }} />
       </span>
-      {!compact && <span>{THINKING_LABELS[i]}…</span>}
+      {!compact && (
+        <span className="inline-flex items-center gap-2 min-w-0">
+          <span className="shrink-0">{line || t('message.thinking')}</span>
+          {secs >= 3 && <span className="text-[var(--faint)] tabular-nums shrink-0">{secs}s</span>}
+        </span>
+      )}
     </span>
   )
 }
 
 function ToolCallChip({ tc }) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const running = tc.status === 'running'
   const error = tc.status === 'error'
@@ -140,7 +179,10 @@ function ToolCallChip({ tc }) {
         ) : (
           <Icon.UcFunctions size={16} />
         )}
-        <span className="font-semibold flex-1 truncate">{tc.label || tc.name}</span>
+        <span className="font-semibold flex-1 min-w-0 leading-snug line-clamp-2 break-words text-left">{tc.label || tc.name}</span>
+        {running && tc.elapsedMs != null && (
+          <span className="text-[var(--faint)] shrink-0 tabular-nums">{Math.round(tc.elapsedMs / 1000)}s</span>
+        )}
         {running && (
           <span className="block w-3 h-3 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin shrink-0" />
         )}
@@ -162,7 +204,7 @@ function ToolCallChip({ tc }) {
             // Genie's question is natural language, often long — render it in
             // full as rich text instead of a truncated font-mono key:value line.
             <div className="rounded-lg bg-[var(--surface)] border border-[var(--border)] p-2.5">
-              <div className="text-[10px] uppercase tracking-wide text-[var(--faint)] mb-1">Pergunta</div>
+              <div className="text-[10px] uppercase tracking-wide text-[var(--faint)] mb-1">{t('message.question')}</div>
               <div className="prose-chat text-xs">
                 <Markdown remarkPlugins={[remarkGfm]}>{tc.args.question}</Markdown>
               </div>
@@ -182,7 +224,7 @@ function ToolCallChip({ tc }) {
           {tc.result != null && (
             <div>
               <div className="text-[10px] uppercase tracking-wide text-[var(--faint)] mb-1">
-                {error ? 'Erro' : 'Resultado'}
+                {error ? t('message.error') : t('message.result')}
               </div>
               {richResult && !error ? (
                 // These tools answer in markdown (prose, tables, a SQL fence,
@@ -217,7 +259,8 @@ function fmtCost(c) {
   return '$' + c.toFixed(c < 1 ? 3 : 2)
 }
 
-function CopyBtn({ text, label = 'Copiar' }) {
+function CopyBtn({ text, label }) {
+  const t = useT()
   const [done, setDone] = useState(false)
   return (
     <button
@@ -227,14 +270,73 @@ function CopyBtn({ text, label = 'Copiar' }) {
         setTimeout(() => setDone(false), 1400)
       }}
       className="inline-flex items-center gap-1 px-1.5 py-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--faint)] hover:text-[var(--text)] transition"
-      title={label}
+      title={label ?? t('message.copy')}
     >
       {done ? <Icon.Check size={14} /> : <Icon.Copy size={14} />}
     </button>
   )
 }
 
-export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUser, onOpenDeck, onOpenSpreadsheet, canRegenerate, streaming, isLatest, onSubmitAnswers }) {
+// Recursively flattens a React node tree to its plain text — used to recover
+// the raw source of a code block for copying. After rehypeHighlight runs the
+// code is nested in <span> tokens, so we can't read a single string child; the
+// leaf text nodes are still strings, and this concatenates them in order.
+function nodeToText(node) {
+  if (node == null || node === false) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(nodeToText).join('')
+  if (node.props) return nodeToText(node.props.children)
+  return ''
+}
+
+// Extracts the language from the `language-xxx` class react-markdown puts on the
+// <code> child of a fenced block. Returns '' for a bare ``` fence.
+function langFromClass(className) {
+  const m = /language-([\w+-]+)/.exec(className || '')
+  return m ? m[1] : ''
+}
+
+// A fenced code block with a header: language label (left) + copy button
+// (right), over the highlighted code. Replaces the default <pre> in the chat
+// markdown so code reads like an IDE snippet and is one click to copy. The
+// header is skipped for a plain string child that isn't a code element (rare,
+// but keeps the override safe for any <pre> the parser emits).
+function CodeBlock({ children }) {
+  const t = useT()
+  const [done, setDone] = useState(false)
+  const codeEl = Array.isArray(children) ? children[0] : children
+  const className = codeEl?.props?.className || ''
+  const lang = langFromClass(className)
+  const raw = nodeToText(codeEl).replace(/\n$/, '')
+  return (
+    <div className="code-block">
+      <div className="code-block-header">
+        <span className="code-block-lang">{lang || 'texto'}</span>
+        <button
+          type="button"
+          onClick={() => {
+            navigator.clipboard.writeText(raw)
+            setDone(true)
+            setTimeout(() => setDone(false), 1400)
+          }}
+          className="code-block-copy"
+          title={t('message.copyCode')}
+        >
+          {done ? <Icon.Check size={13} /> : <Icon.Copy size={13} />}
+          <span>{done ? t('message.copied') : t('message.copy')}</span>
+        </button>
+      </div>
+      <pre>{children}</pre>
+    </div>
+  )
+}
+
+// Custom renderers passed to <Markdown> for the assistant answer: only `pre` is
+// overridden (fenced code blocks). Inline `code` keeps the default rendering.
+const MARKDOWN_COMPONENTS = { pre: CodeBlock }
+
+function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUser, onOpenDeck, onOpenSpreadsheet, canRegenerate, streaming, isLatest, onSubmitAnswers }) {
+  const t = useT()
   const isUser = msg.role === 'user'
   const text = stripAttachments(msg.content)
   const toolCalls = msg.toolCalls || msg.tool_calls
@@ -310,13 +412,13 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
                 }}
                 className="text-xs px-3 py-1.5 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)] transition"
               >
-                Cancelar
+                {t('common.cancel')}
               </button>
               <button
                 onClick={commitEdit}
                 className="text-xs px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white font-semibold hover:brightness-110 transition"
               >
-                Salvar e regenerar
+                {t('message.saveAndRegenerate')}
               </button>
             </div>
           </div>
@@ -333,7 +435,7 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
               setEditing(true)
             }}
             className="shrink-0 p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--faint)] hover:text-[var(--text)] opacity-0 group-hover/msg:opacity-100 transition"
-            title="Editar"
+            title={t('common.edit')}
           >
             <Icon.Pencil size={13} />
           </button>
@@ -365,6 +467,23 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
         <Logo size={18} />
       </div>
       <div className="min-w-0 flex-1">
+        {/* ephemeral skill badge: shows which authored skill(s) the router
+            activated for this turn. Only while streaming — it's not persisted,
+            so it disappears once the turn finishes (and never on reload). */}
+        {streaming && msg.activeSkills?.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2 animate-fade-in">
+            {msg.activeSkills.map((sk) => (
+              <span
+                key={sk.name}
+                title={sk.description}
+                className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--accent)] bg-[var(--accent-soft)] border border-[var(--accent)]/30 rounded-full pl-1.5 pr-2.5 py-1"
+              >
+                <Icon.SkillGlyph size={13} className="shrink-0" />
+                {sk.title}
+              </span>
+            ))}
+          </div>
+        )}
         <div ref={exportRef}>
           {unreferencedToolCalls.length > 0 && (
             <div>
@@ -377,19 +496,24 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
             {segments.length ? (
               segments.map((seg, i) => {
                 if (seg.kind === 'md') {
+                  // Syntax highlight is purely cosmetic and rehype-highlight
+                  // re-runs over the ENTIRE code block on every render. During
+                  // streaming the text grows each frame, so highlighting live is
+                  // O(n²) for no benefit (nobody reads highlighted code as it's
+                  // typed). Skip it while streaming; apply it once on finalize.
                   return (
-                    <Markdown key={i} remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                    <Markdown key={i} remarkPlugins={[remarkGfm]} rehypePlugins={streaming ? [] : [rehypeHighlight]} components={MARKDOWN_COMPONENTS}>
                       {seg.text}
                     </Markdown>
                   )
                 }
-                if (seg.kind === 'block') return <BlockRenderer key={i} blocks={[seg.block]} onOpenDeck={onOpenDeck} onOpenSpreadsheet={onOpenSpreadsheet} isLatest={isLatest} onSubmitAnswers={onSubmitAnswers} />
+                if (seg.kind === 'block') return <BlockRenderer key={i} blocks={[seg.block]} msgId={msg.id} onOpenDeck={onOpenDeck} onOpenSpreadsheet={onOpenSpreadsheet} isLatest={isLatest} onSubmitAnswers={onSubmitAnswers} />
                 if (seg.kind === 'toolcall') return <ToolCallChip key={i} tc={seg.tc} />
-                if (seg.kind === 'loading') return <LoadingChip key={i} />
+                if (seg.kind === 'loading') return <LoadingChip key={i} blockType={seg.blockType} />
                 return null
               })
             ) : streaming ? (
-              <ThinkingIndicator />
+              <ThinkingIndicator hint={msg.reasoning} />
             ) : null}
             {/* Streaming indicator keyed off the LAST segment, not `text` —
                 `text` still contains the {{toolcall:ID}} markers, so it's
@@ -403,7 +527,7 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
               <span className="stream-cursor" />
             )}
             {streaming && segments.length > 0 && segments[segments.length - 1].kind !== 'md' && (
-              <div className="mt-2"><ThinkingIndicator /></div>
+              <div className="mt-2"><ThinkingIndicator hint={msg.reasoning} /></div>
             )}
           </div>
         </div>
@@ -418,9 +542,9 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
               <span className="inline-flex items-center gap-0.5 mr-0.5">
                 <button
                   disabled={variantIndex === 0}
-                  onClick={() => onSwitchVariant(variants[variantIndex - 1].id)}
+                  onClick={() => onSwitchVariant(msg.id, variants[variantIndex - 1].id)}
                   className="p-1 rounded-md hover:bg-[var(--surface-3)] hover:text-[var(--text)] disabled:opacity-30 disabled:hover:bg-transparent transition"
-                  title="Versão anterior"
+                  title={t('message.previousVersion')}
                 >
                   <Icon.ChevronLeft size={13} />
                 </button>
@@ -429,9 +553,9 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
                 </span>
                 <button
                   disabled={variantIndex === variants.length - 1}
-                  onClick={() => onSwitchVariant(variants[variantIndex + 1].id)}
+                  onClick={() => onSwitchVariant(msg.id, variants[variantIndex + 1].id)}
                   className="p-1 rounded-md hover:bg-[var(--surface-3)] hover:text-[var(--text)] disabled:opacity-30 disabled:hover:bg-transparent transition"
-                  title="Próxima versão"
+                  title={t('message.nextVersion')}
                 >
                   <Icon.ChevronRight size={13} />
                 </button>
@@ -442,22 +566,22 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
             <button
               onClick={() => onSpeak(plainText)}
               className="p-1 rounded-md hover:bg-[var(--surface-3)] hover:text-[var(--text)] transition"
-              title="Ouvir resposta"
+              title={t('message.listenResponse')}
             >
               <Icon.Speaker size={14} />
             </button>
             <button
-              onClick={() => exportMessageToPdf(exportRef.current, 'Resposta — AI Prism')}
+              onClick={() => exportMessageToPdf(exportRef.current, t('message.pdfTitle'))}
               className="p-1 rounded-md hover:bg-[var(--surface-3)] hover:text-[var(--text)] transition"
-              title="Exportar como PDF"
+              title={t('message.exportPdf')}
             >
               <Icon.FileText size={14} />
             </button>
             {canRegenerate && (
               <button
-                onClick={onRegenerate}
+                onClick={() => onRegenerate(msg.id)}
                 className="p-1 rounded-md hover:bg-[var(--surface-3)] hover:text-[var(--text)] transition"
-                title="Regenerar"
+                title={t('message.regenerate')}
               >
                 <Icon.Regenerate size={14} />
               </button>
@@ -466,12 +590,12 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
           <span className="inline-flex items-center gap-1 whitespace-nowrap">
             {meta && <span className="font-medium text-[var(--muted)]">{meta.label}</span>}
             {(pt || ct) && (
-              <span title="Tokens entrada / saída">
+              <span title={t('message.tokensInOut')}>
                 · {pt ?? '–'}↑ {ct ?? '–'}↓
               </span>
             )}
             {cost != null && (
-              <span title="Custo estimado (preços de lista públicos)">· ~{fmtCost(cost)}</span>
+              <span title={t('message.estimatedCost')}>· ~{fmtCost(cost)}</span>
             )}
           </span>
           </div>
@@ -480,3 +604,11 @@ export default function Message({ msg, models, onSpeak, onRegenerate, onSwitchVa
     </div>
   )
 }
+
+// Memoized: while one bubble streams, the parent re-renders the whole message
+// list every frame. Completed messages receive identical props (referentially
+// stable via useCallback in the parent + a stable `msg` object), so memo skips
+// re-rendering them entirely — the streaming bubble is the only one whose props
+// actually change. Default shallow comparison is correct here because the
+// parent no longer allocates fresh callbacks/objects per render.
+export default memo(Message)

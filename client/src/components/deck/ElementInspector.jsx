@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useT } from '../../lib/i18n.jsx'
 import * as Icon from '../Icons.jsx'
 import { DECK_ICONS, DECK_ICON_NAMES } from '../../../../shared/deckIcons.js'
 import { CHART_KINDS } from '../../../../shared/deckLayout.js'
@@ -72,21 +73,22 @@ const COLOR_TOKENS = ['accent', 'primary', 'secondary', 'heading', 'bodyText', '
 
 // hex OR '@token' swatch + code, Claude-Design-style ("Background  #1B3139 ▪")
 function ColorControl({ value, onCommit, allowNone = false, theme }) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const isToken = typeof value === 'string' && value[0] === '@'
   const hex = /^#[0-9a-fA-F]{6}$/.test(value || '') ? value.toUpperCase() : null
   const resolved = isToken ? theme?.[value.slice(1)] || '#888888' : hex
   return (
     <>
-      <span className="text-xs tabular-nums text-[var(--muted)] truncate max-w-[6.5rem]" title={isToken ? `token do tema ${value}` : undefined}>
-        {value === 'none' ? 'sem' : isToken ? value : hex || 'auto'}
+      <span className="text-xs tabular-nums text-[var(--muted)] truncate max-w-[6.5rem]" title={isToken ? t('inspector.themeToken', { token: value }) : undefined}>
+        {value === 'none' ? t('inspector.colorNone') : isToken ? value : hex || t('inspector.colorAuto')}
       </span>
       {theme && (
         <span className="relative shrink-0">
           <button
             onClick={() => setOpen((o) => !o)}
             className="w-5 h-5 rounded border border-[var(--border)] grid place-items-center text-[9px] text-[var(--faint)] hover:text-[var(--text)] hover:border-[var(--accent)]"
-            title="Cores do tema (o elemento continua se re-adaptando ao design system)"
+            title={t('inspector.themeColorsTitle')}
           >
             @
           </button>
@@ -124,7 +126,7 @@ function ColorControl({ value, onCommit, allowNone = false, theme }) {
         <button
           onClick={() => onCommit('none')}
           className={`shrink-0 px-1.5 h-5 rounded text-[10px] border ${value === 'none' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--border)] text-[var(--faint)] hover:text-[var(--text)]'}`}
-          title="Sem preenchimento"
+          title={t('inspector.noFill')}
         >
           ∅
         </button>
@@ -172,6 +174,7 @@ export function IconGlyph({ name, size = 18, className = '' }) {
 // searchable visual gallery of the 200+ builtin pictograms — replaces the
 // old name-only <select> (nobody knows what "waypoints" looks like)
 export function IconGallery({ value, onPick }) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const names = useMemo(() => {
@@ -185,7 +188,7 @@ export function IconGallery({ value, onPick }) {
         className="w-full flex items-center gap-2 h-8 rounded-lg bg-[var(--surface)] border border-[var(--border-soft)] px-2.5 hover:border-[var(--accent)] transition"
       >
         {value ? <IconGlyph name={value} size={16} className="shrink-0 text-[var(--accent)]" /> : null}
-        <span className="flex-1 text-left text-xs truncate">{value || 'escolher pictograma…'}</span>
+        <span className="flex-1 text-left text-xs truncate">{value || t('inspector.choosePictogram')}</span>
         <Icon.ChevronRight size={12} className={`shrink-0 text-[var(--faint)] transition-transform ${open ? 'rotate-90' : ''}`} />
       </button>
       {open && (
@@ -196,7 +199,7 @@ export function IconGallery({ value, onPick }) {
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Buscar ícone…"
+              placeholder={t('inspector.searchIcon')}
               className="w-full mb-2 rounded-lg bg-[var(--surface-2)] border border-[var(--border)] px-2.5 py-1.5 text-xs outline-none focus:border-[var(--accent)] placeholder:text-[var(--faint)]"
             />
             <div className="grid grid-cols-8 gap-1 max-h-48 overflow-y-auto">
@@ -218,7 +221,7 @@ export function IconGallery({ value, onPick }) {
                 </button>
               ))}
               {names.length === 0 && (
-                <p className="col-span-8 text-center text-[11px] text-[var(--faint)] py-3">Nada encontrado.</p>
+                <p className="col-span-8 text-center text-[11px] text-[var(--faint)] py-3">{t('inspector.nothingFound')}</p>
               )}
             </div>
           </div>
@@ -300,9 +303,9 @@ const textToGantt = (text, axis) => {
   return { tasks, ...(axis?.length ? { axis } : {}) }
 }
 
-const CHART_KIND_LABELS = {
-  bar: 'Barras', barH: 'Barras horizontais', line: 'Linha', area: 'Área',
-  pie: 'Pizza', doughnut: 'Rosca', scatter: 'Dispersão', heatmap: 'Heatmap', gantt: 'Gantt',
+const CHART_KIND_LABEL_KEYS = {
+  bar: 'inspector.chartKind.bar', barH: 'inspector.chartKind.barH', line: 'inspector.chartKind.line', area: 'inspector.chartKind.area',
+  pie: 'inspector.chartKind.pie', doughnut: 'inspector.chartKind.doughnut', scatter: 'inspector.chartKind.scatter', heatmap: 'inspector.chartKind.heatmap', gantt: 'inspector.chartKind.gantt',
 }
 const DEFAULT_SERIES = [{ name: 'Série 1', data: [{ label: 'A', value: 4 }, { label: 'B', value: 7 }, { label: 'C', value: 5 }] }]
 
@@ -327,6 +330,7 @@ function DataTextarea({ value, onCommit, rows = 5, hint }) {
 }
 
 function ChartSection({ element, onPatch }) {
+  const t = useT()
   const c = element.chart || {}
   const patchChart = (patch) => onPatch({ chart: { ...c, ...patch } })
   const setKind = (kind) => {
@@ -344,12 +348,12 @@ function ChartSection({ element, onPatch }) {
     onPatch({ chart: next })
   }
   return (
-    <Section title="Gráfico">
-      <Pill label="Tipo">
+    <Section title={t('inspector.section.chart')}>
+      <Pill label={t('inspector.chartType')}>
         <select value={c.kind || 'bar'} onChange={(e) => setKind(e.target.value)} className={bareSelect}>
           {CHART_KINDS.map((k) => (
             <option key={k} value={k}>
-              {CHART_KIND_LABELS[k] || k}
+              {CHART_KIND_LABEL_KEYS[k] ? t(CHART_KIND_LABEL_KEYS[k]) : k}
             </option>
           ))}
         </select>
@@ -361,7 +365,7 @@ function ChartSection({ element, onPatch }) {
             const heatmap = textToHeatmap(text)
             if (heatmap) patchChart({ heatmap })
           }}
-          hint={'1ª linha: colunas separadas por " | ". Demais: rótulo | valor | valor…'}
+          hint={t('inspector.hint.heatmap')}
         />
       ) : c.kind === 'gantt' ? (
         <>
@@ -371,9 +375,9 @@ function ChartSection({ element, onPatch }) {
               const gantt = textToGantt(text, c.gantt?.axis)
               if (gantt) patchChart({ gantt })
             }}
-            hint={'Uma tarefa por linha: nome | início | fim (números na unidade do eixo; "| marco" para losango)'}
+            hint={t('inspector.hint.gantt')}
           />
-          <Pill label="Eixo">
+          <Pill label={t('inspector.axis')}>
             <input
               defaultValue={(c.gantt?.axis || []).join(', ')}
               onBlur={(e) => {
@@ -392,7 +396,7 @@ function ChartSection({ element, onPatch }) {
             const series = textToScatter(text, c.series?.[0]?.name)
             if (series) patchChart({ series })
           }}
-          hint="Um ponto por linha: x, y"
+          hint={t('inspector.hint.scatter')}
         />
       ) : (
         <DataTextarea
@@ -401,11 +405,11 @@ function ChartSection({ element, onPatch }) {
             const series = textToCat(text)
             if (series) patchChart({ series })
           }}
-          hint={'1ª linha: nomes das séries separados por " | ". Demais: categoria | valor por série'}
+          hint={t('inspector.hint.category')}
         />
       )}
       <Grid2>
-        <Pill label="Legenda">
+        <Pill label={t('inspector.legend')}>
           <input
             type="checkbox"
             checked={c.showLegend !== false}
@@ -414,7 +418,7 @@ function ChartSection({ element, onPatch }) {
           />
         </Pill>
         {c.kind !== 'heatmap' && c.kind !== 'gantt' && (
-          <Pill label="Valores">
+          <Pill label={t('inspector.values')}>
             <input
               type="checkbox"
               checked={!!c.showValues}
@@ -431,17 +435,18 @@ function ChartSection({ element, onPatch }) {
 // compact panel for multi-selection (rendered by the Studio in place of the
 // single-element inspector)
 export function MultiSelectPanel({ count, onGroup, onRemove }) {
+  const t = useT()
   return (
     <div className="flex items-center gap-2 px-3 py-2.5 text-sm">
-      <span className="text-xs font-bold flex-1">{count} elementos selecionados</span>
+      <span className="text-xs font-bold flex-1">{t('inspector.selectedCount', { n: count })}</span>
       <button
         onClick={onGroup}
         className="flex items-center gap-1 rounded-lg bg-[var(--surface-3)] hover:brightness-110 text-[11px] font-semibold px-2 py-1.5"
-        title="Agrupar seleção (Cmd+G)"
+        title={t('inspector.groupSelection')}
       >
-        ▣ Agrupar
+        ▣ {t('inspector.group')}
       </button>
-      <button onClick={onRemove} className="w-7 h-7 rounded-md grid place-items-center hover:bg-[var(--surface-3)] text-[var(--muted)]" title="Excluir seleção (Del)">
+      <button onClick={onRemove} className="w-7 h-7 rounded-md grid place-items-center hover:bg-[var(--surface-3)] text-[var(--muted)]" title={t('inspector.deleteSelection')}>
         <Icon.Trash size={13} />
       </button>
     </div>
@@ -449,6 +454,7 @@ export function MultiSelectPanel({ count, onGroup, onRemove }) {
 }
 
 export default function ElementInspector({ element, elements, template, onPatch, onPatchStyle, onPatchParent, onReorder, onRemove, onUngroup }) {
+  const t = useT()
   if (!element) return null
   const st = element.style || {}
   const b = element.box || {}
@@ -468,46 +474,46 @@ export default function ElementInspector({ element, elements, template, onPatch,
           onChange={(e) => onPatch({ name: e.target.value.slice(0, 60) || undefined }, false)}
           onBlur={(e) => onPatch({ name: e.target.value.trim().slice(0, 60) || undefined })}
           className="flex-1 min-w-0 text-xs font-bold bg-transparent outline-none border-b border-transparent focus:border-[var(--accent)] placeholder:text-[var(--text)] placeholder:font-bold"
-          title="Nome da camada (aparece na árvore)"
+          title={t('inspector.layerNameTitle')}
         />
         <button
           onClick={() => onPatch({ hidden: element.hidden ? undefined : true })}
           className={`w-6 h-6 rounded-md grid place-items-center hover:bg-[var(--surface-3)] ${element.hidden ? 'text-[var(--accent)]' : 'text-[var(--muted)]'}`}
-          title={element.hidden ? 'Mostrar elemento' : 'Ocultar elemento'}
+          title={element.hidden ? t('inspector.showElement') : t('inspector.hideElement')}
         >
           <Icon.Eye size={13} />
         </button>
         <span className="text-[10px] text-[var(--faint)] tabular-nums">
-          camada {zIndex + 1}/{siblings.length}
+          {t('inspector.layerN', { n: zIndex + 1, total: siblings.length })}
         </span>
-        <button onClick={() => onReorder(-1)} className="w-6 h-6 rounded-md bg-[var(--surface)] border border-[var(--border-soft)] text-[11px] hover:text-[var(--text)] text-[var(--muted)]" title="Enviar para trás (Cmd+[)">
+        <button onClick={() => onReorder(-1)} className="w-6 h-6 rounded-md bg-[var(--surface)] border border-[var(--border-soft)] text-[11px] hover:text-[var(--text)] text-[var(--muted)]" title={t('inspector.sendBackward')}>
           ↓
         </button>
-        <button onClick={() => onReorder(1)} className="w-6 h-6 rounded-md bg-[var(--surface)] border border-[var(--border-soft)] text-[11px] hover:text-[var(--text)] text-[var(--muted)]" title="Trazer para frente (Cmd+])">
+        <button onClick={() => onReorder(1)} className="w-6 h-6 rounded-md bg-[var(--surface)] border border-[var(--border-soft)] text-[11px] hover:text-[var(--text)] text-[var(--muted)]" title={t('inspector.bringForward')}>
           ↑
         </button>
-        <button onClick={onRemove} className="w-6 h-6 rounded-md grid place-items-center hover:bg-[var(--surface-3)] text-[var(--muted)]" title="Excluir elemento (Del)">
+        <button onClick={onRemove} className="w-6 h-6 rounded-md grid place-items-center hover:bg-[var(--surface-3)] text-[var(--muted)]" title={t('inspector.deleteElement')}>
           <Icon.Trash size={13} />
         </button>
       </div>
 
-      <Section title="Aparência">
+      <Section title={t('inspector.section.appearance')}>
         {element.type !== 'line' && (
-          <Pill label="Fundo">
+          <Pill label={t('inspector.fill')}>
             <ColorControl value={st.fill} onCommit={(v) => onPatchStyle({ fill: v })} allowNone theme={theme} />
           </Pill>
         )}
         <Grid2>
           {element.type !== 'line' && (
-            <Pill label="Raio">
-              <NumInput value={st.radius ?? 0} onCommit={(v) => onPatchStyle({ radius: v || undefined })} suffix="pol" />
+            <Pill label={t('inspector.radius')}>
+              <NumInput value={st.radius ?? 0} onCommit={(v) => onPatchStyle({ radius: v || undefined })} suffix={t('inspector.unit.in')} />
             </Pill>
           )}
-          <Pill label="Rotação">
+          <Pill label={t('inspector.rotation')}>
             <NumInput value={element.rotate || 0} step={1} onCommit={(v) => onPatch({ rotate: Math.round(v) || undefined })} suffix="°" />
           </Pill>
         </Grid2>
-        <Pill label="Opacidade">
+        <Pill label={t('inspector.opacity')}>
           <input
             type="range"
             min="0"
@@ -520,14 +526,14 @@ export default function ElementInspector({ element, elements, template, onPatch,
           <span className="text-xs tabular-nums w-7 text-right text-[var(--muted)]">{st.opacity ?? 100}</span>
         </Pill>
         {element.type === 'text' && (
-          <Pill label="Overflow" title="O PPTX não recorta texto — o tamanho calculado já cabe na caixa (só afeta o preview)">
+          <Pill label={t('inspector.overflow')} title={t('inspector.overflowTitle')}>
             <select
               value={st.overflow || 'visible'}
               onChange={(e) => onPatchStyle({ overflow: e.target.value === 'visible' ? undefined : e.target.value })}
               className={bareSelect}
             >
-              <option value="visible">visível</option>
-              <option value="hidden">oculto</option>
+              <option value="visible">{t('inspector.overflowVisible')}</option>
+              <option value="hidden">{t('inspector.overflowHidden')}</option>
             </select>
           </Pill>
         )}
@@ -535,16 +541,16 @@ export default function ElementInspector({ element, elements, template, onPatch,
 
       {isGroup && (
         <Section
-          title="Auto-layout"
+          title={t('inspector.section.autoLayout')}
           action={
             <div className="flex items-center gap-2">
-              <button onClick={onUngroup} className="text-[10px] text-[var(--faint)] underline hover:text-[var(--text)]" title="Dissolver o grupo (Cmd+Shift+G)">
-                desagrupar
+              <button onClick={onUngroup} className="text-[10px] text-[var(--faint)] underline hover:text-[var(--text)]" title={t('inspector.ungroupTitle')}>
+                {t('inspector.ungroup')}
               </button>
               <button
                 onClick={() => onPatch({ stack: element.stack ? undefined : { direction: 'column', gap: 0.15, padding: 0.2 } })}
                 className={`w-8 h-[18px] rounded-full transition relative ${element.stack ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
-                title={element.stack ? 'Desligar auto-layout (filhos voltam a posições livres)' : 'Ligar auto-layout (stack posiciona os filhos)'}
+                title={element.stack ? t('inspector.autoLayoutOff') : t('inspector.autoLayoutOn')}
               >
                 <span className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${element.stack ? 'translate-x-[14px]' : ''}`} />
               </button>
@@ -555,43 +561,43 @@ export default function ElementInspector({ element, elements, template, onPatch,
             <>
               <Segmented
                 options={[
-                  { value: 'column', label: '↓ coluna', title: 'Empilhar na vertical' },
-                  { value: 'row', label: '→ linha', title: 'Enfileirar na horizontal' },
+                  { value: 'column', label: t('inspector.stackColumn'), title: t('inspector.stackColumnTitle') },
+                  { value: 'row', label: t('inspector.stackRow'), title: t('inspector.stackRowTitle') },
                 ]}
                 value={element.stack.direction || 'column'}
                 onChange={(direction) => onPatch({ stack: { ...element.stack, direction } })}
               />
               <Grid2>
-                <Pill label="Gap">
-                  <NumInput value={element.stack.gap ?? 0.15} onCommit={(v) => onPatch({ stack: { ...element.stack, gap: Math.max(v, 0) } })} suffix="pol" />
+                <Pill label={t('inspector.gap')}>
+                  <NumInput value={element.stack.gap ?? 0.15} onCommit={(v) => onPatch({ stack: { ...element.stack, gap: Math.max(v, 0) } })} suffix={t('inspector.unit.in')} />
                 </Pill>
-                <Pill label="Padding">
-                  <NumInput value={element.stack.padding ?? 0} onCommit={(v) => onPatch({ stack: { ...element.stack, padding: Math.max(v, 0) || undefined } })} suffix="pol" />
+                <Pill label={t('inspector.padding')}>
+                  <NumInput value={element.stack.padding ?? 0} onCommit={(v) => onPatch({ stack: { ...element.stack, padding: Math.max(v, 0) || undefined } })} suffix={t('inspector.unit.in')} />
                 </Pill>
               </Grid2>
               <Grid2>
-                <Pill label="Alinhar">
+                <Pill label={t('inspector.align')}>
                   <select
                     value={element.stack.align || 'stretch'}
                     onChange={(e) => onPatch({ stack: { ...element.stack, align: e.target.value === 'stretch' ? undefined : e.target.value } })}
                     className={bareSelect}
                   >
-                    <option value="stretch">esticar</option>
-                    <option value="start">início</option>
-                    <option value="center">centro</option>
-                    <option value="end">fim</option>
+                    <option value="stretch">{t('inspector.alignStretch')}</option>
+                    <option value="start">{t('inspector.alignStart')}</option>
+                    <option value="center">{t('inspector.alignCenter')}</option>
+                    <option value="end">{t('inspector.alignEnd')}</option>
                   </select>
                 </Pill>
-                <Pill label="Justificar">
+                <Pill label={t('inspector.justify')}>
                   <select
                     value={element.stack.justify || 'start'}
                     onChange={(e) => onPatch({ stack: { ...element.stack, justify: e.target.value === 'start' ? undefined : e.target.value } })}
                     className={bareSelect}
                   >
-                    <option value="start">início</option>
-                    <option value="center">centro</option>
-                    <option value="end">fim</option>
-                    <option value="between">espaçar</option>
+                    <option value="start">{t('inspector.justifyStart')}</option>
+                    <option value="center">{t('inspector.justifyCenter')}</option>
+                    <option value="end">{t('inspector.justifyEnd')}</option>
+                    <option value="between">{t('inspector.justifyBetween')}</option>
                   </select>
                 </Pill>
               </Grid2>
@@ -599,7 +605,7 @@ export default function ElementInspector({ element, elements, template, onPatch,
           )}
           {!element.stack && (
             <p className="text-[10px] text-[var(--faint)] leading-snug">
-              Filhos em posições livres. Ligue o auto-layout para empilhá-los automaticamente com gap e padding.
+              {t('inspector.freePositionsHint')}
             </p>
           )}
         </Section>
@@ -607,19 +613,19 @@ export default function ElementInspector({ element, elements, template, onPatch,
 
       {element.type === 'chart' && <ChartSection element={element} onPatch={onPatch} />}
 
-      <Section title="Posição e tamanho">
+      <Section title={t('inspector.section.positionSize')}>
         {stackChild && (
           <p className="text-[10px] text-[var(--faint)] leading-snug pb-1">
-            Posição gerenciada pelo auto-layout do grupo — ajuste ordem e grow; textos calculam a altura sozinhos.
+            {t('inspector.stackChildHint')}
             {onPatchParent && (
               <>
-                {' '}Para mover livremente,{' '}
+                {' '}{t('inspector.stackChildHintMove')}{' '}
                 <button
                   onClick={() => onPatchParent({ stack: undefined })}
                   className="text-[var(--accent)] underline hover:brightness-110"
-                  title="Desliga o auto-layout do grupo — os filhos voltam a posições X/Y livres e ficam arrastáveis"
+                  title={t('inspector.turnOffGroupAutoLayoutTitle')}
                 >
-                  desligue o auto-layout do grupo
+                  {t('inspector.turnOffGroupAutoLayout')}
                 </button>
                 .
               </>
@@ -629,22 +635,22 @@ export default function ElementInspector({ element, elements, template, onPatch,
         <Grid2>
           {!stackChild && (
             <>
-              <Pill label="X">
-                <NumInput value={b.x} onCommit={(v) => onPatch({ box: { ...b, x: v } })} suffix="pol" />
+              <Pill label={t('inspector.posX')}>
+                <NumInput value={b.x} onCommit={(v) => onPatch({ box: { ...b, x: v } })} suffix={t('inspector.unit.in')} />
               </Pill>
-              <Pill label="Y">
-                <NumInput value={b.y} onCommit={(v) => onPatch({ box: { ...b, y: v } })} suffix="pol" />
+              <Pill label={t('inspector.posY')}>
+                <NumInput value={b.y} onCommit={(v) => onPatch({ box: { ...b, y: v } })} suffix={t('inspector.unit.in')} />
               </Pill>
             </>
           )}
-          <Pill label="Largura">
-            <NumInput value={b.w} onCommit={(v) => onPatch({ box: { ...b, w: Math.max(v, 0.02) } })} suffix="pol" />
+          <Pill label={t('inspector.width')}>
+            <NumInput value={b.w} onCommit={(v) => onPatch({ box: { ...b, w: Math.max(v, 0.02) } })} suffix={t('inspector.unit.in')} />
           </Pill>
-          <Pill label="Altura">
-            <NumInput value={b.h} onCommit={(v) => onPatch({ box: { ...b, h: Math.max(v, element.type === 'line' ? 0 : 0.02) } })} suffix="pol" />
+          <Pill label={t('inspector.height')}>
+            <NumInput value={b.h} onCommit={(v) => onPatch({ box: { ...b, h: Math.max(v, element.type === 'line' ? 0 : 0.02) } })} suffix={t('inspector.unit.in')} />
           </Pill>
           {stackChild && (
-            <Pill label="Grow" title="0 = tamanho natural; 1+ = absorve o espaço restante do stack proporcionalmente">
+            <Pill label={t('inspector.grow')} title={t('inspector.growTitle')}>
               <NumInput value={element.grow ?? 0} step={1} onCommit={(v) => onPatch({ grow: Math.max(v, 0) || undefined })} />
             </Pill>
           )}
@@ -653,35 +659,35 @@ export default function ElementInspector({ element, elements, template, onPatch,
 
       {element.type !== 'line' && (
         <Section
-          title="Borda"
+          title={t('inspector.section.border')}
           action={
             st.borderColor ? (
               <button
                 onClick={() => onPatchStyle({ borderColor: undefined, borderWidth: undefined, borderDash: undefined })}
                 className="text-[10px] text-[var(--faint)] underline hover:text-[var(--text)]"
               >
-                remover
+                {t('inspector.remove')}
               </button>
             ) : null
           }
         >
-          <Pill label="Cor">
+          <Pill label={t('inspector.color')}>
             <ColorControl value={st.borderColor} onCommit={(v) => onPatchStyle({ borderColor: v })} theme={theme} />
           </Pill>
           {st.borderColor && (
             <Grid2>
-              <Pill label="Espessura">
-                <NumInput value={st.borderWidth ?? 1} step={0.25} onCommit={(v) => onPatchStyle({ borderWidth: v })} suffix="pt" />
+              <Pill label={t('inspector.thickness')}>
+                <NumInput value={st.borderWidth ?? 1} step={0.25} onCommit={(v) => onPatchStyle({ borderWidth: v })} suffix={t('inspector.unit.pt')} />
               </Pill>
-              <Pill label="Traço">
+              <Pill label={t('inspector.dash')}>
                 <select
                   value={st.borderDash || 'solid'}
                   onChange={(e) => onPatchStyle({ borderDash: e.target.value === 'solid' ? undefined : e.target.value })}
                   className={bareSelect}
                 >
-                  <option value="solid">sólido</option>
-                  <option value="dash">tracejado</option>
-                  <option value="dot">pontilhado</option>
+                  <option value="solid">{t('inspector.dashSolid')}</option>
+                  <option value="dash">{t('inspector.dashDashed')}</option>
+                  <option value="dot">{t('inspector.dashDotted')}</option>
                 </select>
               </Pill>
             </Grid2>
@@ -691,12 +697,12 @@ export default function ElementInspector({ element, elements, template, onPatch,
 
       {element.type !== 'line' && (
         <Section
-          title="Sombra"
+          title={t('inspector.section.shadow')}
           action={
             <button
               onClick={() => onPatchStyle({ shadow: st.shadow ? undefined : { blur: 6, offset: 2, opacity: 35 } })}
               className={`w-8 h-[18px] rounded-full transition relative ${st.shadow ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
-              title={st.shadow ? 'Remover sombra' : 'Adicionar sombra'}
+              title={st.shadow ? t('inspector.shadowRemove') : t('inspector.shadowAdd')}
             >
               <span className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${st.shadow ? 'translate-x-[14px]' : ''}`} />
             </button>
@@ -704,11 +710,11 @@ export default function ElementInspector({ element, elements, template, onPatch,
         >
           {st.shadow && typeof st.shadow === 'object' && (
             <Grid2>
-              <Pill label="Blur">
-                <NumInput value={st.shadow.blur ?? 6} step={1} onCommit={(v) => onPatchStyle({ shadow: { ...st.shadow, blur: v } })} suffix="pt" />
+              <Pill label={t('inspector.blur')}>
+                <NumInput value={st.shadow.blur ?? 6} step={1} onCommit={(v) => onPatchStyle({ shadow: { ...st.shadow, blur: v } })} suffix={t('inspector.unit.pt')} />
               </Pill>
-              <Pill label="Distância">
-                <NumInput value={st.shadow.offset ?? 2} step={1} onCommit={(v) => onPatchStyle({ shadow: { ...st.shadow, offset: v } })} suffix="pt" />
+              <Pill label={t('inspector.distance')}>
+                <NumInput value={st.shadow.offset ?? 2} step={1} onCommit={(v) => onPatchStyle({ shadow: { ...st.shadow, offset: v } })} suffix={t('inspector.unit.pt')} />
               </Pill>
             </Grid2>
           )}
@@ -716,29 +722,29 @@ export default function ElementInspector({ element, elements, template, onPatch,
       )}
 
       {element.type === 'text' && (
-        <Section title="Texto">
+        <Section title={t('inspector.section.text')}>
           <Grid2>
-            <Pill label="Fonte">
+            <Pill label={t('inspector.font')}>
               <select value={st.fontRole || 'body'} onChange={(e) => onPatchStyle({ fontRole: e.target.value })} className={bareSelect}>
-                <option value="heading">títulos</option>
-                <option value="body">corpo</option>
+                <option value="heading">{t('inspector.fontHeading')}</option>
+                <option value="body">{t('inspector.fontBody')}</option>
               </select>
             </Pill>
-            <Pill label="Tamanho">
-              <NumInput value={st.fontSize ?? 13} step={0.5} onCommit={(v) => onPatchStyle({ fontSize: v })} suffix="pt" />
+            <Pill label={t('inspector.fontSize')}>
+              <NumInput value={st.fontSize ?? 13} step={0.5} onCommit={(v) => onPatchStyle({ fontSize: v })} suffix={t('inspector.unit.pt')} />
             </Pill>
           </Grid2>
-          <Pill label="Cor">
+          <Pill label={t('inspector.color')}>
             <ColorControl value={st.color} onCommit={(v) => onPatchStyle({ color: v })} theme={theme} />
           </Pill>
           {/* independent style toggles (not mutually exclusive) */}
           <div className="flex rounded-lg bg-[var(--surface)] border border-[var(--border-soft)] p-0.5 gap-0.5">
             {[
-              ['bold', 'B', 'Negrito', { fontWeight: 700 }],
-              ['italic', 'I', 'Itálico', { fontStyle: 'italic' }],
-              ['underline', 'S', 'Sublinhado', { textDecoration: 'underline' }],
-              ['uppercase', 'AA', 'Caixa alta', {}],
-              ['bullet', '••', 'Lista com marcadores', {}],
+              ['bold', 'B', t('inspector.bold'), { fontWeight: 700 }],
+              ['italic', 'I', t('inspector.italic'), { fontStyle: 'italic' }],
+              ['underline', 'S', t('inspector.underline'), { textDecoration: 'underline' }],
+              ['uppercase', 'AA', t('inspector.uppercase'), {}],
+              ['bullet', '••', t('inspector.bulletList'), {}],
             ].map(([key, label, title, css]) => (
               <button
                 key={key}
@@ -756,58 +762,58 @@ export default function ElementInspector({ element, elements, template, onPatch,
           <Grid2>
             <Segmented
               options={[
-                { value: 'left', label: '⟸', title: 'Alinhar à esquerda' },
-                { value: 'center', label: '≡', title: 'Centralizar' },
-                { value: 'right', label: '⟹', title: 'Alinhar à direita' },
+                { value: 'left', label: '⟸', title: t('inspector.alignLeft') },
+                { value: 'center', label: '≡', title: t('inspector.alignCenterText') },
+                { value: 'right', label: '⟹', title: t('inspector.alignRight') },
               ]}
               value={st.align || 'left'}
               onChange={(a) => onPatchStyle({ align: a === 'left' ? undefined : a })}
             />
-            <Pill label="Vertical">
+            <Pill label={t('inspector.vertical')}>
               <select
                 value={st.valign || 'top'}
                 onChange={(e) => onPatchStyle({ valign: e.target.value === 'top' ? undefined : e.target.value })}
                 className={bareSelect}
               >
-                <option value="top">topo</option>
-                <option value="middle">meio</option>
-                <option value="bottom">base</option>
+                <option value="top">{t('inspector.valignTop')}</option>
+                <option value="middle">{t('inspector.valignMiddle')}</option>
+                <option value="bottom">{t('inspector.valignBottom')}</option>
               </select>
             </Pill>
           </Grid2>
           <Grid2>
-            <Pill label="Entrelinha">
+            <Pill label={t('inspector.lineHeight')}>
               <NumInput value={st.lineHeight ?? 1.2} step={0.05} onCommit={(v) => onPatchStyle({ lineHeight: v })} />
             </Pill>
-            <Pill label="Tracking">
-              <NumInput value={st.letterSpacing ?? 0} step={0.1} onCommit={(v) => onPatchStyle({ letterSpacing: v || undefined })} suffix="pt" />
+            <Pill label={t('inspector.tracking')}>
+              <NumInput value={st.letterSpacing ?? 0} step={0.1} onCommit={(v) => onPatchStyle({ letterSpacing: v || undefined })} suffix={t('inspector.unit.pt')} />
             </Pill>
           </Grid2>
         </Section>
       )}
 
       {element.type === 'line' && (
-        <Section title="Linha">
-          <Pill label="Cor">
+        <Section title={t('inspector.section.line')}>
+          <Pill label={t('inspector.color')}>
             <ColorControl value={st.lineColor} onCommit={(v) => onPatchStyle({ lineColor: v })} theme={theme} />
           </Pill>
           <Grid2>
-            <Pill label="Espessura">
-              <NumInput value={st.lineWidth ?? 2} step={0.25} onCommit={(v) => onPatchStyle({ lineWidth: v })} suffix="pt" />
+            <Pill label={t('inspector.thickness')}>
+              <NumInput value={st.lineWidth ?? 2} step={0.25} onCommit={(v) => onPatchStyle({ lineWidth: v })} suffix={t('inspector.unit.pt')} />
             </Pill>
-            <Pill label="Traço">
+            <Pill label={t('inspector.dash')}>
               <select value={st.dash || 'solid'} onChange={(e) => onPatchStyle({ dash: e.target.value === 'solid' ? undefined : e.target.value })} className={bareSelect}>
-                <option value="solid">sólido</option>
-                <option value="dash">tracejado</option>
-                <option value="dot">pontilhado</option>
+                <option value="solid">{t('inspector.dashSolid')}</option>
+                <option value="dash">{t('inspector.dashDashed')}</option>
+                <option value="dot">{t('inspector.dashDotted')}</option>
               </select>
             </Pill>
           </Grid2>
           <Grid2>
-            <Pill label="Seta início">
+            <Pill label={t('inspector.arrowStart')}>
               <input type="checkbox" checked={!!st.arrowStart} onChange={(e) => onPatchStyle({ arrowStart: e.target.checked || undefined })} className="accent-[var(--accent)]" />
             </Pill>
-            <Pill label="Seta fim">
+            <Pill label={t('inspector.arrowEnd')}>
               <input type="checkbox" checked={!!st.arrowEnd} onChange={(e) => onPatchStyle({ arrowEnd: e.target.checked || undefined })} className="accent-[var(--accent)]" />
             </Pill>
           </Grid2>
@@ -815,8 +821,8 @@ export default function ElementInspector({ element, elements, template, onPatch,
       )}
 
       {element.type === 'icon' && (
-        <Section title="Ícone">
-          <Pill label="Cor">
+        <Section title={t('inspector.section.icon')}>
+          <Pill label={t('inspector.color')}>
             <ColorControl value={st.color} onCommit={(v) => onPatchStyle({ color: v })} theme={theme} />
           </Pill>
           <div className="flex">

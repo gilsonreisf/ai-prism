@@ -14,13 +14,23 @@ const RENDERERS = {
   spreadsheet: SpreadsheetBlock,
 }
 
-export default function BlockRenderer({ blocks, onOpenDeck, onOpenSpreadsheet, isLatest, onSubmitAnswers }) {
+export default function BlockRenderer({ blocks, msgId, onOpenDeck, onOpenSpreadsheet, isLatest, onSubmitAnswers }) {
   if (!blocks?.length) return null
   return (
     <div>
       {blocks.map((b, i) => {
         const Cmp = RENDERERS[b.type]
-        return Cmp ? <Cmp key={i} block={b} onOpenDeck={onOpenDeck} onOpenSpreadsheet={onOpenSpreadsheet} isLatest={isLatest} onSubmitAnswers={onSubmitAnswers} /> : null
+        return Cmp ? (
+          <Cmp
+            key={i}
+            block={b}
+            msgId={msgId}
+            onOpenDeck={onOpenDeck}
+            onOpenSpreadsheet={onOpenSpreadsheet}
+            isLatest={isLatest}
+            onSubmitAnswers={onSubmitAnswers}
+          />
+        ) : null
       })}
     </div>
   )

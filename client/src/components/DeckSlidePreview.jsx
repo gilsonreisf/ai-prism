@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
+import { useT } from '../lib/i18n.jsx'
 import { DECK_ICONS } from '../../../shared/deckIcons.js'
 import { flattenElements, chartPalette, materializeSlide, ENGINE_LAYOUTS } from '../../../shared/deckLayout.js'
 import {
@@ -193,13 +194,14 @@ export function SelBox({ ctx, path, label, text, children, style, className = ''
 }
 
 function Kicker({ text, color, theme, ctx, path = 'kicker', slide }) {
+  const t = useT()
   return (
     <div className="flex items-center" style={{ gap: inch(0.1) }}>
       <div style={{ width: inch(0.34), height: inch(0.038), background: color, flexShrink: 0 }} />
       <SelBox
         ctx={ctx}
         path={path}
-        label="Kicker"
+        label={t('deckPreview.kicker')}
         text={text}
         className="uppercase truncate"
         style={{ color, fontSize: pt(10), fontWeight: 700, letterSpacing: '0.18em', fontFamily: theme.bodyFont, ...ovStyle(slide, path) }}
@@ -209,6 +211,7 @@ function Kicker({ text, color, theme, ctx, path = 'kicker', slide }) {
 }
 
 function Callout({ callout, theme, ctx, slide }) {
+  const t = useT()
   return (
     <div
       style={{
@@ -220,7 +223,7 @@ function Callout({ callout, theme, ctx, slide }) {
         <SelBox
           ctx={ctx}
           path="callout.kicker"
-          label="Callout — rótulo"
+          label={t('deckPreview.calloutKicker')}
           text={callout.kicker}
           className="uppercase"
           style={{ color: theme.accent, fontSize: pt(8.5), fontWeight: 700, letterSpacing: '0.16em', fontFamily: theme.bodyFont, ...ovStyle(slide, 'callout.kicker') }}
@@ -229,7 +232,7 @@ function Callout({ callout, theme, ctx, slide }) {
       <SelBox
         ctx={ctx}
         path="callout.text"
-        label="Callout — conclusão"
+        label={t('deckPreview.calloutText')}
         text={callout.text}
         style={{ color: theme.onPrimary, fontSize: pt(12.5), fontWeight: 700, fontFamily: theme.headingFont, lineHeight: 1.15, ...ovStyle(slide, 'callout.text') }}
       />
@@ -389,6 +392,7 @@ function elementShadowCss(st) {
 }
 
 export function ElementView({ el, theme, iconById }) {
+  const t = useT()
   const st = el.style || {}
   const box = elementBoxStyle(el)
   const opacity = st.opacity != null ? st.opacity / 100 : 1
@@ -527,7 +531,7 @@ export function ElementView({ el, theme, iconById }) {
               border: `1px dashed ${theme.hairline}`, borderRadius: inch(0.07), color: theme.faint, fontSize: pt(10), fontStyle: 'italic',
             }}
           >
-            Imagem
+            {t('deckPreview.image')}
           </div>
         )}
       </div>
@@ -820,6 +824,7 @@ export default function DeckSlidePreview({
   onSelectElement,
   onEditText,
 }) {
+  const t = useT()
   const theme = resolvePreviewTheme(template)
   useTemplateFonts(template)
   const ctx = selectable ? { selectedPath, onSelect: onSelectElement, onEditText } : null
@@ -898,7 +903,7 @@ export default function DeckSlidePreview({
             {items.map((b, i) => (
               <li key={i} className="flex" style={{ gap: inch(0.12) }}>
                 <span style={{ color: theme.bodyText }}>•</span>
-                <SelBox ctx={ctx} path={`bullets[${offset + i}]`} label={`Bullet ${offset + i + 1}`} text={b} style={{ lineHeight: 1.15, ...ov(`bullets[${offset + i}]`) }} />
+                <SelBox ctx={ctx} path={`bullets[${offset + i}]`} label={t('deckPreview.bulletN', { n: offset + i + 1 })} text={b} style={{ lineHeight: 1.15, ...ov(`bullets[${offset + i}]`) }} />
               </li>
             ))}
           </ul>
@@ -907,7 +912,7 @@ export default function DeckSlidePreview({
         return (
           <div className="flex flex-col h-full" style={{ gap: inch(0.12) }}>
             {slide?.body && layout === 'bullets' && (
-              <SelBox ctx={ctx} path="body" label="Texto de apoio" text={slide.body} style={{ fontSize: pt(13), color: theme.muted, lineHeight: 1.2, ...ov('body') }} />
+              <SelBox ctx={ctx} path="body" label={t('deckPreview.supportText')} text={slide.body} style={{ fontSize: pt(13), color: theme.muted, lineHeight: 1.2, ...ov('body') }} />
             )}
             {layout === 'two-column' ? (
               <div className="flex" style={{ gap: inch(0.28) }}>
@@ -937,13 +942,13 @@ export default function DeckSlidePreview({
                   <SelBox
                     ctx={ctx}
                     path={`items[${i}].title`}
-                    label={`Item ${i + 1} — título`}
+                    label={t('deckPreview.itemTitle', { n: i + 1 })}
                     text={item.title}
                     className="truncate"
                     style={{ fontFamily: theme.headingFont, fontWeight: 700, fontSize: pt(13.5), color: theme.heading, ...ov(`items[${i}].title`) }}
                   />
                   {item.body && (
-                    <SelBox ctx={ctx} path={`items[${i}].body`} label={`Item ${i + 1} — apoio`} text={item.body} className="truncate" style={{ fontSize: pt(10.5), color: theme.muted, ...ov(`items[${i}].body`) }} />
+                    <SelBox ctx={ctx} path={`items[${i}].body`} label={t('deckPreview.itemBody', { n: i + 1 })} text={item.body} className="truncate" style={{ fontSize: pt(10.5), color: theme.muted, ...ov(`items[${i}].body`) }} />
                   )}
                 </div>
               </div>
@@ -967,12 +972,12 @@ export default function DeckSlidePreview({
                 <SelBox
                   ctx={ctx}
                   path={`cards[${i}].heading`}
-                  label={`Card ${i + 1} — título`}
+                  label={t('deckPreview.cardHeading', { n: i + 1 })}
                   text={c.heading}
                   style={{ fontFamily: theme.headingFont, fontWeight: 700, fontSize: pt(12.5), color: theme.heading, lineHeight: 1.1, marginTop: c.iconAssetId ? inch(0.08) : 0, ...ov(`cards[${i}].heading`) }}
                 />
                 {c.body && (
-                  <SelBox ctx={ctx} path={`cards[${i}].body`} label={`Card ${i + 1} — corpo`} text={c.body} style={{ fontSize: pt(10), color: theme.muted, lineHeight: 1.18, marginTop: inch(0.04), ...ov(`cards[${i}].body`) }} />
+                  <SelBox ctx={ctx} path={`cards[${i}].body`} label={t('deckPreview.cardBody', { n: i + 1 })} text={c.body} style={{ fontSize: pt(10), color: theme.muted, lineHeight: 1.18, marginTop: inch(0.04), ...ov(`cards[${i}].body`) }} />
                 )}
               </div>
             ))}
@@ -996,13 +1001,13 @@ export default function DeckSlidePreview({
                 <SelBox
                   ctx={ctx}
                   path={`stats[${i}].value`}
-                  label={`KPI ${i + 1} — valor`}
+                  label={t('deckPreview.kpiValue', { n: i + 1 })}
                   text={st.value}
                   className="truncate"
                   style={{ fontFamily: theme.headingFont, fontWeight: 700, fontSize: pt(26), color: theme.heading, ...ov(`stats[${i}].value`) }}
                 />
                 {st.label && (
-                  <SelBox ctx={ctx} path={`stats[${i}].label`} label={`KPI ${i + 1} — legenda`} text={st.label} style={{ fontSize: pt(10), color: theme.muted, lineHeight: 1.18, ...ov(`stats[${i}].label`) }} />
+                  <SelBox ctx={ctx} path={`stats[${i}].label`} label={t('deckPreview.kpiLabel', { n: i + 1 })} text={st.label} style={{ fontSize: pt(10), color: theme.muted, lineHeight: 1.18, ...ov(`stats[${i}].label`) }} />
                 )}
               </div>
             ))}
@@ -1027,7 +1032,7 @@ export default function DeckSlidePreview({
                   <SelBox
                     ctx={ctx}
                     path={`${side.key}Title`}
-                    label={`Comparação — título ${side.key === 'left' ? 'esquerda' : 'direita'}`}
+                    label={side.key === 'left' ? t('deckPreview.comparisonTitleLeft') : t('deckPreview.comparisonTitleRight')}
                     text={side.title}
                     className="truncate"
                     style={{ fontFamily: theme.headingFont, fontWeight: 700, fontSize: pt(12.5), color: side.titleColor, ...ov(`${side.key}Title`) }}
@@ -1040,7 +1045,7 @@ export default function DeckSlidePreview({
                       <SelBox
                         ctx={ctx}
                         path={`${side.key}Bullets[${bi}]`}
-                        label={`Comparação ${side.key === 'left' ? 'esquerda' : 'direita'} — item ${bi + 1}`}
+                        label={side.key === 'left' ? t('deckPreview.comparisonItemLeft', { n: bi + 1 }) : t('deckPreview.comparisonItemRight', { n: bi + 1 })}
                         text={b}
                         style={{ lineHeight: 1.15, ...ov(`${side.key}Bullets[${bi}]`) }}
                       />
@@ -1079,7 +1084,7 @@ export default function DeckSlidePreview({
                   <SelBox
                     ctx={ctx}
                     path={`phases[${i}].period`}
-                    label={`Fase ${i + 1} — período`}
+                    label={t('deckPreview.phasePeriod', { n: i + 1 })}
                     text={p.period}
                     className="uppercase truncate"
                     style={{ color: theme.accent, fontWeight: 700, fontSize: pt(8.5), letterSpacing: '0.12em', marginTop: inch(0.08), ...ov(`phases[${i}].period`) }}
@@ -1088,13 +1093,13 @@ export default function DeckSlidePreview({
                 <SelBox
                   ctx={ctx}
                   path={`phases[${i}].label`}
-                  label={`Fase ${i + 1} — nome`}
+                  label={t('deckPreview.phaseName', { n: i + 1 })}
                   text={p.label}
                   className="truncate"
                   style={{ fontFamily: theme.headingFont, fontWeight: 700, fontSize: pt(12.5), color: theme.heading, marginTop: inch(0.02), ...ov(`phases[${i}].label`) }}
                 />
                 {p.body && (
-                  <SelBox ctx={ctx} path={`phases[${i}].body`} label={`Fase ${i + 1} — descrição`} text={p.body} style={{ fontSize: pt(9.5), color: theme.muted, lineHeight: 1.18, marginTop: inch(0.04), ...ov(`phases[${i}].body`) }} />
+                  <SelBox ctx={ctx} path={`phases[${i}].body`} label={t('deckPreview.phaseBody', { n: i + 1 })} text={p.body} style={{ fontSize: pt(9.5), color: theme.muted, lineHeight: 1.18, marginTop: inch(0.04), ...ov(`phases[${i}].body`) }} />
                 )}
               </div>
             ))}
@@ -1167,7 +1172,7 @@ export default function DeckSlidePreview({
                   <SelBox
                     ctx={ctx}
                     path={`columns[${i}].label`}
-                    label={`Diagrama — coluna ${i + 1}`}
+                    label={t('deckPreview.diagramColumn', { n: i + 1 })}
                     text={col.label}
                     className="uppercase truncate text-center"
                     style={{ fontSize: pt(8.5), fontWeight: 700, letterSpacing: '0.14em', color: theme.muted, ...ov(`columns[${i}].label`) }}
@@ -1182,7 +1187,7 @@ export default function DeckSlidePreview({
                           key={bi}
                           ctx={ctx}
                           path={`columns[${i}].bands[${bi}].label`}
-                          label={`Diagrama — faixa "${band.label}"`}
+                          label={t('deckPreview.diagramBand', { label: band.label })}
                           text={band.label}
                           className="flex-1 flex items-center justify-center text-center min-h-0"
                           style={{
@@ -1210,7 +1215,7 @@ export default function DeckSlidePreview({
                           <SelBox
                             ctx={ctx}
                             path={`columns[${i}].items[${ii}].label`}
-                            label={`Diagrama — box "${item.label}"`}
+                            label={t('deckPreview.diagramBox', { label: item.label })}
                             text={item.label}
                             style={{ fontSize: pt(9.5), fontWeight: 700, color: theme.heading, lineHeight: 1.1, ...ov(`columns[${i}].items[${ii}].label`) }}
                           />
@@ -1238,7 +1243,7 @@ export default function DeckSlidePreview({
           </div>
         ) : (
           <div className="h-full flex items-center justify-center" style={{ fontSize: pt(12), color: theme.faint }}>
-            Sem dados de gráfico
+            {t('deckPreview.noChartData')}
           </div>
         )
       case 'image':
@@ -1253,7 +1258,7 @@ export default function DeckSlidePreview({
             className="w-full h-full flex items-center justify-center text-center"
             style={{ border: `1px dashed ${theme.hairline}`, borderRadius: inch(0.07), color: theme.faint, fontSize: pt(12), fontStyle: 'italic', padding: inch(0.3) }}
           >
-            {slide?.body || 'Imagem a adicionar no Estúdio de Slides'}
+            {slide?.body || t('deckPreview.imagePlaceholder')}
           </div>
         )
       default:
@@ -1350,7 +1355,7 @@ export default function DeckSlidePreview({
             <SelBox
               ctx={ctx}
               path="heading"
-              label="Título da capa"
+              label={t('deckPreview.coverTitle')}
               text={heading}
               style={{ fontFamily: theme.headingFont, fontWeight: 700, fontSize: pt(35 * theme.typeScale), color: theme.onPrimary, lineHeight: 1.05, ...ov('heading') }}
             />
@@ -1358,7 +1363,7 @@ export default function DeckSlidePreview({
               <SelBox
                 ctx={ctx}
                 path="subheading"
-                label="Subtítulo da capa"
+                label={t('deckPreview.coverSubtitle')}
                 text={slide.subheading}
                 style={{ fontSize: pt(13.5), color: theme.onPrimaryMuted, marginTop: inch(0.12), lineHeight: 1.25, maxWidth: inch(7), ...ov('subheading') }}
               />
@@ -1380,7 +1385,7 @@ export default function DeckSlidePreview({
             <SelBox
               ctx={ctx}
               path="heading"
-              label="Título da seção"
+              label={t('deckPreview.sectionTitle')}
               text={heading}
               style={{ fontFamily: theme.headingFont, fontWeight: 700, fontSize: pt(29 * theme.typeScale), color: theme.onPrimary, lineHeight: 1.08, ...ov('heading') }}
             />
@@ -1388,7 +1393,7 @@ export default function DeckSlidePreview({
               <SelBox
                 ctx={ctx}
                 path="subheading"
-                label="Subtítulo da seção"
+                label={t('deckPreview.sectionSubtitle')}
                 text={slide.subheading}
                 style={{ fontSize: pt(12.5), color: theme.onPrimaryMuted, marginTop: inch(0.16), lineHeight: 1.25, maxWidth: inch(6.4), ...ov('subheading') }}
               />
@@ -1407,15 +1412,15 @@ export default function DeckSlidePreview({
             <SelBox
               ctx={ctx}
               path="heading"
-              label="Título do encerramento"
-              text={heading || 'Obrigado'}
+              label={t('deckPreview.closingTitle')}
+              text={heading || t('deckPreview.thanks')}
               style={{ fontFamily: theme.headingFont, fontWeight: 700, fontSize: pt(30 * theme.typeScale), color: theme.onPrimary, lineHeight: 1.08, ...ov('heading') }}
             />
             {(slide?.subheading || slide?.body) && (
               <SelBox
                 ctx={ctx}
                 path={slide.subheading ? 'subheading' : 'body'}
-                label="Mensagem final"
+                label={t('deckPreview.finalMessage')}
                 text={slide.subheading || slide.body}
                 style={{ fontSize: pt(13), color: theme.onPrimaryMuted, marginTop: inch(0.22), lineHeight: 1.25, maxWidth: inch(6.2), ...ov(slide.subheading ? 'subheading' : 'body') }}
               />
@@ -1437,7 +1442,7 @@ export default function DeckSlidePreview({
             <SelBox
               ctx={ctx}
               path="body"
-              label="Citação"
+              label={t('deckPreview.quote')}
               text={slide?.body || slide?.subheading || ''}
               style={{ fontFamily: theme.headingFont, fontSize: pt(21), color: contrastOn(theme.deep), lineHeight: 1.25, ...ov('body') }}
             />
@@ -1456,12 +1461,12 @@ export default function DeckSlidePreview({
           <SelBox
             ctx={ctx}
             path="heading"
-            label="Título"
+            label={t('deckPreview.heading')}
             text={heading}
             style={{ fontFamily: theme.headingFont, fontWeight: 700, fontSize: pt(21 * theme.typeScale), color: theme.heading, lineHeight: 1.08, marginTop: slide?.kicker ? inch(0.1) : 0, ...ov('heading') }}
           />
           {slide?.subheading && (
-            <SelBox ctx={ctx} path="subheading" label="Subtítulo" text={slide.subheading} style={{ fontSize: pt(12.5), color: theme.muted, marginTop: inch(0.04), lineHeight: 1.2, ...ov('subheading') }} />
+            <SelBox ctx={ctx} path="subheading" label={t('deckPreview.subheading')} text={slide.subheading} style={{ fontSize: pt(12.5), color: theme.muted, marginTop: inch(0.04), lineHeight: 1.2, ...ov('subheading') }} />
           )}
           <div style={{ borderBottom: `1px solid ${theme.hairline}`, marginTop: inch(0.14) }} />
           <div className="flex-1 min-h-0" style={{ paddingTop: inch(0.2), paddingBottom: inch(0.08) }}>{body()}</div>
@@ -1469,7 +1474,7 @@ export default function DeckSlidePreview({
             <SelBox
               ctx={ctx}
               path="footnote"
-              label="Nota de pé"
+              label={t('deckPreview.footnote')}
               text={slide.footnote}
               className="truncate"
               style={{ fontSize: pt(8), fontStyle: 'italic', color: theme.faint, paddingBottom: inch(0.04), ...ov('footnote') }}

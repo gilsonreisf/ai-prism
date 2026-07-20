@@ -7,15 +7,16 @@ import {
   stopSpeaking,
   plainForSpeech,
 } from '../lib/speech.js'
-
-const LABELS = {
-  listening: 'Ouvindo…',
-  thinking: 'Pensando…',
-  speaking: 'Falando…',
-  idle: 'Toque para falar',
-}
+import { useT } from '../lib/i18n.jsx'
 
 export default function VoiceOverlay({ open, onClose, onSend }) {
+  const t = useT()
+  const LABELS = {
+    listening: t('voice.listening'),
+    thinking: t('voice.thinking'),
+    speaking: t('voice.speaking'),
+    idle: t('voice.idle'),
+  }
   const [status, setStatus] = useState('idle')
   const [transcript, setTranscript] = useState('')
   const [reply, setReply] = useState('')
@@ -116,7 +117,7 @@ export default function VoiceOverlay({ open, onClose, onSend }) {
 
       {!dictationSupported && (
         <p className="text-[var(--muted)] mb-6 max-w-sm text-center px-6">
-          O reconhecimento de voz não é suportado neste navegador. Use o Chrome ou Edge.
+          {t('voice.unsupported')}
         </p>
       )}
 
@@ -151,17 +152,17 @@ export default function VoiceOverlay({ open, onClose, onSend }) {
           }}
           className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-2)] px-5 py-2.5 text-sm font-medium"
         >
-          <Icon.Mic size={16} /> Falar de novo
+          <Icon.Mic size={16} /> {t('voice.speakAgain')}
         </button>
         <button
           onClick={onClose}
           className="flex items-center gap-2 rounded-full bg-[var(--accent)] hover:brightness-110 text-white px-5 py-2.5 text-sm font-semibold"
         >
-          Encerrar
+          {t('voice.end')}
         </button>
       </div>
       <p className="absolute bottom-5 text-[11px] text-[var(--faint)]">
-        Modo de voz · Powered by Databricks AI Gateway
+        {t('voice.footer')}
       </p>
     </div>
   )

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Icon from './Icons.jsx'
+import { useT } from '../lib/i18n.jsx'
 import { getJSON, postJSON, del } from '../api.js'
 
 // Admin panel (rendered inside SettingsModal, only for admins): manages who
@@ -8,6 +9,7 @@ import { getJSON, postJSON, del } from '../api.js'
 // The principal input suggests users/groups that already have CAN_USE or
 // CAN_MANAGE on the app (permissions API via /api/admins/candidates).
 export default function AdminSettings({ open }) {
+  const t = useT()
   const [data, setData] = useState(null) // { owner, admins, groupCheck }
   const [principal, setPrincipal] = useState('')
   const [busy, setBusy] = useState(false)
@@ -82,7 +84,7 @@ export default function AdminSettings({ open }) {
       setPrincipal('')
       await load()
     } catch (e) {
-      setError(e.message || 'falha ao adicionar')
+      setError(e.message || t('admins.error.add'))
     } finally {
       setBusy(false)
     }
@@ -95,7 +97,7 @@ export default function AdminSettings({ open }) {
       await del(`/api/admins/${encodeURIComponent(p)}`)
       setData((d) => ({ ...d, admins: d.admins.filter((a) => a.principal !== p) }))
     } catch (e) {
-      setError(e.message || 'falha ao remover')
+      setError(e.message || t('admins.error.remove'))
     } finally {
       setBusy(false)
     }
@@ -104,18 +106,17 @@ export default function AdminSettings({ open }) {
   return (
     <div>
       <label className="text-sm font-semibold flex items-center gap-2">
-        <Icon.Shield size={16} /> Administração do app
+        <Icon.Shield size={16} /> {t('admins.title')}
       </label>
       <p className="text-xs text-[var(--faint)] mt-1">
-        Administradores podem publicar design systems como padrão para todos os usuários e gerenciar
-        esta lista. O proprietário ({data.owner}) é sempre administrador.
+        {t('admins.description', { owner: data.owner })}
       </p>
 
       <div className="mt-3 space-y-1.5">
         <div className="flex items-center gap-2 text-xs rounded-lg border border-[var(--border)] px-3 py-2">
           <Icon.Check size={13} className="text-[var(--accent)] shrink-0" />
           <span className="flex-1 truncate font-medium">{data.owner}</span>
-          <span className="text-[var(--faint)]">proprietário</span>
+          <span className="text-[var(--faint)]">{t('admins.owner')}</span>
         </div>
         {data.admins.map((a) => (
           <div key={a.principal} className="flex items-center gap-2 text-xs rounded-lg border border-[var(--border)] px-3 py-2">
@@ -125,11 +126,11 @@ export default function AdminSettings({ open }) {
               <Icon.User size={13} className="shrink-0 text-[var(--muted)]" />
             )}
             <span className="flex-1 truncate font-medium">{a.principal}</span>
-            <span className="text-[var(--faint)]">{a.kind === 'group' ? 'grupo' : 'usuário'}</span>
+            <span className="text-[var(--faint)]">{a.kind === 'group' ? t('admins.kind.group') : t('admins.kind.user')}</span>
             <button
               onClick={() => remove(a.principal)}
               className="p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--muted)]"
-              title="Remover administrador"
+              title={t('admins.removeTitle')}
             >
               <Icon.Trash size={12} />
             </button>
@@ -144,7 +145,7 @@ export default function AdminSettings({ open }) {
           <div className="relative">
             {/* inferred-kind adornment: the app already knows whether the typed
                 principal is a user or a group — no select needed */}
-            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" title={principal.trim() ? (inferKind(principal) === 'group' ? 'Grupo do workspace' : 'Usuário') : 'Usuário ou grupo'}>
+            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" title={principal.trim() ? (inferKind(principal) === 'group' ? t('admins.inferKind.group') : t('admins.inferKind.user')) : t('admins.inferKind.either')}>
               {!principal.trim() ? (
                 <Icon.User size={13} />
               ) : inferKind(principal) === 'group' ? (
@@ -159,7 +160,7 @@ export default function AdminSettings({ open }) {
               onFocus={() => setInputFocused(true)}
               onBlur={() => setInputFocused(false)}
               onKeyDown={(e) => e.key === 'Enter' && add()}
-              placeholder="e-mail do usuário ou nome do grupo…"
+              placeholder={t('admins.inputPlaceholder')}
               className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface-2)] pl-8 pr-3 py-2 text-xs outline-none focus:border-[var(--accent)]"
             />
           </div>
@@ -169,7 +170,7 @@ export default function AdminSettings({ open }) {
             // ~5 rows visible (each ≈40px), the rest scrolls; capped at 25.
             <div ref={listRef} className="mt-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1 max-h-[212px] overflow-y-auto">
               <p className="px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--faint)]">
-                Com acesso ao app
+                {t('admins.withAccess')}
               </p>
               {suggestions.map((c) => (
                 <button
@@ -191,7 +192,7 @@ export default function AdminSettings({ open }) {
                     {c.display && <span className="block text-[10px] text-[var(--faint)] truncate">{c.principal}</span>}
                   </span>
                   <span className="shrink-0 text-[9px] uppercase text-[var(--faint)]">
-                    {c.level === 'CAN_MANAGE' ? 'manage' : 'use'}
+                    {c.level === 'CAN_MANAGE' ? t('admins.level.manage') : t('admins.level.use')}
                   </span>
                 </button>
               ))}
@@ -203,13 +204,12 @@ export default function AdminSettings({ open }) {
           disabled={!principal.trim() || busy}
           className="rounded-lg bg-[var(--surface-3)] hover:brightness-110 disabled:opacity-40 text-xs font-semibold px-3 py-2"
         >
-          Adicionar
+          {t('admins.add')}
         </button>
       </div>
       {inferKind(principal) === 'group' && principal.trim() && data.groupCheck === 'unavailable' && (
         <p className="text-[11px] text-[var(--faint)] mt-1.5">
-          ⚠ A checagem de grupos (SCIM) não está disponível com os escopos atuais do app — admins por
-          grupo não terão efeito até o escopo IAM ser adicionado. Admins por e-mail funcionam sempre.
+          {t('admins.groupCheckWarning')}
         </p>
       )}
       {error && <p className="text-[11px] text-red-400 mt-1.5">{error}</p>}

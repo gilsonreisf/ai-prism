@@ -1,6 +1,6 @@
 import pg from 'pg'
 
-const { Client } = pg
+const { Client, Pool } = pg
 
 // ---- connection identity ----------------------------------------------------
 // Preferred: the APP's service principal (Databricks Apps inject
@@ -60,18 +60,73 @@ function connInfo(user, password) {
   }
 }
 
-// Tokens rotate (~hourly), so a fresh short-lived client per request keeps
-// credentials always-valid without pooling stale ones.
+// ---- connection pooling ------------------------------------------------------
+// The Lakebase handshake (TLS + auth) costs ~2s in-region, and a single chat
+// turn runs ~10 DB operations. Opening a fresh Client per op (the original
+// design) serialized ~20s of pure handshake onto every turn. Pooling reuses
+// warm sockets: only the FIRST op of a cold pool pays the handshake.
+//
+// Token rotation (the reason pooling was originally avoided) is handled two
+// ways: (1) `password` is passed as an async FUNCTION — node-postgres calls it
+// for each NEW physical connection, so a fresh SP token is fetched at connect
+// time; and (2) an already-open socket doesn't re-authenticate (Postgres only
+// checks credentials at connect), so a mid-flight token expiry can't break a
+// live connection. Idle connections are reaped after `idleTimeoutMillis`, and
+// `maxLifetime` caps how long any socket lives so we never sit on an ancient
+// one. A per-connection error (e.g. server-side termination) just removes it
+// from the pool; the next acquire opens a fresh one.
+const POOL_OPTS = {
+  max: 8,
+  idleTimeoutMillis: 5 * 60 * 1000,
+  maxLifetimeSeconds: 30 * 60,
+  allowExitOnIdle: true,
+}
+
+// SP pool: one shared identity for the whole app, so a single pool serves every
+// user. `password` is a function → each new connection gets a fresh SP token.
+let spPool = null
+function getSpPool() {
+  if (!spPool) {
+    spPool = new Pool({
+      ...connInfo(process.env.DATABRICKS_CLIENT_ID, () => spAccessToken()),
+      ...POOL_OPTS,
+    })
+    // a broken idle socket must never crash the process — pg emits 'error' on
+    // the pool for backend-terminated idle clients; drop it and move on.
+    spPool.on('error', (e) => console.warn('lakebase SP pool: idle client error (dropped):', e.message))
+  }
+  return spPool
+}
+
+// Per-user pools, keyed by email — ONLY when the password is stable across the
+// process (PGPASSWORD, i.e. local dev with a generated DB credential). With a
+// rotating OBO token as password we can't safely pool (a reaped+reopened
+// connection would use a stale token), so that path stays one-shot below.
+const userPools = new Map()
+function getUserPool(userEmail, password) {
+  let p = userPools.get(userEmail)
+  if (!p) {
+    p = new Pool({ ...connInfo(userEmail, password), ...POOL_OPTS })
+    p.on('error', (e) => console.warn(`lakebase user pool (${userEmail}): idle client error (dropped):`, e.message))
+    userPools.set(userEmail, p)
+  }
+  return p
+}
+
+// Runs fn(client) with a pooled connection, releasing it back afterward.
+async function withPool(pool, fn) {
+  const client = await pool.connect()
+  try {
+    return await fn(client)
+  } finally {
+    client.release()
+  }
+}
+
 async function withClient(userEmail, userToken, fn) {
   if (process.env.DATABRICKS_CLIENT_ID && process.env.DATABRICKS_CLIENT_SECRET && Date.now() >= spDisabledUntil) {
     try {
-      const client = new Client(connInfo(process.env.DATABRICKS_CLIENT_ID, await spAccessToken()))
-      await client.connect()
-      try {
-        return await fn(client)
-      } finally {
-        await client.end().catch(() => {})
-      }
+      return await withPool(getSpPool(), fn)
     } catch (e) {
       // only auth/connection/authorization failures demote to the per-user
       // path; real query errors (thrown inside fn) must surface, not be
@@ -87,7 +142,14 @@ async function withClient(userEmail, userToken, fn) {
   // workspace CLI tokens are NOT accepted by Lakebase, so a dedicated
   // credential (databricks database generate-database-credential) can be
   // supplied via PGPASSWORD without affecting API bearer usage.
-  const client = new Client(connInfo(userEmail, process.env.PGPASSWORD || userToken))
+  const stablePassword = process.env.PGPASSWORD
+  if (stablePassword) {
+    // stable password across the process → safe to pool by user
+    return await withPool(getUserPool(userEmail, stablePassword), fn)
+  }
+  // rotating OBO token as password: can't pool safely, so keep the original
+  // fresh-client-per-op behavior (always uses a currently-valid token).
+  const client = new Client(connInfo(userEmail, userToken))
   await client.connect()
   try {
     return await fn(client)
@@ -108,6 +170,9 @@ export async function ensureSchema(userEmail, userToken) {
         await c.query(`SELECT principal FROM app_admins LIMIT 0`)
         await c.query(`SELECT template_id FROM user_template_selection LIMIT 0`)
         await c.query(`SELECT id FROM chat_spreadsheets LIMIT 0`)
+        await c.query(`SELECT endpoint_id FROM model_catalog_overrides LIMIT 0`)
+        await c.query(`SELECT connection_name FROM user_mcp_connections LIMIT 0`)
+        await c.query(`SELECT triggers FROM skills LIMIT 0`)
         return true
       } catch {
         return false
@@ -340,6 +405,74 @@ async function runSchemaDdl(c) {
       INSERT INTO user_template_selection (user_email, template_id)
         SELECT user_email, id FROM deck_templates WHERE is_selected
       ON CONFLICT (user_email) DO NOTHING;`)
+    // ---- admin-curated model catalog -------------------------------------
+    // one row per AI Gateway serving endpoint an admin has touched: whether
+    // it's enabled for the org, plus the display name/blurb users will see in
+    // the model picker. Endpoints with no row fall back to the derived/curated
+    // defaults; GET /api/models surfaces only enabled ones (with a safe seed
+    // so the org is never left with zero models). Global (org-wide), so no
+    // user_email — writes are gated to admins at the route layer.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS model_catalog_overrides (
+        endpoint_id TEXT PRIMARY KEY,
+        enabled BOOLEAN NOT NULL DEFAULT false,
+        display_name TEXT,
+        blurb TEXT,
+        sort_order INT,
+        updated_by TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );`)
+    // ---- per-user adopted external MCP connections -----------------------
+    // records that a user has "connected" a UC HTTP MCP connection (chose to
+    // use it) plus the last probed auth status. Holds NO credential — the
+    // bearer is always the user's forwarded OAuth token; this only remembers
+    // intent + status so the tool picker can show adopted connections as
+    // on/off toggles (default on) instead of a search-every-time list.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS user_mcp_connections (
+        user_email TEXT NOT NULL,
+        connection_name TEXT NOT NULL,
+        comment TEXT,
+        status TEXT NOT NULL DEFAULT 'unknown',
+        last_checked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (user_email, connection_name)
+      );`)
+    // ---- authored skills (progressive-disclosure capabilities) -----------
+    // A skill is a named capability whose detailed instructions (`body`) are
+    // injected into the system prompt ONLY when a turn is routed to it (see
+    // server/skills.js). `scope` = 'global' (admin-authored, whole org) or
+    // 'user' (owner_email's own). The system skills (deck/spreadsheet/chart)
+    // live in code, not here. `triggers` are optional keywords for the lexical
+    // route; `embedding` (of "title — description") powers the semantic route.
+    // Isolation is app-level, same as everything else: WHERE scope='global'
+    // OR (scope='user' AND owner_email=$user).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS skills (
+        id BIGSERIAL PRIMARY KEY,
+        scope TEXT NOT NULL DEFAULT 'user',
+        owner_email TEXT,
+        name TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        body TEXT NOT NULL,
+        triggers JSONB NOT NULL DEFAULT '[]'::jsonb,
+        embedding DOUBLE PRECISION[],
+        source TEXT DEFAULT 'write',
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        created_by TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );`)
+    // a skill name is unique within its owning scope (global names are org-wide;
+    // user names are per-user) — enforced with two partial unique indexes so a
+    // user can reuse a name the org also uses
+    await c.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_global_name ON skills(name) WHERE scope = 'global';`
+    )
+    await c.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_user_name ON skills(owner_email, name) WHERE scope = 'user';`
+    )
 }
 
 // grants: the app service principal gets DML on the app tables — row
@@ -571,9 +704,17 @@ export async function listSessionsForSearch(userEmail, userToken) {
  */
 export async function addMessage(userEmail, userToken, msg) {
   return withClient(userEmail, userToken, async (c) => {
+    // chat_messages has no user_email of its own — ownership is inherited from
+    // the parent session. Since every user shares one Postgres identity (the
+    // app SP), the ONLY isolation is this app-level check: the INSERT ... SELECT
+    // materializes a row only when the target session belongs to the caller, so
+    // a client can never inject a message into someone else's thread by passing
+    // a guessed (enumerable BIGSERIAL) session id.
     const r = await c.query(
       `INSERT INTO chat_messages (session_id, role, content, attachments, model, prompt_tokens, completion_tokens, blocks, variant_group)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
+       SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
+       WHERE EXISTS (SELECT 1 FROM chat_sessions WHERE id = $1 AND user_email = $10)
+       RETURNING id, created_at`,
       [
         msg.sessionId,
         msg.role,
@@ -584,8 +725,10 @@ export async function addMessage(userEmail, userToken, msg) {
         msg.completionTokens ?? null,
         msg.blocks ? JSON.stringify(msg.blocks) : null,
         msg.variantGroup ?? null,
+        userEmail,
       ]
     )
+    if (!r.rows.length) throw Object.assign(new Error('sessão não encontrada'), { status: 404 })
     const id = r.rows[0].id
     if (msg.variantGroup == null) {
       await c.query(`UPDATE chat_messages SET variant_group = $1 WHERE id = $1`, [id])
@@ -601,8 +744,10 @@ export async function addMessage(userEmail, userToken, msg) {
 export async function getMessageRaw(userEmail, userToken, messageId) {
   return withClient(userEmail, userToken, async (c) => {
     const r = await c.query(
-      `SELECT session_id, role, content, attachments, variant_group FROM chat_messages WHERE id = $1`,
-      [messageId]
+      `SELECT m.session_id, m.role, m.content, m.attachments, m.variant_group FROM chat_messages m
+       JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $2
+       WHERE m.id = $1`,
+      [messageId, userEmail]
     )
     if (!r.rows.length) return null
     const x = r.rows[0]
@@ -616,11 +761,69 @@ export async function getMessageRaw(userEmail, userToken, messageId) {
   })
 }
 
+// Returns the parsed blocks array stored on a message (or null).
+export async function getMessageBlocks(userEmail, userToken, messageId) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `SELECT m.blocks FROM chat_messages m
+       JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $2
+       WHERE m.id = $1`,
+      [messageId, userEmail]
+    )
+    return r.rows.length ? r.rows[0].blocks || null : null
+  })
+}
+
+// Persists answers into a `deck-questions` block stored on a message's blocks
+// JSONB. Answers are stamped onto the first deck-questions block found (there's
+// only ever one per message). Returns the updated blocks array, or null if the
+// message has no such block. `answersMap` is already sanitized by the caller.
+export async function setDeckQuestionsAnswers(userEmail, userToken, messageId, answersMap, answeredAt) {
+  return withClient(userEmail, userToken, async (c) => {
+    // only read/write a message whose session belongs to the caller
+    const r = await c.query(
+      `SELECT m.blocks FROM chat_messages m
+       JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $2
+       WHERE m.id = $1`,
+      [messageId, userEmail]
+    )
+    if (!r.rows.length || !r.rows[0].blocks) return null
+    const blocks = r.rows[0].blocks
+    let touched = false
+    for (const b of blocks) {
+      if (b && b.type === 'deck-questions') {
+        b.answers = answersMap
+        b.answeredAt = answeredAt
+        touched = true
+        break
+      }
+    }
+    if (!touched) return null
+    // the WHERE still re-checks ownership so a concurrent session move can't slip
+    // the write onto another user's row between the SELECT and the UPDATE
+    await c.query(
+      `UPDATE chat_messages m SET blocks = $2
+       FROM chat_sessions s
+       WHERE m.id = $1 AND s.id = m.session_id AND s.user_email = $3`,
+      [messageId, JSON.stringify(blocks), userEmail]
+    )
+    return blocks
+  })
+}
+
 // Marks one specific variant as the active one for its slot — used when the
 // user navigates the version carousel to a message other than the latest.
 export async function activateVariant(userEmail, userToken, messageId) {
   await withClient(userEmail, userToken, async (c) => {
-    const r = await c.query(`SELECT variant_group FROM chat_messages WHERE id = $1`, [messageId])
+    // resolve the variant group only for a message in the caller's own session,
+    // so the subsequent UPDATE can't flip the active variant in someone else's
+    // thread by targeting a guessed message id
+    const r = await c.query(
+      `SELECT m.variant_group FROM chat_messages m
+       JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $2
+       WHERE m.id = $1`,
+      [messageId, userEmail]
+    )
     if (!r.rows.length) return
     await c.query(`UPDATE chat_messages SET active = (id = $1) WHERE variant_group = $2`, [
       messageId,
@@ -633,11 +836,18 @@ export async function activateVariant(userEmail, userToken, messageId) {
 // for a regeneration): fetches every row, attaches tool-call traces, then
 // keeps only the active variant per slot — optionally cut off before a given
 // slot — ordered by slot position rather than row id (see note below).
-async function fetchActiveMessages(c, sessionId, { beforeVariantGroup } = {}) {
+async function fetchActiveMessages(c, sessionId, userEmail, { beforeVariantGroup } = {}) {
+  // ownership is enforced by joining chat_messages back to its parent session:
+  // rows surface only when the session belongs to userEmail. Without this an
+  // authenticated user could read another user's thread (messages + tool
+  // traces) by passing a guessed session id — chat_messages carries no
+  // user_email column of its own, and every user shares one PG identity.
   const r = await c.query(
-    `SELECT id, role, content, attachments, model, prompt_tokens, completion_tokens, blocks, variant_group, active, created_at
-     FROM chat_messages WHERE session_id = $1 ORDER BY id ASC`,
-    [sessionId]
+    `SELECT m.id, m.role, m.content, m.attachments, m.model, m.prompt_tokens, m.completion_tokens, m.blocks, m.variant_group, m.active, m.created_at
+     FROM chat_messages m
+     JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $2
+     WHERE m.session_id = $1 ORDER BY m.id ASC`,
+    [sessionId, userEmail]
   )
   const ids = r.rows.map((x) => x.id)
   const toolsByMessage = new Map()
@@ -702,7 +912,7 @@ async function fetchActiveMessages(c, sessionId, { beforeVariantGroup } = {}) {
 }
 
 export async function listMessages(userEmail, userToken, sessionId) {
-  return withClient(userEmail, userToken, (c) => fetchActiveMessages(c, sessionId))
+  return withClient(userEmail, userToken, (c) => fetchActiveMessages(c, sessionId, userEmail))
 }
 
 // Conversation history strictly before the slot `messageId` belongs to — what
@@ -711,13 +921,17 @@ export async function listMessages(userEmail, userToken, sessionId) {
 // the same slot.
 export async function listMessagesBeforeMessage(userEmail, userToken, sessionId, messageId) {
   return withClient(userEmail, userToken, async (c) => {
-    const g = await c.query(`SELECT variant_group FROM chat_messages WHERE id = $1 AND session_id = $2`, [
-      messageId,
-      sessionId,
-    ])
+    // scope the slot lookup to a session the caller owns (join to chat_sessions)
+    // so a regenerate can't be aimed at someone else's message id
+    const g = await c.query(
+      `SELECT m.variant_group FROM chat_messages m
+       JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $3
+       WHERE m.id = $1 AND m.session_id = $2`,
+      [messageId, sessionId, userEmail]
+    )
     if (!g.rows.length) return { variantGroup: null, messages: [] }
     const variantGroup = g.rows[0].variant_group
-    const messages = await fetchActiveMessages(c, sessionId, { beforeVariantGroup: variantGroup })
+    const messages = await fetchActiveMessages(c, sessionId, userEmail, { beforeVariantGroup: variantGroup })
     return { variantGroup: String(variantGroup), messages }
   })
 }
@@ -900,12 +1114,33 @@ export async function listDeckTemplates(userEmail, userToken, { renderAssets = f
 // the /selected render endpoint) only resolves icon/image/illustration assets,
 // so this always takes the render cut — the full asset library stays behind
 // the list/detail endpoints for the Settings grid.
+// The selected template is read on the hot path of EVERY chat turn, but its
+// heavy render-cut payload (preview_slides/palette/font_assets/mined_style/
+// cover plate — can be MBs of jsonb) changes only when the user edits/selects/
+// deletes a template. So memoize it per user with a short TTL and invalidate
+// explicitly on writes. TTL is a backstop for cross-process edits (this app can
+// run multiple replicas); the explicit bump covers same-process edits instantly.
+const SELECTED_TEMPLATE_TTL_MS = 60 * 1000
+const selectedTemplateCache = new Map() // email -> { ts, template }
+
+// Bumped by every template write (create/update/select/delete/scope) so the
+// next hot-path read re-fetches instead of serving a stale bundle.
+export function invalidateSelectedTemplate(userEmail) {
+  if (userEmail) selectedTemplateCache.delete(userEmail)
+  else selectedTemplateCache.clear()
+}
+
 export async function getSelectedDeckTemplate(userEmail, userToken) {
+  const hit = selectedTemplateCache.get(userEmail)
+  if (hit && Date.now() - hit.ts < SELECTED_TEMPLATE_TTL_MS) return hit.template
   const templates = await listDeckTemplates(userEmail, userToken, { renderAssets: true })
-  return templates.find((t) => t.isSelected) || templates[0] || null
+  const template = templates.find((t) => t.isSelected) || templates[0] || null
+  selectedTemplateCache.set(userEmail, { ts: Date.now(), template })
+  return template
 }
 
 export async function createDeckTemplate(userEmail, userToken, tpl) {
+  invalidateSelectedTemplate()
   return withClient(userEmail, userToken, async (c) => {
     const existing = await c.query(`SELECT COUNT(*)::int AS n FROM deck_templates WHERE user_email = $1`, [
       userEmail,
@@ -955,6 +1190,8 @@ export async function createDeckTemplate(userEmail, userToken, tpl) {
 // edits identity fields off a SUMMARY row (see templateSummary) and must not
 // blank out payloads it never loaded.
 export async function updateDeckTemplate(userEmail, userToken, id, tpl, isAdmin = false) {
+  // a global edit affects every user's hot-path read, so clear the whole cache
+  invalidateSelectedTemplate()
   return withClient(userEmail, userToken, async (c) => {
     const r = await c.query(
       `UPDATE deck_templates SET
@@ -1009,6 +1246,7 @@ export async function getDeckTemplate(userEmail, userToken, id) {
 }
 
 export async function selectDeckTemplate(userEmail, userToken, id) {
+  invalidateSelectedTemplate(userEmail)
   return withClient(userEmail, userToken, async (c) => {
     const visible = await c.query(
       `SELECT 1 FROM deck_templates WHERE id = $1 AND (user_email = $2 OR scope = 'global')`,
@@ -1028,6 +1266,7 @@ export async function selectDeckTemplate(userEmail, userToken, id) {
 // route computes isAdmin (authz.js) and the SQL mirrors it so a route bug
 // can never silently cross-write another user's template
 export async function deleteDeckTemplate(userEmail, userToken, id, isAdmin = false) {
+  invalidateSelectedTemplate()
   return withClient(userEmail, userToken, async (c) => {
     const r = await c.query(
       `DELETE FROM deck_templates
@@ -1039,6 +1278,7 @@ export async function deleteDeckTemplate(userEmail, userToken, id, isAdmin = fal
 }
 
 export async function setDeckTemplateScope(userEmail, userToken, id, scope) {
+  invalidateSelectedTemplate()
   return withClient(userEmail, userToken, async (c) => {
     // demoting a global row hands ownership to the acting admin so it doesn't
     // become an orphan visible to nobody
@@ -1079,6 +1319,214 @@ export async function addAppAdmin(userEmail, userToken, principal, kind) {
 export async function removeAppAdmin(userEmail, userToken, principal) {
   await withClient(userEmail, userToken, async (c) => {
     await c.query(`DELETE FROM app_admins WHERE principal = $1`, [principal])
+  })
+}
+
+// ---- admin-curated model catalog overrides ------------------------------
+export async function listModelOverrides(userEmail, userToken) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `SELECT endpoint_id, enabled, display_name, blurb, sort_order, updated_by, updated_at
+         FROM model_catalog_overrides`
+    )
+    const map = {}
+    for (const x of r.rows) {
+      map[x.endpoint_id] = {
+        endpointId: x.endpoint_id,
+        enabled: !!x.enabled,
+        displayName: x.display_name || '',
+        blurb: x.blurb || '',
+        sortOrder: x.sort_order,
+        updatedBy: x.updated_by || '',
+        updatedAt: x.updated_at,
+      }
+    }
+    return map
+  })
+}
+
+export async function upsertModelOverride(userEmail, userToken, endpointId, { enabled, displayName, blurb, sortOrder }) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query(
+      `INSERT INTO model_catalog_overrides (endpoint_id, enabled, display_name, blurb, sort_order, updated_by, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       ON CONFLICT (endpoint_id) DO UPDATE SET
+         enabled = EXCLUDED.enabled,
+         display_name = EXCLUDED.display_name,
+         blurb = EXCLUDED.blurb,
+         sort_order = EXCLUDED.sort_order,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = NOW()`,
+      [endpointId, !!enabled, displayName || null, blurb || null, sortOrder ?? null, userEmail]
+    )
+  })
+}
+
+// Seed the catalog from the static MODELS list the FIRST time an admin opens
+// the models tab and no overrides exist yet — so switching /api/models to
+// "enabled only" never leaves the org with zero models. Idempotent: only
+// inserts rows that don't exist.
+export async function seedModelOverridesIfEmpty(userEmail, userToken, seedRows) {
+  return withClient(userEmail, userToken, async (c) => {
+    const existing = await c.query(`SELECT COUNT(*)::int AS n FROM model_catalog_overrides`)
+    if (existing.rows[0].n > 0) return false
+    for (let i = 0; i < seedRows.length; i++) {
+      const s = seedRows[i]
+      await c.query(
+        `INSERT INTO model_catalog_overrides (endpoint_id, enabled, display_name, blurb, sort_order, updated_by)
+           VALUES ($1, true, $2, $3, $4, $5)
+         ON CONFLICT (endpoint_id) DO NOTHING`,
+        [s.id, s.label || null, s.blurb || null, i, userEmail]
+      )
+    }
+    return true
+  })
+}
+
+// ---- per-user adopted external MCP connections --------------------------
+export async function listUserMcpConnections(userEmail, userToken) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `SELECT connection_name, comment, status, last_checked_at, created_at
+         FROM user_mcp_connections WHERE user_email = $1 ORDER BY created_at ASC`,
+      [userEmail]
+    )
+    return r.rows.map((x) => ({
+      connectionName: x.connection_name,
+      comment: x.comment || '',
+      status: x.status || 'unknown',
+      lastCheckedAt: x.last_checked_at,
+      createdAt: x.created_at,
+    }))
+  })
+}
+
+export async function adoptUserMcpConnection(userEmail, userToken, connectionName, comment, status) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query(
+      `INSERT INTO user_mcp_connections (user_email, connection_name, comment, status, last_checked_at)
+         VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (user_email, connection_name) DO UPDATE SET
+         comment = EXCLUDED.comment,
+         status = EXCLUDED.status,
+         last_checked_at = NOW()`,
+      [userEmail, connectionName, comment || null, status || 'unknown']
+    )
+  })
+}
+
+export async function setUserMcpStatus(userEmail, userToken, connectionName, status) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query(
+      `UPDATE user_mcp_connections SET status = $3, last_checked_at = NOW()
+         WHERE user_email = $1 AND connection_name = $2`,
+      [userEmail, connectionName, status]
+    )
+  })
+}
+
+export async function forgetUserMcpConnection(userEmail, userToken, connectionName) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query(`DELETE FROM user_mcp_connections WHERE user_email = $1 AND connection_name = $2`, [
+      userEmail,
+      connectionName,
+    ])
+  })
+}
+
+// ---- authored skills ----------------------------------------------------
+function shapeSkill(x) {
+  return {
+    id: String(x.id),
+    scope: x.scope,
+    ownerEmail: x.owner_email || null,
+    name: x.name,
+    title: x.title,
+    description: x.description,
+    body: x.body,
+    triggers: Array.isArray(x.triggers) ? x.triggers : [],
+    embedding: x.embedding || null,
+    source: x.source || 'write',
+    enabled: !!x.enabled,
+    createdBy: x.created_by || '',
+    updatedAt: x.updated_at,
+  }
+}
+
+// Every skill this user can see: all global skills ∪ their own. `includeBody`
+// false trims the (large) body/embedding for list views; the router needs
+// them, the settings list doesn't.
+export async function listSkills(userEmail, userToken, { includeBody = true } = {}) {
+  return withClient(userEmail, userToken, async (c) => {
+    const cols = includeBody
+      ? `id, scope, owner_email, name, title, description, body, triggers, embedding, source, enabled, created_by, updated_at`
+      : `id, scope, owner_email, name, title, description, '' AS body, triggers, NULL AS embedding, source, enabled, created_by, updated_at`
+    const r = await c.query(
+      `SELECT ${cols} FROM skills
+        WHERE scope = 'global' OR (scope = 'user' AND owner_email = $1)
+        ORDER BY scope DESC, updated_at DESC`,
+      [userEmail]
+    )
+    return r.rows.map(shapeSkill)
+  })
+}
+
+export async function getSkill(userEmail, userToken, id) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `SELECT id, scope, owner_email, name, title, description, body, triggers, embedding, source, enabled, created_by, updated_at
+         FROM skills WHERE id = $1 AND (scope = 'global' OR (scope = 'user' AND owner_email = $2))`,
+      [id, userEmail]
+    )
+    return r.rows.length ? shapeSkill(r.rows[0]) : null
+  })
+}
+
+// Insert or update a skill. `scope` decides ownership: 'global' rows have a
+// NULL owner (the caller must be admin — enforced at the route); 'user' rows
+// belong to the caller. Returns the row's id.
+export async function upsertSkill(userEmail, userToken, { id, scope, name, title, description, body, triggers, source, enabled }) {
+  return withClient(userEmail, userToken, async (c) => {
+    const owner = scope === 'global' ? null : userEmail
+    const trig = JSON.stringify(Array.isArray(triggers) ? triggers : [])
+    if (id) {
+      // update in place, but only a row the caller may touch (own user row, or
+      // any global row when this is a global-scoped call from an admin route)
+      const r = await c.query(
+        `UPDATE skills SET name=$3, title=$4, description=$5, body=$6, triggers=$7::jsonb,
+           enabled=$8, embedding=NULL, updated_at=NOW()
+         WHERE id=$1 AND (
+           (scope='user' AND owner_email=$2) OR (scope='global' AND $9='global')
+         )
+         RETURNING id`,
+        [id, userEmail, name, title, description, body, trig, enabled !== false, scope]
+      )
+      return r.rows[0] ? String(r.rows[0].id) : null
+    }
+    const r = await c.query(
+      `INSERT INTO skills (scope, owner_email, name, title, description, body, triggers, source, enabled, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10) RETURNING id`,
+      [scope || 'user', owner, name, title, description, body, trig, source || 'write', enabled !== false, userEmail]
+    )
+    return String(r.rows[0].id)
+  })
+}
+
+export async function setSkillEmbedding(userEmail, userToken, id, vec) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query(`UPDATE skills SET embedding = $2 WHERE id = $1`, [id, vec])
+  })
+}
+
+export async function deleteSkill(userEmail, userToken, id, { allowGlobal = false } = {}) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `DELETE FROM skills
+         WHERE id = $1 AND ((scope='user' AND owner_email=$2) OR (scope='global' AND $3))
+       RETURNING id`,
+      [id, userEmail, allowGlobal]
+    )
+    return r.rows.length > 0
   })
 }
 

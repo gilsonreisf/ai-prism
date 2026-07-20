@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import Logo from './Logo.jsx'
 import * as Icon from './Icons.jsx'
-import { timeGroup } from '../lib/date.js'
+import { timeGroupKey } from '../lib/date.js'
+import { useT } from '../lib/i18n.jsx'
 
 // Shown while the session list is being fetched — without it, an empty
 // sidebar briefly reads as "you have no conversations" instead of "loading".
@@ -30,23 +31,22 @@ export default function Sidebar({
   onDelete,
   deletingId,
   onRename,
-  theme,
-  onToggleTheme,
   onClose,
   onOpenHistory,
   collapsed,
   onToggleCollapse,
   overlay,
 }) {
+  const t = useT()
   const [editingId, setEditingId] = useState(null)
   const [draft, setDraft] = useState('')
 
   const groups = []
   let lastGroup = null
   for (const sNode of sessions) {
-    const g = timeGroup(sNode.updated_at || sNode.created_at)
+    const g = timeGroupKey(sNode.updated_at || sNode.created_at)
     if (g !== lastGroup) {
-      groups.push({ label: g, items: [] })
+      groups.push({ key: g, items: [] })
       lastGroup = g
     }
     groups[groups.length - 1].items.push(sNode)
@@ -72,39 +72,32 @@ export default function Sidebar({
           <button
             onClick={onToggleCollapse}
             className="p-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]"
-            title="Expandir barra lateral"
+            title={t('sidebar.expand')}
           >
             <Logo size={22} />
           </button>
           <button
             onClick={onToggleCollapse}
             className="p-1.5 rounded-lg hover:bg-[var(--surface-3)] text-[var(--faint)]"
-            title="Expandir barra lateral"
+            title={t('sidebar.expand')}
           >
             <Icon.ChevronRight size={15} />
           </button>
           <button
             onClick={onNew}
             className="mt-1 p-2.5 rounded-xl bg-[var(--accent)] hover:brightness-110 text-white transition shadow-sm shadow-black/20"
-            title="Nova conversa"
+            title={t('sidebar.newChat')}
           >
             <Icon.Plus size={18} />
           </button>
           <button
             onClick={onOpenHistory}
             className="p-2.5 rounded-xl text-[var(--muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)] transition"
-            title="Histórico"
+            title={t('sidebar.history')}
           >
             <Icon.History size={18} />
           </button>
           <div className="flex-1" />
-          <button
-            onClick={onToggleTheme}
-            className="p-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]"
-            title="Alternar tema"
-          >
-            {theme === 'dark' ? <Icon.Sun size={16} /> : <Icon.Moon size={16} />}
-          </button>
           <div
             className="w-8 h-8 rounded-full bg-[var(--surface-3)] grid place-items-center text-xs font-bold text-[var(--muted)]"
             title={email}
@@ -148,7 +141,7 @@ export default function Sidebar({
           <button
             onClick={onToggleCollapse}
             className="ml-auto hidden md:block p-1.5 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]"
-            title="Colapsar barra lateral"
+            title={t('sidebar.collapse')}
           >
             <Icon.ChevronLeft size={16} />
           </button>
@@ -160,13 +153,13 @@ export default function Sidebar({
             onClick={onNew}
             className="w-full flex items-center gap-2 justify-center rounded-xl bg-[var(--accent)] hover:brightness-110 text-white font-semibold text-sm py-2.5 transition shadow-sm shadow-black/20"
           >
-            <Icon.Plus size={18} /> Nova conversa
+            <Icon.Plus size={18} /> {t('sidebar.newChat')}
           </button>
           <button
             onClick={onOpenHistory}
             className="w-full flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)] transition"
           >
-            <Icon.History size={17} /> Histórico
+            <Icon.History size={17} /> {t('sidebar.history')}
           </button>
         </div>
 
@@ -176,13 +169,13 @@ export default function Sidebar({
             <SidebarSkeleton />
           ) : sessions.length === 0 ? (
             <p className="px-3 py-6 text-xs text-[var(--faint)] text-center">
-              Nenhuma conversa ainda.
+              {t('sidebar.empty')}
             </p>
           ) : null}
           {!sessionsLoading && groups.map((grp) => (
-            <div key={grp.label}>
+            <div key={grp.key}>
               <div className="px-3 pt-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--faint)]">
-                {grp.label}
+                {t(grp.key)}
               </div>
               {grp.items.map((sNode) => {
                 const active = sNode.id === currentId
@@ -226,7 +219,7 @@ export default function Sidebar({
                       }`}
                     >
                       {isDeleting ? (
-                        <span className="p-1.5" title="Excluindo…">
+                        <span className="p-1.5" title={t('sidebar.deleting')}>
                           <span className="block w-3.5 h-3.5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
                         </span>
                       ) : (
@@ -234,14 +227,14 @@ export default function Sidebar({
                           <button
                             onClick={() => startEdit(sNode)}
                             className="p-1.5 rounded-md hover:bg-[var(--surface)] text-[var(--muted)]"
-                            title="Renomear"
+                            title={t('sidebar.rename')}
                           >
                             <Icon.Pencil size={14} />
                           </button>
                           <button
                             onClick={() => onDelete(sNode.id)}
                             className="p-1.5 rounded-md hover:bg-[var(--surface)] text-[var(--muted)] hover:text-[var(--accent)]"
-                            title="Excluir"
+                            title={t('common.delete')}
                           >
                             <Icon.Trash size={14} />
                           </button>
@@ -264,13 +257,6 @@ export default function Sidebar({
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium truncate">{email}</div>
             </div>
-            <button
-              onClick={onToggleTheme}
-              className="p-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]"
-              title="Alternar tema"
-            >
-              {theme === 'dark' ? <Icon.Sun size={16} /> : <Icon.Moon size={16} />}
-            </button>
           </div>
           <a
             href="https://www.databricks.com/product/machine-learning/foundation-models"
@@ -279,7 +265,7 @@ export default function Sidebar({
             className="flex items-center justify-center gap-1.5 text-[10.5px] text-[var(--faint)] hover:text-[var(--muted)] transition"
           >
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)]" />
-            Powered by Databricks AI Gateway
+            {t('sidebar.poweredBy')}
           </a>
         </div>
       </aside>

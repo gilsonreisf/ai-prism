@@ -157,6 +157,48 @@ body {
   line-height: 1.6;
   border-radius: 0;
 }
+/* Fenced code block with header (language + copy). The wrapper owns the border
+   and radius; the inner <pre> is flush (no margin/border/radius of its own). */
+.prose-chat .code-block {
+  margin: 0.8em 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.prose-chat .code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.35em 0.5em 0.35em 0.9em;
+  background: #161b22;
+  border-bottom: 1px solid var(--border);
+}
+.code-block-lang {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  text-transform: lowercase;
+  color: #8b949e;
+}
+.code-block-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.2em 0.5em;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  color: #8b949e;
+  transition: background 0.15s, color 0.15s;
+}
+.code-block-copy:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #c9d1d9;
+}
 .prose-chat table {
   border-collapse: collapse;
   margin: 0.8em 0;
