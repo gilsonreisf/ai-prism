@@ -173,6 +173,9 @@ export async function ensureSchema(userEmail, userToken) {
         await c.query(`SELECT endpoint_id FROM model_catalog_overrides LIMIT 0`)
         await c.query(`SELECT connection_name FROM user_mcp_connections LIMIT 0`)
         await c.query(`SELECT triggers FROM skills LIMIT 0`)
+        // newest artifact — must be the LAST thing runSchemaDdl creates, or the
+        // probe short-circuits before this migration runs on existing deploys
+        await c.query(`SELECT message_id FROM chat_message_embeddings LIMIT 0`)
         return true
       } catch {
         return false
@@ -473,6 +476,28 @@ async function runSchemaDdl(c) {
     await c.query(
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_user_name ON skills(owner_email, name) WHERE scope = 'user';`
     )
+    // ---- per-message embeddings for semantic history retrieval (pgvector) ---
+    // A separate table (not a column on chat_messages) so the hot read path —
+    // fetchActiveMessages — never drags a 1024-dim vector per row. pgvector is
+    // available on Lakebase (probed: v0.8.0); the native `vector` type is what
+    // an HNSW index needs (a DOUBLE PRECISION[] can't be indexed). Dimension is
+    // the qwen3-embedding-0-6b output width (probed: 1024). Isolation stays
+    // app-level: every query JOINs back to chat_sessions on user_email.
+    await c.query(`CREATE EXTENSION IF NOT EXISTS vector;`)
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS chat_message_embeddings (
+        message_id BIGINT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+        session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        embedding vector(1024),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );`)
+    // partial index by session for the per-session retrieval filter, plus an
+    // HNSW index for cosine ANN search (vector_cosine_ops matches the <=>
+    // operator we query with). HNSW builds incrementally, fine for our volume.
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_msg_emb_session ON chat_message_embeddings(session_id);`)
+    await c.query(
+      `CREATE INDEX IF NOT EXISTS idx_msg_emb_hnsw ON chat_message_embeddings USING hnsw (embedding vector_cosine_ops);`
+    )
 }
 
 // grants: the app service principal gets DML on the app tables — row
@@ -693,6 +718,124 @@ export async function listSessionsForSearch(userEmail, userToken) {
       embedding: x.embedding,
       doc: x.doc || x.title,
     }))
+  })
+}
+
+// pgvector's wire format over node-postgres is a string literal like
+// '[0.1,0.2,...]' (there's no array type parser registered), both for INSERT
+// params and for the `<=>` distance operator's right-hand side.
+function toVectorLiteral(vec) {
+  return `[${vec.join(',')}]`
+}
+
+// Upserts the embedding for one message. Best-effort caller (tail of a turn);
+// session_id is stored so retrieval can filter per session without a JOIN on
+// the hot path of the ANN scan. ON CONFLICT keeps it idempotent under retries.
+export async function setMessageEmbedding(userEmail, userToken, sessionId, messageId, vec) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query(
+      `INSERT INTO chat_message_embeddings (message_id, session_id, embedding)
+       VALUES ($1, $2, $3::vector)
+       ON CONFLICT (message_id) DO UPDATE SET embedding = EXCLUDED.embedding, created_at = NOW()`,
+      [messageId, sessionId, toVectorLiteral(vec)]
+    )
+  })
+}
+
+// Semantic retrieval of the most relevant messages from ONE session, EXCLUDING
+// the most recent `excludeRecent` messages (those are already replayed verbatim
+// by the recency window — no point retrieving them too). Ownership is enforced
+// by joining back to chat_sessions on user_email. Returns oldest-first so the
+// caller can splice them into the prompt in chronological order. `<=>` is
+// cosine distance (0 = identical); we convert to a similarity floor.
+export async function retrieveRelevantMessages(
+  userEmail,
+  userToken,
+  sessionId,
+  queryVec,
+  { topN = 6, excludeRecent = 6, minSimilarity = 0.35 } = {}
+) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `WITH scoped AS (
+         SELECT m.id, m.role, m.content, m.created_at,
+                1 - (e.embedding <=> $2::vector) AS similarity,
+                ROW_NUMBER() OVER (ORDER BY m.id DESC) AS recency_rank
+           FROM chat_message_embeddings e
+           JOIN chat_messages m ON m.id = e.message_id
+           JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $3
+          WHERE e.session_id = $1 AND m.active = true
+       )
+       SELECT id, role, content, similarity
+         FROM scoped
+        WHERE recency_rank > $4 AND similarity >= $5
+        ORDER BY similarity DESC
+        LIMIT $6`,
+      [sessionId, toVectorLiteral(queryVec), userEmail, excludeRecent, minSimilarity, topN]
+    )
+    // return oldest-first (by id) for chronological splicing into the prompt
+    return r.rows
+      .map((x) => ({ id: String(x.id), role: x.role, content: x.content, similarity: x.similarity }))
+      .sort((a, b) => Number(a.id) - Number(b.id))
+  })
+}
+
+// Session-level semantic search (sidebar) via pgvector: aggregates each
+// session's message vectors to its best match against the query, so the search
+// reflects any turn in the conversation, not just a single session-level
+// embedding. Runs the ranking IN the database (indexed) instead of pulling all
+// vectors into Node. Ownership scoped by user_email.
+export async function searchSessionsByVector(userEmail, userToken, queryVec, { limit = 20, minSimilarity = 0.3 } = {}) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `SELECT s.id, s.title, MAX(1 - (e.embedding <=> $1::vector)) AS score
+         FROM chat_message_embeddings e
+         JOIN chat_sessions s ON s.id = e.session_id AND s.user_email = $2
+        GROUP BY s.id, s.title
+       HAVING MAX(1 - (e.embedding <=> $1::vector)) >= $3
+        ORDER BY score DESC
+        LIMIT $4`,
+      [toVectorLiteral(queryVec), userEmail, minSimilarity, limit]
+    )
+    return r.rows.map((x) => ({ id: String(x.id), title: x.title, score: x.score }))
+  })
+}
+
+// Messages in a session missing a per-message embedding (lazy backfill target).
+// Only user/assistant text is worth embedding; empty rows are skipped.
+export async function listMessagesMissingEmbedding(userEmail, userToken, sessionId) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `SELECT m.id, m.role, m.content
+         FROM chat_messages m
+         JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $2
+         LEFT JOIN chat_message_embeddings e ON e.message_id = m.id
+        WHERE m.session_id = $1 AND e.message_id IS NULL
+          AND m.content IS NOT NULL AND length(trim(m.content)) > 0
+        ORDER BY m.id ASC`,
+      [sessionId, userEmail]
+    )
+    return r.rows.map((x) => ({ id: String(x.id), role: x.role, content: x.content }))
+  })
+}
+
+// Un-embedded messages across ALL of the user's sessions, newest-first, capped.
+// Powers the migration backfill so search/retrieval work on history that predates
+// this feature — the newest sessions (most likely searched) index first.
+export async function listUserMessagesMissingEmbedding(userEmail, userToken, limit = 200) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `SELECT m.id, m.session_id, m.role, m.content
+         FROM chat_messages m
+         JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $1
+         LEFT JOIN chat_message_embeddings e ON e.message_id = m.id
+        WHERE e.message_id IS NULL
+          AND m.content IS NOT NULL AND length(trim(m.content)) > 0
+        ORDER BY m.id DESC
+        LIMIT $2`,
+      [userEmail, limit]
+    )
+    return r.rows.map((x) => ({ id: String(x.id), sessionId: String(x.session_id), role: x.role, content: x.content }))
   })
 }
 
@@ -1319,6 +1462,71 @@ export async function addAppAdmin(userEmail, userToken, principal, kind) {
 export async function removeAppAdmin(userEmail, userToken, principal) {
   await withClient(userEmail, userToken, async (c) => {
     await c.query(`DELETE FROM app_admins WHERE principal = $1`, [principal])
+  })
+}
+
+// ---- admin: AI cost/usage auditing --------------------------------------
+// Aggregates token usage from assistant messages (which carry model +
+// prompt/completion tokens) joined to their session (which carries the owner
+// email). Returns raw token sums grouped three ways — per user, per model, and
+// a per-user-per-day time series — so the caller can price them with the
+// MODELS catalog and slice/visualize freely. NOT user-scoped: this is an admin
+// audit surface, so it MUST only be reached behind requireAdmin. The optional
+// [from,to] window filters by message creation time (ISO strings or null).
+export async function getUsageStats(userEmail, userToken, { from = null, to = null } = {}) {
+  return withClient(userEmail, userToken, async (c) => {
+    // shared WHERE: assistant rows with a known model and recorded tokens,
+    // within the optional window. Active-only so regenerated-away variants
+    // aren't double-counted.
+    const where = `m.role = 'assistant' AND m.model IS NOT NULL AND m.active = true
+                   AND ($1::timestamptz IS NULL OR m.created_at >= $1)
+                   AND ($2::timestamptz IS NULL OR m.created_at <  $2)`
+    const params = [from, to]
+
+    const byUserModel = await c.query(
+      `SELECT s.user_email, m.model,
+              COUNT(*)::bigint AS turns,
+              COALESCE(SUM(m.prompt_tokens), 0)::bigint AS prompt_tokens,
+              COALESCE(SUM(m.completion_tokens), 0)::bigint AS completion_tokens
+         FROM chat_messages m
+         JOIN chat_sessions s ON s.id = m.session_id
+        WHERE ${where}
+        GROUP BY s.user_email, m.model
+        ORDER BY s.user_email, m.model`,
+      params
+    )
+
+    const daily = await c.query(
+      `SELECT s.user_email,
+              to_char(date_trunc('day', m.created_at), 'YYYY-MM-DD') AS day,
+              m.model,
+              COALESCE(SUM(m.prompt_tokens), 0)::bigint AS prompt_tokens,
+              COALESCE(SUM(m.completion_tokens), 0)::bigint AS completion_tokens
+         FROM chat_messages m
+         JOIN chat_sessions s ON s.id = m.session_id
+        WHERE ${where}
+        GROUP BY s.user_email, day, m.model
+        ORDER BY day ASC`,
+      params
+    )
+
+    const num = (x) => Number(x) || 0
+    return {
+      byUserModel: byUserModel.rows.map((r) => ({
+        userEmail: r.user_email,
+        model: r.model,
+        turns: num(r.turns),
+        promptTokens: num(r.prompt_tokens),
+        completionTokens: num(r.completion_tokens),
+      })),
+      daily: daily.rows.map((r) => ({
+        userEmail: r.user_email,
+        day: r.day,
+        model: r.model,
+        promptTokens: num(r.prompt_tokens),
+        completionTokens: num(r.completion_tokens),
+      })),
+    }
   })
 }
 
