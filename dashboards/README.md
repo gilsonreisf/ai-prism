@@ -37,17 +37,16 @@ matches the app's visual language rather than a different color per chart.
 > `system.billing.usage` (cost) both lag ~1 h — the dashboard is near-real-time,
 > not live.
 
-> **Regenerating.** The JSON is produced by `build.py` (declarative). When you
-> edit the dashboard in the Databricks editor, re-export it and fold the changes
-> back into `build.py` so the two stay in sync (the committed JSON is validated
-> to match the generator).
+> **Editing.** `ai-costs.lvdash.json` is the exact export from the Databricks
+> dashboard editor — edit there and re-export to update it; don't hand-edit the
+> JSON. `deploy.sh` pushes it to a workspace and the bundle ships it as-is.
 
 ## Files
 
-- `build.py` — **generates** `ai-costs.lvdash.json` (datasets + widgets). Edit
-  this, then run `python3 dashboards/build.py`; don't hand-edit the JSON.
-- `ai-costs.lvdash.json` — the serialized Lakeview dashboard (generated artifact,
-  versioned here so the bundle can ship it without a build step).
+- `ai-costs.lvdash.json` — the serialized Lakeview dashboard (source of truth),
+  exported from the Databricks dashboard editor and versioned here so the bundle
+  can ship it as-is. To change the dashboard, edit it in the editor, then export
+  and overwrite this file (File → Export, or the Lakeview API).
 - `deploy.sh` — create or update it in a workspace via the Lakeview API.
 
 ## Deploy
@@ -76,4 +75,4 @@ view it. Each customer workspace running AI Prism deploys its own copy — the
 
 | Workspace | `DASHBOARD_ID` |
 | --- | --- |
-| E2_Demo (`e2-demo-field-eng`) | `01f18403ca66179695f18e0f591cc0d0` |
+| E2_Demo (`e2-demo-field-eng`) | `01f1848bb0611596a8131a72da25315e` |
