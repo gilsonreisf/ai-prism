@@ -339,9 +339,7 @@ ao Lakebase com o token do usuário logado.
 
 ## Documentação
 
-- [Onboarding e deployment](docs/onboarding-deployment.md) — do workspace vazio ao app rodando para o time, passo a passo.
 - [Custos e posicionamento](docs/custos-e-posicionamento.md) — como o AI Prism consome recursos Databricks e por que o modelo é vantajoso.
-- [Performance das interações](docs/performance-latencia-interacoes.md) · [Impacto quantificado](docs/performance-impacto-implementacao.md) — análise e resultados de latência.
 
 > **Nota.** O AI Prism não é um produto oficial da Databricks e não possui SLA. É um
 > acelerador de solução open-source para você deployar e customizar no seu próprio
