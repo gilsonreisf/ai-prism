@@ -21,9 +21,28 @@ async function withMcpClient(url, token, fn) {
   }
 }
 
+// tools/list runs on the hot path of building a chat turn (see buildToolDefs),
+// BEFORE the model streams its first token. A slow/hung external MCP server
+// would otherwise block every turn's TTFT for as long as it takes to connect.
+// Bound it: on timeout we reject, and buildToolDefs degrades that connection to
+// a one-off "status" tool (surfacing the reason to the user) instead of hanging.
+const LIST_TOOLS_TIMEOUT_MS = 4000
+
+function withTimeout(promise, ms, label) {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} excedeu ${ms}ms`)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
 /** Lists the tools an MCP server exposes: [{name, description, inputSchema}]. */
 export async function listMcpTools(url, token) {
-  const { tools } = await withMcpClient(url, token, (client) => client.listTools())
+  const { tools } = await withTimeout(
+    withMcpClient(url, token, (client) => client.listTools()),
+    LIST_TOOLS_TIMEOUT_MS,
+    'listagem de tools MCP'
+  )
   return tools || []
 }
 

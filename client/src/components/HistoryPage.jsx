@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import * as Icon from './Icons.jsx'
 import { relativeTime } from '../lib/date.js'
+import { useT } from '../lib/i18n.jsx'
 
 export default function HistoryPage({
   sessions,
@@ -16,6 +17,7 @@ export default function HistoryPage({
   searchResults,
   searching,
 }) {
+  const t = useT()
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState('newest')
   const [selected, setSelected] = useState(() => new Set())
@@ -23,8 +25,8 @@ export default function HistoryPage({
   const [draft, setDraft] = useState('')
 
   useEffect(() => {
-    const t = setTimeout(() => onSearch(query.trim()), 350)
-    return () => clearTimeout(t)
+    const timer = setTimeout(() => onSearch(query.trim()), 350)
+    return () => clearTimeout(timer)
   }, [query]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const searchActive = query.trim().length > 0
@@ -79,18 +81,18 @@ export default function HistoryPage({
         <button
           onClick={onBack}
           className="p-2 -ml-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]"
-          title="Voltar para a conversa"
+          title={t('history.back')}
         >
           <Icon.ChevronLeft size={20} />
         </button>
         <h1 className="font-bold text-lg flex items-center gap-2">
-          <Icon.History size={18} /> Histórico
+          <Icon.History size={18} /> {t('sidebar.history')}
         </h1>
         <button
           onClick={onNew}
           className="ml-auto flex items-center gap-1.5 rounded-xl bg-[var(--accent)] hover:brightness-110 text-white font-semibold text-sm px-3.5 py-2 transition"
         >
-          <Icon.Plus size={16} /> Nova conversa
+          <Icon.Plus size={16} /> {t('sidebar.newChat')}
         </button>
       </header>
 
@@ -101,7 +103,7 @@ export default function HistoryPage({
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar por assunto (busca semântica)…"
+            placeholder={t('history.searchPlaceholder')}
             className="w-full rounded-xl bg-[var(--surface-2)] border border-[var(--border)] pl-10 pr-9 py-2.5 text-sm outline-none focus:border-[var(--accent)] placeholder:text-[var(--faint)]"
           />
           {searchActive && (
@@ -122,7 +124,7 @@ export default function HistoryPage({
               onChange={toggleSelectAll}
               className="accent-[var(--accent)]"
             />
-            Selecionar tudo
+            {t('history.selectAll')}
           </label>
 
           {!searchActive && (
@@ -131,8 +133,8 @@ export default function HistoryPage({
               onChange={(e) => setSort(e.target.value)}
               className="text-xs rounded-lg bg-[var(--surface-2)] border border-[var(--border)] px-2.5 py-1.5 outline-none focus:border-[var(--accent)]"
             >
-              <option value="newest">Mais novos</option>
-              <option value="oldest">Mais antigos</option>
+              <option value="newest">{t('history.sortNewest')}</option>
+              <option value="oldest">{t('history.sortOldest')}</option>
             </select>
           )}
 
@@ -141,7 +143,7 @@ export default function HistoryPage({
               onClick={deleteSelected}
               className="ml-auto flex items-center gap-1.5 text-xs font-medium text-[var(--accent)] hover:brightness-110 rounded-lg px-2.5 py-1.5"
             >
-              <Icon.Trash size={13} /> Excluir {selected.size} selecionada{selected.size > 1 ? 's' : ''}
+              <Icon.Trash size={13} /> {t(selected.size > 1 ? 'history.deleteSelectedPlural' : 'history.deleteSelected', { n: selected.size })}
             </button>
           )}
         </div>
@@ -160,10 +162,10 @@ export default function HistoryPage({
               ))}
             </div>
           ) : searching ? (
-            <p className="py-10 text-sm text-[var(--faint)] text-center">Buscando…</p>
+            <p className="py-10 text-sm text-[var(--faint)] text-center">{t('history.searching')}</p>
           ) : rows.length === 0 ? (
             <p className="py-10 text-sm text-[var(--faint)] text-center">
-              {searchActive ? 'Nenhum chat relacionado encontrado.' : 'Nenhuma conversa ainda.'}
+              {searchActive ? t('history.noResults') : t('sidebar.empty')}
             </p>
           ) : (
             <div className="divide-y divide-[var(--border)]">
@@ -233,12 +235,12 @@ export default function HistoryPage({
                     )}
 
                     <span className="text-xs text-[var(--faint)] shrink-0 w-20 text-right">
-                      {r.updated_at ? relativeTime(r.updated_at) : ''}
+                      {r.updated_at ? (() => { const rt = relativeTime(r.updated_at); return t(rt.key, rt.vars) })() : ''}
                     </span>
 
                     <div className="flex items-center opacity-0 group-hover:opacity-100 transition shrink-0">
                       {isDeleting ? (
-                        <span className="p-1.5" title="Excluindo…">
+                        <span className="p-1.5" title={t('sidebar.deleting')}>
                           <span className="block w-3.5 h-3.5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
                         </span>
                       ) : (
@@ -246,14 +248,14 @@ export default function HistoryPage({
                           <button
                             onClick={() => startEdit(r)}
                             className="p-1.5 rounded-md hover:bg-[var(--surface-3)] text-[var(--muted)]"
-                            title="Renomear"
+                            title={t('sidebar.rename')}
                           >
                             <Icon.Pencil size={13} />
                           </button>
                           <button
                             onClick={() => onDelete(r.id)}
                             className="p-1.5 rounded-md hover:bg-[var(--surface-3)] text-[var(--muted)] hover:text-[var(--accent)]"
-                            title="Excluir"
+                            title={t('common.delete')}
                           >
                             <Icon.Trash size={13} />
                           </button>

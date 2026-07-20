@@ -4,13 +4,15 @@ import DeckSlidePreview from './DeckSlidePreview.jsx'
 import DeckTemplateInspector from './DeckTemplateInspector.jsx'
 import { getJSON, postJSON, patchJSON, del } from '../api.js'
 import { EMPTY_TEMPLATE, extractFromFiles, mergeTemplate, stripExt, rasterizeToPng } from '../lib/pptxMining.js'
+import { useT } from '../lib/i18n.jsx'
 
 const FONT_SUGGESTIONS = [
   'DM Sans', 'Georgia', 'Helvetica', 'Arial', 'Calibri', 'Verdana', 'Times New Roman', 'Garamond', 'Trebuchet MS', 'Barlow',
 ]
 
 
-const KIND_LABELS = { icon: 'Ícone', image: 'Imagem', watermark: "Marca d'água" }
+const KIND_KEYS = ['icon', 'image', 'watermark']
+const kindLabel = (t, k) => t(`templates.kind.${KIND_KEYS.includes(k) ? k : 'icon'}`)
 
 function isValidHex(v) {
   return /^#[0-9a-fA-F]{6}$/.test(v || '')
@@ -28,18 +30,19 @@ function isGenericLabel(label) {
 // into the generic-'image' catch-all (the usual sign of a misnamed asset,
 // reclassifiable one click away in the asset editor).
 function ImportReportPanel({ report }) {
+  const t = useT()
   if (!report) return null
   const c = report.counts || {}
   const parts = [
-    c.icon ? `${c.icon} ícone${c.icon > 1 ? 's' : ''}` : null,
-    c.lockup ? `${c.lockup} lockup${c.lockup > 1 ? 's' : ''}` : null,
-    c.illustration ? `${c.illustration} ilustraç${c.illustration > 1 ? 'ões' : 'ão'}` : null,
-    c.background ? `${c.background} fundo${c.background > 1 ? 's' : ''}` : null,
-    c.image ? `${c.image} imagem(ns) genérica(s)` : null,
-    report.paletteCount ? `${report.paletteCount} tokens de cor` : null,
-    report.fontCount ? `${report.fontCount} fonte${report.fontCount > 1 ? 's' : ''}` : null,
-    report.cardCount ? `${report.cardCount} cartõe${report.cardCount > 1 ? 's' : ''} HTML` : null,
-    report.readmeFound ? 'guia da marca (readme)' : null,
+    c.icon ? t(c.icon > 1 ? 'templates.report.iconMany' : 'templates.report.iconOne', { n: c.icon }) : null,
+    c.lockup ? t(c.lockup > 1 ? 'templates.report.lockupMany' : 'templates.report.lockupOne', { n: c.lockup }) : null,
+    c.illustration ? t(c.illustration > 1 ? 'templates.report.illustrationMany' : 'templates.report.illustrationOne', { n: c.illustration }) : null,
+    c.background ? t(c.background > 1 ? 'templates.report.backgroundMany' : 'templates.report.backgroundOne', { n: c.background }) : null,
+    c.image ? t('templates.report.image', { n: c.image }) : null,
+    report.paletteCount ? t('templates.report.colorTokens', { n: report.paletteCount }) : null,
+    report.fontCount ? t(report.fontCount > 1 ? 'templates.report.fontMany' : 'templates.report.fontOne', { n: report.fontCount }) : null,
+    report.cardCount ? t(report.cardCount > 1 ? 'templates.report.cardMany' : 'templates.report.cardOne', { n: report.cardCount }) : null,
+    report.readmeFound ? t('templates.report.brandGuide') : null,
   ].filter(Boolean)
   const skipped = [
     ...(report.skippedAssets || []),
@@ -49,27 +52,25 @@ function ImportReportPanel({ report }) {
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 space-y-1.5">
       <div className="text-xs font-semibold flex items-center gap-1.5">
-        <Icon.FileText size={13} /> Relatório da importação
+        <Icon.FileText size={13} /> {t('templates.report.title')}
       </div>
       {parts.length > 0 && <p className="text-[11px] text-[var(--muted)]">{parts.join(' · ')}</p>}
       {!report.manifestFound && (
         <p className="text-[11px] text-[var(--faint)]">
-          ⚠ Bundle sem <code>_ds_manifest.json</code>
-          {report.manifestError ? ` (${report.manifestError})` : ''} — a classificação usou apenas os
-          nomes dos arquivos.
+          {t('templates.report.noManifestBefore')} <code>_ds_manifest.json</code>
+          {report.manifestError ? ` (${report.manifestError})` : ''}{t('templates.report.noManifestAfter')}
         </p>
       )}
       {report.catchAllImages?.length > 0 && (
         <p className="text-[11px] text-[var(--faint)]">
-          ⚠ {report.catchAllImages.length} arquivo(s) sem padrão de nome reconhecido viraram
-          &quot;imagem&quot; genérica — confira se deveriam ser ícone/fundo/ilustração:{' '}
+          {t('templates.report.catchAll', { n: report.catchAllImages.length })}{' '}
           <span className="font-mono">{report.catchAllImages.slice(0, 8).join(', ')}</span>
           {report.catchAllImages.length > 8 ? '…' : ''}
         </p>
       )}
       {skipped.length > 0 && (
         <details className="text-[11px] text-[var(--faint)]">
-          <summary className="cursor-pointer">{skipped.length} arquivo(s) ignorado(s) — ver motivos</summary>
+          <summary className="cursor-pointer">{t('templates.report.skipped', { n: skipped.length })}</summary>
           <ul className="mt-1 space-y-0.5 max-h-32 overflow-y-auto">
             {skipped.slice(0, 40).map((s, i) => (
               <li key={i} className="font-mono truncate">
@@ -84,6 +85,7 @@ function ImportReportPanel({ report }) {
 }
 
 function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
+  const t = useT()
   const [tpl, setTpl] = useState(initial)
   const [selectedAsset, setSelectedAsset] = useState(null) // asset id being edited
   const [enriching, setEnriching] = useState(false)
@@ -127,7 +129,7 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
         }))
       }
     } catch (e) {
-      setEnrichError(e.message || 'falha ao rotular assets')
+      setEnrichError(e.message || t('templates.errLabelAssets'))
     } finally {
       setLabeling(false)
     }
@@ -153,9 +155,9 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
     try {
       const patch = await extractFromFiles(list, null)
       const HEAVY = [
-        ['palette', 'paleta de cores'],
-        ['fontAssets', 'fontes'],
-        ['dsCards', 'cartões do design system'],
+        ['palette', t('templates.heavyPalette')],
+        ['fontAssets', t('templates.heavyFonts')],
+        ['dsCards', t('templates.heavyCards')],
       ]
       const replaces = HEAVY.filter(
         ([k]) => (tpl[k]?.length || 0) > 0 && (patch[k]?.length || 0) > (tpl[k]?.length || 0)
@@ -163,7 +165,7 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
       if (replaces.length) setPendingEnrich({ patch, replaces })
       else setTpl((t) => mergeTemplate(t, patch))
     } catch (e) {
-      setEnrichError(e.message || 'falha ao importar arquivos')
+      setEnrichError(e.message || t('templates.errImportFiles'))
     } finally {
       setEnriching(false)
     }
@@ -186,16 +188,16 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
       <input
         value={tpl.name}
         onChange={(e) => setTpl((t) => ({ ...t, name: e.target.value }))}
-        placeholder="Nome do design system (ex.: Marca da empresa)"
+        placeholder={t('templates.namePlaceholder')}
         className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] placeholder:text-[var(--faint)]"
       />
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {[
-          ['primaryColor', 'Primária'],
-          ['secondaryColor', 'Secundária'],
-          ['accentColor', 'Destaque'],
-          ['backgroundColor', 'Fundo'],
+          ['primaryColor', t('templates.colorPrimary')],
+          ['secondaryColor', t('templates.colorSecondary')],
+          ['accentColor', t('templates.colorAccent')],
+          ['backgroundColor', t('templates.colorBackground')],
         ].map(([key, label]) => (
           <div key={key} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5">
             <div className="flex items-center gap-1.5">
@@ -229,14 +231,14 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
           list="deck-font-suggestions"
           value={tpl.headingFont}
           onChange={(e) => setTpl((t) => ({ ...t, headingFont: e.target.value }))}
-          placeholder="Fonte dos títulos"
+          placeholder={t('templates.headingFont')}
           className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] placeholder:text-[var(--faint)]"
         />
         <input
           list="deck-font-suggestions"
           value={tpl.bodyFont}
           onChange={(e) => setTpl((t) => ({ ...t, bodyFont: e.target.value }))}
-          placeholder="Fonte do corpo"
+          placeholder={t('templates.bodyFont')}
           className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] placeholder:text-[var(--faint)]"
         />
         <datalist id="deck-font-suggestions">
@@ -248,14 +250,14 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
 
       <div className="flex items-center gap-3">
         {tpl.logoDataUrl ? (
-          <img src={tpl.logoDataUrl} alt="Logo" className="w-10 h-10 rounded-lg object-contain border border-[var(--border)] bg-[var(--surface)]" />
+          <img src={tpl.logoDataUrl} alt={t('templates.logoAlt')} className="w-10 h-10 rounded-lg object-contain border border-[var(--border)] bg-[var(--surface)]" />
         ) : (
           <div className="w-10 h-10 rounded-lg border border-dashed border-[var(--border)] grid place-items-center text-[var(--faint)]">
             <Icon.File size={16} />
           </div>
         )}
         <label className="text-xs font-medium text-[var(--accent)] hover:brightness-110 cursor-pointer">
-          {tpl.logoDataUrl ? 'Trocar logo' : 'Enviar logo'}
+          {tpl.logoDataUrl ? t('templates.logoReplace') : t('templates.logoUpload')}
           <input type="file" accept="image/*" className="hidden" onChange={(e) => onLogoFile(e.target.files?.[0])} />
         </label>
         {tpl.logoDataUrl && (
@@ -263,7 +265,7 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
             onClick={() => setTpl((t) => ({ ...t, logoDataUrl: '' }))}
             className="text-xs text-[var(--faint)] hover:text-[var(--text)]"
           >
-            Remover
+            {t('common.delete')}
           </button>
         )}
       </div>
@@ -271,7 +273,7 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-xs font-semibold text-[var(--faint)]">
-            Assets do design system{' '}
+            {t('templates.dsAssets')}{' '}
             {tpl.iconAssets?.length ? `(${tpl.iconAssets.length})` : ''}
           </span>
           <div className="flex items-center gap-3">
@@ -281,13 +283,13 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
                 onClick={onLabelAssets}
                 disabled={labeling}
                 className="text-xs font-medium text-[var(--accent)] hover:brightness-110 disabled:opacity-60"
-                title="Usa um modelo de visão para descrever ícones, imagens e diagramas sem rótulo — rótulos bons melhoram a escolha de assets pela IA"
+                title={t('templates.labelWithAiTitle')}
               >
-                {labeling ? 'Rotulando…' : `Rotular com IA (${unlabeled.length + unlabeledDiagrams.length})`}
+                {labeling ? t('templates.labeling') : t('templates.labelWithAi', { n: unlabeled.length + unlabeledDiagrams.length })}
               </button>
             )}
             <label className="text-xs font-medium text-[var(--accent)] hover:brightness-110 cursor-pointer">
-              {enriching ? 'Importando…' : 'Adicionar arquivos (.pptx, imagens)'}
+              {enriching ? t('templates.importing') : t('templates.addFiles')}
               <input
                 type="file"
                 accept=".pptx,.json,image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
@@ -313,7 +315,7 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
                   className={`relative w-11 h-11 shrink-0 rounded-lg border transition ${
                     selectedAsset === a.id ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : 'border-[var(--border)] hover:border-[var(--muted)]'
                   }`}
-                  title={`${a.label || a.id} · ${KIND_LABELS[a.kind] || 'Ícone'}`}
+                  title={`${a.label || a.id} · ${kindLabel(t, a.kind)}`}
                 >
                   <img
                     src={a.dataUrl}
@@ -323,7 +325,7 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
                     }`}
                   />
                   {a.kind === 'watermark' && (
-                    <span className="absolute -bottom-1 -right-1 grid place-items-center w-4 h-4 rounded-full bg-[var(--surface-3)] border border-[var(--border)] text-[var(--faint)]" title="Marca d'água — nunca usada nos decks">
+                    <span className="absolute -bottom-1 -right-1 grid place-items-center w-4 h-4 rounded-full bg-[var(--surface-3)] border border-[var(--border)] text-[var(--faint)]" title={t('templates.watermarkNeverUsed')}>
                       <Icon.Close size={9} />
                     </span>
                   )}
@@ -335,49 +337,46 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
                 <input
                   value={activeAsset.label || ''}
                   onChange={(e) => patchAsset(activeAsset.id, { label: e.target.value })}
-                  placeholder="Rótulo (ajuda a IA a escolher bem)"
+                  placeholder={t('templates.assetLabelPlaceholder')}
                   className="flex-1 min-w-0 text-xs rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 outline-none focus:border-[var(--accent)] placeholder:text-[var(--faint)]"
                 />
                 <select
                   value={activeAsset.kind || 'icon'}
                   onChange={(e) => patchAsset(activeAsset.id, { kind: e.target.value })}
                   className="text-xs rounded-md border border-[var(--border)] bg-[var(--surface)] px-1.5 py-1 outline-none"
-                  title="Ícones entram em cards/KPIs; imagens em slides de imagem; marcas d'água nunca são usadas"
+                  title={t('templates.assetKindTitle')}
                 >
-                  {Object.entries(KIND_LABELS).map(([k, l]) => (
-                    <option key={k} value={k}>{l}</option>
+                  {KIND_KEYS.map((k) => (
+                    <option key={k} value={k}>{kindLabel(t, k)}</option>
                   ))}
                 </select>
                 <button
                   onClick={() => removeIconAsset(activeAsset.id)}
                   className="p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--faint)] hover:text-[var(--text)]"
-                  title="Remover asset"
+                  title={t('templates.removeAsset')}
                 >
                   <Icon.Trash size={13} />
                 </button>
               </div>
             )}
             <p className="text-[10px] text-[var(--faint)]">
-              Clique em um asset para renomear ou reclassificar. Marcas d'água ficam registradas,
-              mas nunca aparecem em decks gerados.
+              {t('templates.assetHelp')}
             </p>
           </div>
         ) : (
           <p className="text-xs text-[var(--faint)] rounded-xl border border-dashed border-[var(--border)] px-3 py-2">
-            Nenhum asset ainda — importe um .pptx da marca ou envie ícones/logos avulsos. Tudo é
-            opcional: quanto mais assets (ícones, fotos, diagramas), maior a aderência dos decks ao
-            design system (nunca emoji nos slides gerados).
+            {t('templates.noAssets')}
           </p>
         )}
         {enrichError && <p className="text-xs text-[var(--accent)] mt-1.5">{enrichError}</p>}
         {(diagramCount > 0 || tpl.coverPlateDataUrl) && (
           <p className="text-[10px] text-[var(--faint)] mt-1.5">
-            Também minerados: {[
-              diagramCount ? `${diagramCount} diagrama${diagramCount > 1 ? 's' : ''} vetoria${diagramCount > 1 ? 'is' : 'l'}` : null,
-              tpl.coverPlateDataUrl ? 'placa de capa' : null,
-              tpl.minedStyle?.sectionPlateDataUrl ? 'placa de divisor' : null,
-              tpl.minedStyle?.motif ? 'motivo decorativo' : null,
-            ].filter(Boolean).join(' · ')} — visíveis no inspetor do design system.
+            {t('templates.alsoMinedPrefix')} {[
+              diagramCount ? t(diagramCount > 1 ? 'templates.minedDiagramsMany' : 'templates.minedDiagramsOne', { n: diagramCount }) : null,
+              tpl.coverPlateDataUrl ? t('templates.minedCoverPlate') : null,
+              tpl.minedStyle?.sectionPlateDataUrl ? t('templates.minedSectionPlate') : null,
+              tpl.minedStyle?.motif ? t('templates.minedMotif') : null,
+            ].filter(Boolean).join(' · ')}{t('templates.alsoMinedSuffix')}
           </p>
         )}
       </div>
@@ -386,7 +385,7 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
         value={tpl.styleNotes}
         onChange={(e) => setTpl((t) => ({ ...t, styleNotes: e.target.value }))}
         rows={2}
-        placeholder="Notas de estilo (ex.: sempre fundo escuro, sem emojis, tom formal…)"
+        placeholder={t('templates.styleNotesPlaceholder')}
         className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-sm outline-none focus:border-[var(--accent)] resize-none placeholder:text-[var(--faint)]"
       />
 
@@ -395,9 +394,8 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
       {pendingEnrich && (
         <div className="rounded-xl border border-[var(--accent)]/60 bg-[var(--surface)] px-3 py-2.5 space-y-2">
           <p className="text-xs">
-            <span className="font-semibold">Este import substituiria conteúdo já presente:</span>{' '}
-            {pendingEnrich.replaces.map((r) => `${r.label} (${r.from} → ${r.to})`).join(', ')}. O que
-            fazer?
+            <span className="font-semibold">{t('templates.enrichReplaceTitle')}</span>{' '}
+            {pendingEnrich.replaces.map((r) => `${r.label} (${r.from} → ${r.to})`).join(', ')}. {t('templates.enrichWhatToDo')}
           </p>
           <div className="flex flex-wrap gap-2">
             <button
@@ -407,7 +405,7 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
               }}
               className="rounded-lg bg-[var(--surface-3)] hover:brightness-110 text-xs font-semibold px-3 py-1.5"
             >
-              Manter os atuais
+              {t('templates.enrichKeep')}
             </button>
             <button
               onClick={() => {
@@ -416,7 +414,7 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
               }}
               className="rounded-lg bg-[var(--surface-3)] hover:brightness-110 text-xs font-semibold px-3 py-1.5"
             >
-              Substituir
+              {t('templates.enrichReplace')}
             </button>
             {onCreateNew && (
               <button
@@ -427,14 +425,14 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
                 }}
                 className="rounded-lg bg-[var(--surface-3)] hover:brightness-110 text-xs font-semibold px-3 py-1.5"
               >
-                Criar novo modelo em vez disso
+                {t('templates.enrichCreateNew')}
               </button>
             )}
             <button
               onClick={() => setPendingEnrich(null)}
               className="rounded-lg text-xs font-medium px-3 py-1.5 text-[var(--muted)] hover:bg-[var(--surface-3)]"
             >
-              Descartar import
+              {t('templates.enrichDiscard')}
             </button>
           </div>
         </div>
@@ -445,14 +443,14 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
           onClick={onCancel}
           className="rounded-xl px-3.5 py-2 text-sm font-medium text-[var(--muted)] hover:bg-[var(--surface-3)] transition"
         >
-          Cancelar
+          {t('common.cancel')}
         </button>
         <button
           onClick={() => onSave(tpl)}
           disabled={saving || !tpl.name.trim()}
           className="rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm px-3.5 py-2 transition"
         >
-          {saving ? 'Salvando…' : 'Salvar modelo'}
+          {saving ? t('common.saving') : t('templates.saveTemplate')}
         </button>
       </div>
     </div>
@@ -460,9 +458,14 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
 }
 
 const PREVIEW_TITLE = { layout: 'title', heading: null }
-const PREVIEW_BULLETS = { layout: 'bullets', heading: 'Título do slide', bullets: ['Primeiro ponto', 'Segundo ponto'] }
 
 export default function DeckTemplatesSettings({ open, isAdmin = false }) {
+  const t = useT()
+  const PREVIEW_BULLETS = {
+    layout: 'bullets',
+    heading: t('templates.previewSlideTitle'),
+    bullets: [t('templates.previewBullet1'), t('templates.previewBullet2')],
+  }
   const [templates, setTemplates] = useState([])
   const [loading, setLoading] = useState(false)
   const [editing, setEditing] = useState(null) // null | { id?, ...fields }
@@ -524,9 +527,9 @@ export default function DeckTemplatesSettings({ open, isAdmin = false }) {
     }
   }
 
-  const duplicate = (t) => {
+  const duplicate = (tpl) => {
     // a copy is always a PERSONAL template, even when duplicating a global one
-    setEditing({ ...t, id: undefined, scope: undefined, canEdit: undefined, name: `${t.name} (cópia)` })
+    setEditing({ ...tpl, id: undefined, scope: undefined, canEdit: undefined, name: `${tpl.name} ${t('templates.copySuffix')}` })
   }
 
   // publish/unpublish org-wide (admin only; server re-checks)
@@ -595,7 +598,7 @@ export default function DeckTemplatesSettings({ open, isAdmin = false }) {
         name: extracted.name || stripExt(files[0].name),
       })
     } catch (e) {
-      setImportError(e.message || 'falha ao importar')
+      setImportError(e.message || t('templates.errImport'))
     } finally {
       setImporting(false)
       setImportStatus('')
@@ -607,90 +610,87 @@ export default function DeckTemplatesSettings({ open, isAdmin = false }) {
   return (
     <div>
       <label className="text-sm font-semibold flex items-center gap-2">
-        <Icon.Presentation size={16} /> Modelos de apresentação
+        <Icon.Presentation size={16} /> {t('templates.heading')}
       </label>
       <p className="text-xs text-[var(--faint)] mt-1">
-        Design systems para os decks (.pptx) que a IA cria a partir das suas conversas — o modelo
-        selecionado aplica automaticamente cores (HEX), fontes, logo, ícones, fotos e diagramas.
-        Importe quantos arquivos quiser (.pptx da marca, logos e ícones avulsos): tudo é opcional,
-        mas quanto mais completo o design system, maior a aderência do resultado.
+        {t('templates.intro')}
       </p>
 
       {loading ? (
-        <p className="text-xs text-[var(--faint)] mt-3">Carregando…</p>
+        <p className="text-xs text-[var(--faint)] mt-3">{t('common.loading')}</p>
       ) : (
         <div className="mt-3 space-y-3">
           <div className="grid grid-cols-2 gap-2.5">
-            {templates.map((t) => (
+            {templates.map((tpl) => (
               <div
-                key={t.id}
+                key={tpl.id}
                 className={`rounded-xl border p-2 transition ${
-                  t.isSelected ? 'border-[var(--accent)] bg-[var(--accent-soft)]' : 'border-[var(--border)] hover:bg-[var(--surface-2)]'
-                } ${deletingId === t.id ? 'opacity-60' : ''}`}
+                  tpl.isSelected ? 'border-[var(--accent)] bg-[var(--accent-soft)]' : 'border-[var(--border)] hover:bg-[var(--surface-2)]'
+                } ${deletingId === tpl.id ? 'opacity-60' : ''}`}
               >
-                <button onClick={() => select(t.id)} className="w-full text-left">
+                <button onClick={() => select(tpl.id)} className="w-full text-left">
                   <div className="grid grid-cols-2 gap-1">
-                    <DeckSlidePreview slide={PREVIEW_TITLE} template={t} deckTitle={t.name || 'Sem título'} variant="card" />
-                    <DeckSlidePreview slide={PREVIEW_BULLETS} template={t} variant="card" />
+                    <DeckSlidePreview slide={PREVIEW_TITLE} template={tpl} deckTitle={tpl.name || t('templates.untitled')} variant="card" />
+                    <DeckSlidePreview slide={PREVIEW_BULLETS} template={tpl} variant="card" />
                   </div>
                   <div className="flex items-center gap-1.5 mt-1.5 px-0.5">
-                    {t.isSelected && <Icon.Check size={13} className="text-[var(--accent)] shrink-0" />}
-                    <span className="text-xs font-medium truncate flex-1">{t.name || 'Sem nome'}</span>
+                    {tpl.isSelected && <Icon.Check size={13} className="text-[var(--accent)] shrink-0" />}
+                    <span className="text-xs font-medium truncate flex-1">{tpl.name || t('templates.unnamed')}</span>
                   </div>
-                  {t.scope === 'global' && (
+                  {tpl.scope === 'global' && (
                     <div className="flex items-center gap-1 mt-1 px-0.5 text-[10px] text-[var(--accent)]">
                       <Icon.Globe2 size={11} className="shrink-0" />
-                      <span className="truncate">Padrão da organização</span>
+                      <span className="truncate">{t('templates.orgDefault')}</span>
                     </div>
                   )}
                 </button>
                 <div className="flex items-center gap-1 mt-1 px-0.5">
                   <button
-                    onClick={() => setInspecting(t)}
+                    onClick={() => setInspecting(tpl)}
                     className="p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--muted)]"
-                    title="Inspecionar design system"
+                    title={t('templates.inspect')}
                   >
                     <Icon.Eye size={13} />
                   </button>
-                  {t.canEdit !== false && (
+                  {tpl.canEdit !== false && (
                     <button
-                      onClick={() => setEditing(t)}
+                      onClick={() => setEditing(tpl)}
                       className="p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--muted)]"
-                      title="Editar"
+                      title={t('common.edit')}
                     >
                       <Icon.Pencil size={13} />
                     </button>
                   )}
                   <button
-                    onClick={() => duplicate(t)}
+                    onClick={() => duplicate(tpl)}
                     className="p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--muted)]"
-                    title="Duplicar"
+                    title={t('templates.duplicate')}
                   >
                     <Icon.Copy size={13} />
                   </button>
                   {isAdmin && (
                     <button
-                      onClick={() => setScope(t, t.scope === 'global' ? 'user' : 'global')}
+                      onClick={() => setScope(tpl, tpl.scope === 'global' ? 'user' : 'global')}
                       className={`p-1 rounded-md hover:bg-[var(--surface-3)] ${
-                        t.scope === 'global' ? 'text-[var(--accent)]' : 'text-[var(--muted)]'
+                        tpl.scope === 'global' ? 'text-[var(--accent)]' : 'text-[var(--muted)]'
                       }`}
                       title={
-                        t.scope === 'global'
-                          ? 'Tornar pessoal (deixa de ser padrão da organização)'
-                          : 'Disponibilizar para todos (padrão da organização)'
+                        tpl.scope === 'global'
+                          ? t('templates.makePersonal')
+                          : t('templates.makeGlobal')
                       }
                     >
                       <Icon.Globe2 size={13} />
                     </button>
                   )}
-                  {t.canEdit !== false && (
+                  {tpl.canEdit !== false && (
                     <button
-                      onClick={() => remove(t.id)}
-                      disabled={templates.length <= 1 || deletingId === t.id}
+                      onClick={() => remove(tpl.id)}
+                      disabled={templates.length <= 1 || deletingId === tpl.id}
                       className="p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--muted)] disabled:opacity-30"
-                      title={deletingId === t.id ? 'Excluindo…' : 'Excluir'}
+                      title={deletingId === tpl.id ? t('templates.deleting') : t('templates.deleteTitle')}
                     >
-                      {deletingId === t.id ? (
+                      {deletingId === tpl.id ? (
                         <span className="block w-[13px] h-[13px] rounded-full border-2 border-[var(--muted)] border-t-transparent animate-spin" />
                       ) : (
                         <Icon.Trash size={13} />
@@ -709,7 +709,7 @@ export default function DeckTemplatesSettings({ open, isAdmin = false }) {
               onCancel={() => setEditing(null)}
               onSave={saveEditing}
               onCreateNew={(patch) =>
-                setEditing({ ...EMPTY_TEMPLATE, ...patch, name: patch.name || 'Novo design system' })
+                setEditing({ ...EMPTY_TEMPLATE, ...patch, name: patch.name || t('templates.newDesignSystem') })
               }
             />
           ) : (
@@ -718,23 +718,23 @@ export default function DeckTemplatesSettings({ open, isAdmin = false }) {
                 onClick={() => setEditing({ ...EMPTY_TEMPLATE })}
                 className="flex items-center justify-center gap-1.5 rounded-xl bg-[var(--surface-3)] hover:brightness-110 text-[13px] font-semibold px-3 py-2.5 transition whitespace-nowrap"
               >
-                <Icon.Plus size={15} className="shrink-0" /> Novo modelo
+                <Icon.Plus size={15} className="shrink-0" /> {t('templates.newTemplate')}
               </button>
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={importing}
                 className="flex items-center justify-center gap-1.5 rounded-xl bg-[var(--surface-3)] hover:brightness-110 disabled:opacity-60 text-[13px] font-semibold px-3 py-2.5 transition whitespace-nowrap"
-                title="Importe arquivos: .pptx da marca, .zip de design system, .json exportado, logos e ícones avulsos"
+                title={t('templates.importFilesTitle')}
               >
-                <Icon.Upload size={15} className="shrink-0" /> {importing ? 'Importando…' : 'Importar arquivos'}
+                <Icon.Upload size={15} className="shrink-0" /> {importing ? t('templates.importing') : t('templates.importFiles')}
               </button>
               <button
                 onClick={() => folderInputRef.current?.click()}
                 disabled={importing}
                 className="flex items-center justify-center gap-1.5 rounded-xl bg-[var(--surface-3)] hover:brightness-110 disabled:opacity-60 text-[13px] font-semibold px-3 py-2.5 transition whitespace-nowrap"
-                title="Importe a PASTA exportada do design system (README, tokens, fontes, SVGs, specimens) — ex.: export do Claude Design"
+                title={t('templates.importFolderTitle')}
               >
-                <Icon.Folder size={15} className="shrink-0" /> {importing ? 'Importando…' : 'Importar pasta'}
+                <Icon.Folder size={15} className="shrink-0" /> {importing ? t('templates.importing') : t('templates.importFolder')}
               </button>
               <input
                 ref={fileInputRef}
@@ -755,20 +755,20 @@ export default function DeckTemplatesSettings({ open, isAdmin = false }) {
           )}
           {!editing && (
             <p className="text-[11px] text-[var(--faint)]">
-              Quer montar um design system completo?{' '}
+              {t('templates.kitQuestion')}{' '}
               <button
                 onClick={async () => {
                   try {
                     await (await import('../lib/starterKit.js')).downloadStarterKit()
                   } catch (e) {
-                    setImportError(e.message || 'falha ao baixar o kit')
+                    setImportError(e.message || t('templates.errKitDownload'))
                   }
                 }}
                 className="underline hover:text-[var(--text)]"
               >
-                Baixe o kit inicial (.zip)
+                {t('templates.kitDownload')}
               </button>{' '}
-              — uma pasta-exemplo com instruções de preenchimento, convenções de nome e limites.
+              {t('templates.kitDescription')}
             </p>
           )}
           {importing && importStatus && <p className="text-xs text-[var(--faint)]">{importStatus}</p>}

@@ -8,10 +8,37 @@
 // third-party server (including, for OAuth-mapped connections, per-user
 // consent — surfaced to the caller as a normal MCP error with a login link
 // if the user hasn't gone through that yet).
+import { listMcpTools } from './mcpClient.js'
+
 function host() {
   let h = process.env.DATABRICKS_HOST || ''
   if (h && !h.startsWith('http')) h = `https://${h}`
   return h
+}
+
+export function externalMcpUrl(connectionName) {
+  return `${host()}/api/2.0/mcp/external/${encodeURIComponent(connectionName)}`
+}
+
+// Probes a connection's auth state on-behalf-of the user by trying to list its
+// tools. Returns 'connected' (tools listed → the user's token is authorized),
+// 'needs_login' (the managed proxy reports missing per-user OAuth consent, with
+// a login link), or 'unavailable' (any other failure). The error message
+// carries the login URL when present so the UI can offer a "Conectar" button.
+export async function probeMcpConnection(token, connectionName) {
+  try {
+    await listMcpTools(externalMcpUrl(connectionName), token)
+    return { status: 'connected' }
+  } catch (e) {
+    const msg = String(e?.message || '')
+    // the Databricks proxy surfaces missing consent as an auth error, usually
+    // carrying an authorize/login URL the user must visit once
+    const loginUrl = (msg.match(/https?:\/\/\S+/) || [])[0] || ''
+    if (/unauth|unauthenticated|401|403|consent|login|authorize/i.test(msg)) {
+      return { status: 'needs_login', loginUrl, error: msg }
+    }
+    return { status: 'unavailable', error: msg }
+  }
 }
 
 async function apiFetch(path, opts, token) {

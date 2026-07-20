@@ -1,5 +1,6 @@
 import express from 'express'
 import multer from 'multer'
+import JSZip from 'jszip'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
@@ -34,12 +35,26 @@ import {
   listAppAdmins,
   addAppAdmin,
   removeAppAdmin,
+  listModelOverrides,
+  upsertModelOverride,
+  seedModelOverridesIfEmpty,
+  listUserMcpConnections,
+  adoptUserMcpConnection,
+  setUserMcpStatus,
+  forgetUserMcpConnection,
   createDeck,
   getDeck,
   updateDeckSlides,
   createSpreadsheet,
   getSpreadsheet,
   updateSpreadsheet,
+  getMessageBlocks,
+  setDeckQuestionsAnswers,
+  listSkills,
+  getSkill,
+  upsertSkill,
+  deleteSkill,
+  setSkillEmbedding,
 } from './db.js'
 import { isAdmin, isOwner, ownerEmail, groupCheckStatus, invalidateAdminsCache, appAccessCandidates } from './authz.js'
 import { MODELS, modelById, streamChat, complete, generateTitle, embed, cosineSim, labelDesignAssets } from './llm.js'
@@ -47,17 +62,23 @@ import { extractText, SUPPORTED_EXTENSIONS } from './files.js'
 import { analyzeSpreadsheet, isSpreadsheet } from './analysis.js'
 import {
   buildBlocksInstruction,
+  detectCapabilities,
+  activeSystemSkills,
+  SYSTEM_SKILLS,
   extractPrismBlocks,
   stripBlockPlaceholders,
   buildNewCandidatesHint,
   sanitizeDeck,
   sanitizeSpreadsheet,
+  sanitizeQuestionAnswers,
   usableIconAssets,
 } from './blocks.js'
 import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool } from './tools.js'
+import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
 import { searchGenieSpaces } from './genie.js'
 import { searchVectorIndexes } from './vectorSearch.js'
-import { searchExternalMcpConnections } from './externalMcp.js'
+import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
+import { listChatEndpoints, buildAdminCatalog, buildUserModels } from './serving.js'
 import { renderPptx } from './decks.js'
 import { renderXlsx } from './xlsx-export.js'
 
@@ -71,6 +92,31 @@ function baseDir() {
 const DIST = path.join(baseDir(), '..', 'client', 'dist')
 const PORT = parseInt(process.env.PORT || '8000', 10)
 const ATTACH_MARKER = '\n\n--- ANEXOS ---\n\n'
+
+// Max prior messages replayed to the model per turn (see the window in
+// /api/chat). Prompt caching reuses the stable prefix across tool rounds, but
+// the prefix itself grows one turn at a time; without a cap a long thread
+// reprocesses its entire history every turn. 40 messages ≈ 20 exchanges, well
+// beyond the working context of a normal conversation, so it's invisible in
+// practice while bounding worst-case latency/cost. The full history is still
+// loaded for capability detection and block resolution — this caps only replay.
+const MAX_HISTORY_MESSAGES = 40
+
+// Appends the recent conversation to `apiMessages`, capped at the last
+// MAX_HISTORY_MESSAGES turns (see the constant). Starts the window on a user
+// turn so the first replayed message isn't a dangling assistant reply, and
+// strips {{block:N}} placeholders the model doesn't need echoed back. Shared by
+// /api/chat, /continue and /regenerate so all three window identically.
+function pushWindowedHistory(apiMessages, history) {
+  let windowed = history.length > MAX_HISTORY_MESSAGES ? history.slice(-MAX_HISTORY_MESSAGES) : history
+  if (windowed.length && windowed.length < history.length && windowed[0].role !== 'user') {
+    const firstUser = windowed.findIndex((m) => m.role === 'user')
+    if (firstUser > 0) windowed = windowed.slice(firstUser)
+  }
+  for (const m of windowed) {
+    apiMessages.push({ role: m.role, content: stripBlockPlaceholders(m.content) })
+  }
+}
 
 function stripAttach(content) {
   const i = content.indexOf('\n\n--- ANEXOS ---')
@@ -172,7 +218,33 @@ const TOOL_NARRATION_POLICY =
   'entre uma ferramenta e outra — o usuário acompanha seu raciocínio em tempo real e não pode ' +
   'ficar sem nenhum sinal enquanto você trabalha. Seja conciso (uma frase por chamada, sem ' +
   'repetir a mesma frase), e ao terminar de usar as ferramentas, entregue a resposta/artefato ' +
-  'final normalmente.'
+  'final normalmente. IMPORTANTE: essa frase de narração E qualquer comentário inicial de código ' +
+  '(que vira o rótulo do passo na interface) devem estar SEMPRE no mesmo idioma do usuário — nunca ' +
+  'em inglês quando o usuário está em português/espanhol.'
+
+// Forced response-language directive (from the user's Preferences). Injected as
+// the LAST system message of the turn — closest to the user's message, so it
+// wins over the many PT-authored policy blocks and the user's own language.
+// 'auto' → null (the model naturally mirrors the user's language). Emphatic on
+// purpose: a single soft line at the top of the prompt loses to volume+recency.
+// Wording matters a lot here: a soft "responda em X" is ignored when the user
+// writes in another language. What reliably works (tested against the gateway)
+// is an imperative that (a) names the target language, (b) explicitly forbids
+// the others, and (c) covers the "even if the user writes in Y" case.
+const RESPONSE_LANG_DIRECTIVE = {
+  pt: 'VOCÊ DEVE escrever TODA a sua resposta em português do Brasil. NÃO use inglês nem espanhol. ' +
+    'Mesmo que o usuário escreva em outro idioma, responda em português. Isso inclui títulos, listas, ' +
+    'legendas e qualquer texto dentro de artefatos (apresentações, planilhas).',
+  en: 'You MUST write your ENTIRE reply in English. Do NOT use Portuguese or Spanish. Even if the user ' +
+    'writes in another language, answer in English. This includes titles, lists, captions, and any ' +
+    'text inside artifacts (decks, spreadsheets).',
+  es: 'DEBES escribir TODA tu respuesta en español. NO uses inglés ni portugués. Aunque el usuario ' +
+    'escriba en otro idioma, responde en español. Esto incluye títulos, listas, leyendas y cualquier ' +
+    'texto dentro de los artefactos (presentaciones, hojas de cálculo).',
+}
+function responseLangDirective(lang) {
+  return RESPONSE_LANG_DIRECTIVE[lang] || null
+}
 
 // Resolves the tool defs for one turn: the built-in Python tool (if the model
 // supports tools and provisioning succeeded) plus whichever Genie/UC refs the
@@ -201,6 +273,89 @@ async function resolveToolDefs(req, model, enabledToolRefs) {
  * fence the model placed against them — including ones the model places in
  * a later turn, referencing data a tool call fetched earlier in the session.
  */
+
+// Turns a tool call's own arguments into a short, human-readable subject for
+// the chip title — deterministic, zero-latency, no extra LLM call (títulos de
+// embrulho devem sair do que já temos, não de uma chamada de modelo — o modelo
+// rápido de título já é o Haiku 4.5, mas nem isso precisa entrar no caminho
+// crítico do turno). Genie/Genie One carry the user-facing `question`; Python
+// carries `code` (we lift a leading comment or the first meaningful line).
+function summarizeIntent(args = {}) {
+  const clean = (s) =>
+    String(s || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  // strip common lead-ins that add no information to a title
+  const stripLeadIn = (s) =>
+    clean(s).replace(
+      /^(me\s+)?(diga|d[êe]|mostre|traga|liste|calcule|qual\s+(é|e|foi)?|quais\s+(são|sao)?|quanto[s]?|como|preciso\s+(de|saber)|gere|monte|fa[çc]a|busque|buscar|encontre)\b[:,\s]*/i,
+      ''
+    )
+  const truncate = (s, n = 72) => {
+    const t = clean(s)
+    if (t.length <= n) return t
+    // cut on a word boundary, drop trailing punctuation, add an ellipsis
+    return t.slice(0, n).replace(/\s+\S*$/, '').replace(/[.,;:!?-]+$/, '') + '…'
+  }
+  if (args.question) {
+    const q = stripLeadIn(args.question) || clean(args.question)
+    return truncate(q)
+  }
+  if (args.query) return truncate(clean(args.query))
+  if (args.code) {
+    const lines = String(args.code).split('\n').map((l) => l.trim())
+    // a leading comment usually states intent better than the first statement
+    const comment = lines.find((l) => l.startsWith('#'))
+    if (comment) return truncate(comment.replace(/^#+\s*/, ''))
+    const firstStmt = lines.find((l) => l && !l.startsWith('#') && !l.startsWith('import '))
+    if (firstStmt) return truncate(firstStmt)
+  }
+  return ''
+}
+
+// Composes the chip label shown before/after a tool runs. The base name is the
+// tool family (Genie One, Python, …); the suffix is the intent summary and/or
+// the concrete data source (a Genie space, a VS index) when we know it, so a
+// sequence of same-family calls (Genie One → 4× Python) is distinguishable at a
+// glance without expanding each box. Deterministic — see summarizeIntent.
+function toolCallLabel(resolver, args, fallbackName) {
+  const withParts = (base, ...parts) => {
+    const tail = parts.map((p) => (p || '').trim()).filter(Boolean).join(' · ')
+    return tail ? `${base} · ${tail}` : base
+  }
+  const intent = summarizeIntent(args)
+  switch (resolver?.kind) {
+    case 'python':
+      return withParts('Python', intent)
+    case 'genie':
+      return withParts('Genie', intent || resolver.ref?.title, intent ? resolver.ref?.title : '')
+    case 'genie-one':
+      return withParts('Genie One', intent)
+    case 'vector-search':
+      return withParts('Vector Search', intent, resolver.ref?.indexName)
+    case 'mcp-external':
+      return withParts(resolver.ref?.connectionName || 'MCP', resolver.mcpToolName)
+    case 'mcp-external-error':
+      return `${resolver.connectionName} · indisponível`
+    default:
+      return resolver?.ref?.name || fallbackName || 'tool'
+  }
+}
+
+// Emits the ephemeral `skill_active` badge for a turn: the union of gated
+// built-in capabilities (deck/spreadsheet) and routed authored skills,
+// deduped by name, capped so the badge row stays compact. No-op when empty.
+function emitActiveSkills(send, skills) {
+  const seen = new Set()
+  const out = []
+  for (const s of skills || []) {
+    if (!s || seen.has(s.name)) continue
+    seen.add(s.name)
+    out.push({ name: s.name, title: s.title, description: s.description })
+  }
+  if (out.length) send({ type: 'skill_active', skills: out.slice(0, 4) })
+}
+
 async function runAssistantTurn({
   req,
   res,
@@ -226,6 +381,13 @@ async function runAssistantTurn({
     let content = ''
     let toolCalls = null
     for await (const chunk of streamChat(req.token, model, msgs, { temperature, tools })) {
+      if (chunk.reasoning) {
+        // reasoning-summary tokens (if this endpoint streams them): keep them
+        // OUT of `content`/`answer` — they're a live "what I'm working on"
+        // signal for the UI during the otherwise-silent gap before the model
+        // commits to its next narration/tool call, not part of the saved reply.
+        send({ type: 'reasoning', value: chunk.reasoning })
+      }
       if (chunk.delta) {
         content += chunk.delta
         send({ type: 'token', value: chunk.delta })
@@ -328,20 +490,7 @@ async function runAssistantTurn({
           // malformed JSON from the model — run with empty args, the tool/UC
           // function will surface its own validation error
         }
-        const label =
-          resolver?.kind === 'python'
-            ? 'Python'
-            : resolver?.kind === 'genie'
-              ? `Genie · ${resolver.ref.title}`
-              : resolver?.kind === 'genie-one'
-                ? 'Genie One'
-                : resolver?.kind === 'vector-search'
-                  ? `Vector Search · ${resolver.ref.indexName}`
-                  : resolver?.kind === 'mcp-external'
-                    ? `${resolver.ref.connectionName} · ${resolver.mcpToolName}`
-                    : resolver?.kind === 'mcp-external-error'
-                      ? `${resolver.connectionName} · indisponível`
-                      : resolver?.ref?.name || tc.function?.name || 'tool'
+        const label = toolCallLabel(resolver, args, tc.function?.name)
         send({ type: 'tool_call', id: tc.id, name: tc.function?.name, label, args })
 
         const startedAt = Date.now()
@@ -350,7 +499,11 @@ async function runAssistantTurn({
         let newCandidates = []
         try {
           if (!resolver) throw new Error('Tool não reconhecida pelo servidor.')
-          const invoked = await invokeTool(req.token, resolver, args, { sessionId, email: req.email })
+          // long-blocking tools (Genie polls up to 90s) report elapsed progress
+          // so the chip shows "8s" ticking instead of a silent spinner
+          const onProgress = ({ elapsedMs }) =>
+            send({ type: 'tool_progress', id: tc.id, elapsedMs })
+          const invoked = await invokeTool(req.token, resolver, args, { sessionId, email: req.email, onProgress })
           resultText = invoked.resultText
           newCandidates = invoked.chartCandidates || []
         } catch (e) {
@@ -507,8 +660,72 @@ app.delete('/api/admins/:principal', auth, requireAdmin, async (req, res) => {
   }
 })
 
-app.get('/api/models', auth, (req, res) => {
-  res.json({ models: MODELS, supported_extensions: SUPPORTED_EXTENSIONS })
+// Cache of the user-facing model list (enabled-only, admin-curated). Refreshed
+// from model_catalog_overrides; a short TTL keeps a newly-enabled model showing
+// up quickly without a DB hit on every chat turn. Falls back to static MODELS.
+let userModelsCache = { list: MODELS, ids: new Set(MODELS.map((m) => m.id)), ts: 0 }
+const USER_MODELS_TTL_MS = 30 * 1000
+
+async function getUserModels(req) {
+  if (Date.now() - userModelsCache.ts < USER_MODELS_TTL_MS) return userModelsCache.list
+  try {
+    await ensureReady(req)
+    const overrides = await listModelOverrides(req.email, req.token)
+    const list = buildUserModels(overrides)
+    userModelsCache = { list, ids: new Set(list.map((m) => m.id)), ts: Date.now() }
+  } catch (e) {
+    // never fail the picker — keep whatever we last had (or static MODELS)
+    userModelsCache = { ...userModelsCache, ts: Date.now() }
+  }
+  return userModelsCache.list
+}
+
+// Validate a requested model id against the enabled set (falls back to the
+// default). Uses the cache populated by getUserModels — call after it, or it
+// simply allows only what was last cached (safe: worst case the default).
+function resolveModelId(requested) {
+  const def = userModelsCache.list[0]?.id || MODELS[0].id
+  if (typeof requested !== 'string' || !requested) return def
+  return userModelsCache.ids.has(requested) ? requested : def
+}
+
+app.get('/api/models', auth, async (req, res) => {
+  const models = await getUserModels(req)
+  res.json({ models, supported_extensions: SUPPORTED_EXTENSIONS })
+})
+
+// ---- admin: AI Gateway model catalog -----------------------------------
+// list live endpoints ∪ curated ∪ overrides; seeds overrides from the static
+// MODELS the first time so switching /api/models to enabled-only never strands
+// the org with no models.
+app.get('/api/admin/model-endpoints', auth, requireAdmin, async (req, res) => {
+  try {
+    await seedModelOverridesIfEmpty(req.email, req.token, MODELS)
+    const [discovered, overrides] = await Promise.all([
+      listChatEndpoints(req.token),
+      listModelOverrides(req.email, req.token),
+    ])
+    res.json({ endpoints: buildAdminCatalog(discovered, overrides) })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/admin/model-endpoints/:id', auth, requireAdmin, async (req, res) => {
+  try {
+    const endpointId = decodeURIComponent(req.params.id)
+    const b = req.body || {}
+    await upsertModelOverride(req.email, req.token, endpointId, {
+      enabled: !!b.enabled,
+      displayName: typeof b.displayName === 'string' ? b.displayName.slice(0, 120) : '',
+      blurb: typeof b.blurb === 'string' ? b.blurb.slice(0, 300) : '',
+      sortOrder: Number.isInteger(b.sortOrder) ? b.sortOrder : null,
+    })
+    userModelsCache.ts = 0 // force refresh so users see the change quickly
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 app.get('/api/sessions', auth, async (req, res) => {
@@ -629,6 +846,328 @@ app.get('/api/tools/mcp/external/search', auth, async (req, res) => {
     const q = (req.query.q || '').toString().trim()
     const results = await searchExternalMcpConnections(req.token, req.email, q)
     res.json({ results })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ---- external MCP connections (per-user adopt + auth status) -----------
+// The settings tab where the user browses the catalog, connects (one-time
+// OAuth consent via the managed proxy), and sees status. The tool picker then
+// shows adopted connections as on/off toggles (default on).
+app.get('/api/mcp/connections', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const q = (req.query.q || '').toString().trim()
+    const [catalog, adopted] = await Promise.all([
+      searchExternalMcpConnections(req.token, req.email, ''),
+      listUserMcpConnections(req.email, req.token),
+    ])
+    const adoptedByName = new Map(adopted.map((a) => [a.connectionName, a]))
+    // union: everything in the catalog, annotated with adoption + last status
+    let connections = catalog.map((c) => {
+      const a = adoptedByName.get(c.connectionName)
+      return {
+        connectionName: c.connectionName,
+        comment: c.comment || a?.comment || '',
+        adopted: !!a,
+        status: a?.status || 'unknown',
+        lastCheckedAt: a?.lastCheckedAt || null,
+      }
+    })
+    // semantic search over name + description (item 3). Only when a query is
+    // present; ranks by embedding cosine similarity, so "ferramentas de
+    // git/código" surfaces "ah-github" even without a literal match. Falls back
+    // to substring filtering if embeddings are unavailable.
+    if (q) connections = await rankMcpConnections(req.token, q, connections)
+    res.json({ connections })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Ranks MCP connections against a natural-language query by embedding cosine
+// similarity of "name — description". Connection embeddings are cached per
+// process (the catalog changes rarely); only the query is embedded per call.
+// On any embedding failure, degrades to substring filtering so search still
+// works. Keeps items above a light relevance floor, best-first.
+const mcpEmbedCache = new Map() // key `${name}\n${comment}` -> vector
+async function rankMcpConnections(token, query, connections) {
+  const substringFallback = () => {
+    const ql = query.toLowerCase()
+    return connections.filter(
+      (c) => c.connectionName.toLowerCase().includes(ql) || (c.comment || '').toLowerCase().includes(ql)
+    )
+  }
+  try {
+    const passages = connections.map((c) => `${c.connectionName} — ${c.comment || 'sem descrição'}`)
+    const missing = passages.filter((p) => !mcpEmbedCache.has(p))
+    if (missing.length) {
+      const vecs = await embed(token, missing)
+      missing.forEach((p, i) => vecs[i] && mcpEmbedCache.set(p, vecs[i]))
+    }
+    // qwen3-embedding is instruction-tuned: queries take an Instruct/Query prefix
+    const [qvec] = await embed(token, [
+      `Instruct: Dada a intenção do usuário, recupere conexões MCP (ferramentas) relevantes.\nQuery: ${query}`,
+    ])
+    if (!qvec) return substringFallback()
+    const scored = connections
+      .map((c, i) => ({ c, score: cosineSim(qvec, mcpEmbedCache.get(passages[i])) }))
+      .sort((a, b) => b.score - a.score)
+    // Relative floor: keep items within a band of the top score, so a clearly
+    // irrelevant tail drops off but near-ties survive. This adapts to the
+    // embedding model's baseline similarity (qwen runs high) better than a
+    // fixed threshold. Union in any substring match so a literal query never
+    // loses an obvious hit to ranking.
+    const top = scored[0]?.score || 0
+    const ql = query.toLowerCase()
+    const kept = scored.filter(
+      (x) =>
+        x.score >= top - 0.08 ||
+        x.c.connectionName.toLowerCase().includes(ql) ||
+        (x.c.comment || '').toLowerCase().includes(ql)
+    )
+    const out = (kept.length ? kept : scored).map((x) => x.c)
+    return out.length ? out : substringFallback()
+  } catch {
+    return substringFallback()
+  }
+}
+
+// Probe a connection's auth state now (on demand — used by the "Conectar" /
+// "Verificar" button). Persists the probed status if the connection is adopted.
+app.post('/api/mcp/connections/:name/probe', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const name = decodeURIComponent(req.params.name)
+    const result = await probeMcpConnection(req.token, name)
+    // remember the status for adopted connections (best-effort)
+    try {
+      await setUserMcpStatus(req.email, req.token, name, result.status)
+    } catch {}
+    res.json(result)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Adopt a connection (the user chose to use it). Probes status at adopt time so
+// the row lands with a real state; default-on in the tool picker follows from
+// being adopted.
+app.post('/api/mcp/connections/:name', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const name = decodeURIComponent(req.params.name)
+    const comment = typeof req.body?.comment === 'string' ? req.body.comment : ''
+    const probe = await probeMcpConnection(req.token, name).catch(() => ({ status: 'unknown' }))
+    await adoptUserMcpConnection(req.email, req.token, name, comment, probe.status)
+    res.json({ ok: true, status: probe.status, loginUrl: probe.loginUrl || '' })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/mcp/connections/:name', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    await forgetUserMcpConnection(req.email, req.token, decodeURIComponent(req.params.name))
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ---- authored skills -----------------------------------------------------
+// A skill = a named capability whose `body` is injected into the system prompt
+// only when a turn is routed to it (see server/skills.js). Users CRUD their own
+// (scope 'user'); admins additionally CRUD 'global' skills for the whole org.
+function slugify(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64)
+}
+
+// Parses a SKILL.md-style document: optional YAML frontmatter (name,
+// description) + markdown body. Minimal YAML (key: value) — no dependency.
+function parseSkillMarkdown(text) {
+  const out = { name: '', description: '', body: String(text || '').trim() }
+  const m = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/.exec(String(text || ''))
+  if (m) {
+    for (const line of m[1].split('\n')) {
+      const kv = /^([A-Za-z_]+)\s*:\s*(.*)$/.exec(line.trim())
+      if (!kv) continue
+      const key = kv[1].toLowerCase()
+      let val = kv[2].trim().replace(/^["']|["']$/g, '')
+      if (key === 'name') out.name = val
+      else if (key === 'description') out.description = val
+      else if (key === 'title') out.title = val
+    }
+    out.body = m[2].trim()
+  }
+  return out
+}
+
+// Persist a skill and (re)compute its routing embedding right away, so the
+// first turn that could use it doesn't pay the embedding cost. Best-effort on
+// the embedding — the router backfills it lazily if this fails.
+async function saveSkillWithEmbedding(req, skill) {
+  let id
+  try {
+    id = await upsertSkill(req.email, req.token, skill)
+  } catch (e) {
+    // the partial unique indexes on (name) enforce one skill-name per scope;
+    // surface a clean conflict instead of the raw Postgres constraint error
+    if (/unique constraint|duplicate key/i.test(e.message || '')) {
+      const err = new Error(`já existe uma skill chamada "${skill.name}" neste escopo`)
+      err.status = 409
+      throw err
+    }
+    throw e
+  }
+  invalidateSkills(req.email)
+  if (id) {
+    try {
+      const [vec] = await embed(req.token, [`${skill.title} — ${skill.description}`])
+      if (vec) await setSkillEmbedding(req.email, req.token, id, vec)
+    } catch {}
+  }
+  return id
+}
+
+app.get('/api/skills', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    // list view doesn't need the (large) bodies/embeddings
+    const authored = await listSkills(req.email, req.token, { includeBody: false })
+    // prepend the built-in capabilities as read-only "system" skills so every
+    // deployment shows deck/spreadsheet/chart generation in the tab out of the
+    // box — no seeding, no DB rows; their bodies live in code (blocks.js).
+    const system = SYSTEM_SKILLS.map((s) => ({
+      id: `system:${s.name}`,
+      scope: 'system',
+      name: s.name,
+      title: s.title,
+      description: s.description,
+      enabled: true,
+      readOnly: true,
+    }))
+    res.json({ skills: [...system, ...authored], isAdmin: await isAdmin(req.email, req.token) })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/skills/:id', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const skill = await getSkill(req.email, req.token, req.params.id)
+    if (!skill) return res.status(404).json({ error: 'skill não encontrada' })
+    res.json({ skill })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// create or update. `scope: 'global'` requires admin.
+async function writeSkillHandler(req, res) {
+  try {
+    await ensureReady(req)
+    const b = req.body || {}
+    const scope = b.scope === 'global' ? 'global' : 'user'
+    if (scope === 'global' && !(await isAdmin(req.email, req.token))) {
+      return res.status(403).json({ error: 'apenas administradores podem editar skills globais' })
+    }
+    const title = (b.title || '').trim()
+    const description = (b.description || '').trim()
+    const body = (b.body || '').trim()
+    if (!title || !description || !body) {
+      return res.status(400).json({ error: 'título, descrição e instruções são obrigatórios' })
+    }
+    const name = slugify(b.name || title)
+    const triggers = Array.isArray(b.triggers)
+      ? b.triggers.map((t) => String(t).trim()).filter(Boolean).slice(0, 20)
+      : []
+    const id = await saveSkillWithEmbedding(req, {
+      id: b.id || null,
+      scope,
+      name,
+      title: title.slice(0, 120),
+      description: description.slice(0, 400),
+      body: body.slice(0, 20000),
+      triggers,
+      source: b.source || 'write',
+      enabled: b.enabled !== false,
+    })
+    if (!id) return res.status(404).json({ error: 'skill não encontrada ou sem permissão' })
+    res.json({ ok: true, id })
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+}
+app.post('/api/skills', auth, writeSkillHandler)
+app.put('/api/skills/:id', auth, (req, res) => {
+  req.body = { ...(req.body || {}), id: req.params.id }
+  return writeSkillHandler(req, res)
+})
+
+// upload a SKILL.md (YAML frontmatter) or a .zip/.skill bundle containing one
+app.post('/api/skills/upload', auth, upload.single('file'), async (req, res) => {
+  try {
+    await ensureReady(req)
+    if (!req.file) return res.status(400).json({ error: 'nenhum arquivo enviado' })
+    const scope = req.body?.scope === 'global' ? 'global' : 'user'
+    if (scope === 'global' && !(await isAdmin(req.email, req.token))) {
+      return res.status(403).json({ error: 'apenas administradores podem criar skills globais' })
+    }
+    const fname = fixFilename(req.file.originalname || '')
+    let mdText = ''
+    if (/\.(zip|skill)$/i.test(fname)) {
+      const zip = await JSZip.loadAsync(req.file.buffer)
+      // find a SKILL.md anywhere in the bundle (case-insensitive)
+      const entry = Object.keys(zip.files).find((p) => /(^|\/)SKILL\.md$/i.test(p))
+      if (!entry) return res.status(400).json({ error: 'o .zip/.skill precisa conter um arquivo SKILL.md' })
+      mdText = await zip.files[entry].async('string')
+    } else if (/\.(md|markdown|txt)$/i.test(fname)) {
+      mdText = req.file.buffer.toString('utf8')
+    } else {
+      return res.status(400).json({ error: 'formato não suportado — envie um .md ou um .zip/.skill com SKILL.md' })
+    }
+    const parsed = parseSkillMarkdown(mdText)
+    const title = (parsed.title || parsed.name || fname.replace(/\.[^.]+$/, '')).trim()
+    const description = parsed.description.trim()
+    const body = parsed.body.trim()
+    if (!description || !body) {
+      return res.status(400).json({ error: 'o SKILL.md precisa de "description" no YAML e um corpo de instruções' })
+    }
+    const id = await saveSkillWithEmbedding(req, {
+      scope,
+      name: slugify(parsed.name || title),
+      title: title.slice(0, 120),
+      description: description.slice(0, 400),
+      body: body.slice(0, 20000),
+      triggers: [],
+      source: 'upload',
+      enabled: true,
+    })
+    res.json({ ok: true, id })
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/skills/:id', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const ok = await deleteSkill(req.email, req.token, req.params.id, {
+      allowGlobal: await isAdmin(req.email, req.token),
+    })
+    invalidateSkills(req.email)
+    if (!ok) return res.status(404).json({ error: 'skill não encontrada ou sem permissão' })
+    res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -1037,7 +1576,8 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         `Campo: ${selection.label || selection.path}\n` +
         `Texto atual: ${JSON.stringify(selection.text || '')}\n\n` +
         `Instrução: ${instruction}\n\nTexto novo:`
-      const model = typeof req.body?.model === 'string' && modelById(req.body.model) ? req.body.model : MODELS[0].id
+      await getUserModels(req)
+    const model = resolveModelId(req.body?.model)
       const raw = await complete(req.token, model, [
         { role: 'system', content: fieldSystem },
         { role: 'user', content: fieldUser },
@@ -1105,7 +1645,8 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
           : '') +
         `Instrução: ${instruction}`
 
-    const model = typeof req.body?.model === 'string' && modelById(req.body.model) ? req.body.model : MODELS[0].id
+    await getUserModels(req)
+    const model = resolveModelId(req.body?.model)
     const out = await complete(req.token, model, [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -1241,7 +1782,8 @@ app.post('/api/spreadsheets/:id/tweak', auth, async (req, res) => {
     }
     const user = `JSON atual:\n${strippedJson}\n\nInstrução: ${instruction}`
 
-    const model = typeof req.body?.model === 'string' && modelById(req.body.model) ? req.body.model : MODELS[0].id
+    await getUserModels(req)
+    const model = resolveModelId(req.body?.model)
     const out = await complete(req.token, model, [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -1284,14 +1826,25 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
       return res.status(400).json({ error: 'payload inválido' })
     }
     const prompt = (payload.prompt || '').trim()
-    const model = payload.model || MODELS[0].id
+    await getUserModels(req) // warm the enabled-models cache before validating
+    const model = resolveModelId(payload.model)
     const temperature = typeof payload.temperature === 'number' ? payload.temperature : 0.7
     const systemPrompt = (payload.systemPrompt || '').trim()
+    const responseLang = payload.responseLang
     const enabledToolRefs = Array.isArray(payload.enabledTools) ? payload.enabledTools : []
     let sessionId = payload.sessionId || null
 
     if (!prompt && !(req.files && req.files.length)) {
       return res.status(400).json({ error: 'prompt vazio' })
+    }
+
+    // if the client passed an existing session id, verify the caller owns it
+    // BEFORE opening the SSE stream — so a forged/guessed id gets a clean 403
+    // instead of an error mid-stream. addMessage re-checks ownership atomically,
+    // but this keeps the failure a proper HTTP status. (getSession is scoped by
+    // user_email, so this returns null for someone else's session.)
+    if (sessionId && !(await getSession(req.email, req.token, sessionId))) {
+      return res.status(403).json({ error: 'sessão não encontrada' })
     }
 
     // extract attachment text, and — for spreadsheets — real chart candidates
@@ -1335,22 +1888,22 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
       )
     }
 
-    // chart candidates accumulate for the whole session's lifetime (see
-    // saveSessionChartCandidates) — a report compiled several turns after
-    // the Genie calls that fetched the numbers still needs those candidates
-    // to resolve its prism-block fences, not just ones from this exact turn.
-    const chartState = isNew
-      ? { nextId: 1, items: [] }
-      : await getSessionChartCandidates(req.email, req.token, sessionId)
-    if (fileCandidates.length) {
-      fileCandidates.forEach((c) => (c.id = `candidate_${chartState.nextId++}`))
-      chartState.items.push(...fileCandidates)
-    }
+    // Kick off the reads that DON'T depend on the user-message write, so they
+    // overlap with it instead of running serially: chart candidates (session
+    // lifetime — a report compiled several turns after the Genie calls that
+    // fetched the numbers still needs them to resolve its prism-block fences).
+    // The selected deck template is NOT fetched here — it's a heavy render-cut
+    // payload (MBs of jsonb) only the deck flow uses, so it's resolved lazily
+    // below, and only when this turn is actually about a deck (see caps.deck).
+    const chartStatePromise = isNew
+      ? Promise.resolve({ nextId: 1, items: [] })
+      : getSessionChartCandidates(req.email, req.token, sessionId)
 
     const fullContent = attachBlocks.length
       ? prompt + ATTACH_MARKER + attachBlocks.join('\n\n')
       : prompt
 
+    // the user-message write MUST land before we read the history back
     await addMessage(req.email, req.token, {
       sessionId,
       role: 'user',
@@ -1360,19 +1913,47 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
 
     send({ type: 'meta', sessionId: String(sessionId), isNew })
 
-    // build conversation for the model
-    const history = await listMessages(req.email, req.token, sessionId)
+    // now resolve everything needed to build the conversation, concurrently:
+    // the just-written history plus the chart candidates started above
+    const [chartState, history] = await Promise.all([
+      chartStatePromise,
+      listMessages(req.email, req.token, sessionId),
+    ])
+    if (fileCandidates.length) {
+      fileCandidates.forEach((c) => (c.id = `candidate_${chartState.nextId++}`))
+      chartState.items.push(...fileCandidates)
+    }
+
     const apiMessages = []
     if (systemPrompt) apiMessages.push({ role: 'system', content: systemPrompt })
-    // ephemeral, per-turn instruction — never persisted, only sent to the model
-    const selectedTemplate = await getSelectedDeckTemplate(req.email, req.token)
-    const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate)
+    // ephemeral, per-turn instruction — never persisted, only sent to the model.
+    // Progressive disclosure: only include the heavy deck/spreadsheet policies
+    // when the turn is plausibly about them (see detectCapabilities) — a trivial
+    // question shouldn't carry ~10k tokens of deck+spreadsheet+design-system.
+    const caps = detectCapabilities(prompt, history)
+    // Only the deck flow consumes the (heavy) selected template — both to build
+    // its instruction and to resolve deck fences afterward. When this turn isn't
+    // about a deck, caps.deck is false, DECK_POLICY is omitted, so the model
+    // can't emit a deck fence and extractPrismBlocks never needs the template:
+    // skip the fetch entirely. Deck turns still get it (cached across turns).
+    const selectedTemplate = caps.deck ? await getSelectedDeckTemplate(req.email, req.token) : null
+    const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate, caps)
     if (blocksInstruction) apiMessages.push({ role: 'system', content: blocksInstruction })
-    for (const m of history) {
-      // strip {{block:N}} placeholders from prior assistant turns — the
-      // model doesn't need its own past visualization markers echoed back
-      apiMessages.push({ role: m.role, content: stripBlockPlaceholders(m.content) })
+    // authored skills (Fase 2): route the turn to any matching user/global
+    // skill, inject its body, and tell the client which fired (ephemeral badge)
+    const activeSkills = await routeSkills(req, prompt, { forced: payload.skills })
+    if (activeSkills.length) {
+      apiMessages.push({ role: 'system', content: renderSkillsInstruction(activeSkills) })
     }
+    // badge = built-in capabilities (deck/spreadsheet) that were gated on this
+    // turn + any authored skills — so generating a spreadsheet/deck also shows a
+    // "skill active" chip, not just user-authored skills
+    emitActiveSkills(send, [...activeSystemSkills(caps), ...activeSkills])
+    // Context window: replay only the recent conversation to the model (the
+    // full `history` is still used above for detectCapabilities and below for
+    // chart/deck block resolution). Caps latency/cost that would otherwise grow
+    // with the conversation length; see pushWindowedHistory / MAX_HISTORY_MESSAGES.
+    pushWindowedHistory(apiMessages, history)
 
     // tools: the built-in Python UC function is provisioned lazily once per
     // process; additional tools are whichever UC Functions the user attached
@@ -1383,6 +1964,13 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // the history so it's the freshest instruction when the model decides
     // whether/how to call a tool
     if (toolDefs) apiMessages.push({ role: 'system', content: TOOL_NARRATION_POLICY })
+    // forced response language (Preferences) — LAST system message, so it's the
+    // freshest/highest-salience instruction and overrides the PT-authored
+    // policies above and the user's own language. Omitted when 'auto'.
+    {
+      const langDir = responseLangDirective(responseLang)
+      if (langDir) apiMessages.push({ role: 'system', content: langDir })
+    }
 
     const { answer, usage, hadUsage, toolTrace, truncated, stoppedEarly } = await runAssistantTurn({
       req,
@@ -1423,31 +2011,26 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     }
     if (hadUsage) send({ type: 'usage', usage })
 
-    // refresh the session's semantic-search embedding from the user's messages
-    // (the topic/intent) — keeping the passage focused beats embedding the
-    // verbose full transcript, which dilutes the topic.
-    try {
-      const doc = history
-        .filter((m) => m.role === 'user')
-        .map((m) => stripAttach(m.content))
-        .join('\n')
-        .slice(0, 1500)
-      const [vec] = await embed(req.token, [doc])
-      if (vec) await setSessionEmbedding(req.email, req.token, sessionId, vec)
-    } catch (e) {
+    // Post-answer work: the semantic-search embedding and (first exchange) the
+    // emoji title. Both are GATEWAY calls (embed + generateTitle) — the DB pool
+    // doesn't speed them up — and they used to run SERIALLY here, stacking ~4s
+    // of dead air AFTER the answer was fully streamed. They're independent, so
+    // run them concurrently: the tail becomes max(embed, title) instead of the
+    // sum. The `title` still streams as its own event so the client applies it
+    // live; a failure in either is logged, never fatal to the turn.
+    const embedTask = updateSessionEmbedding(req, sessionId, history).catch((e) =>
       console.warn('embedding update failed:', e.message)
-    }
-
-    // emoji title on the first exchange — the answer snippet grounds the
-    // title in what the conversation is actually about, not just how the
-    // user happened to phrase the opening message
-    if (isNew) {
-      const title = await generateTitle(req.token, prompt || attachNames.join(', '), answer)
-      await updateSession(req.email, req.token, sessionId, { title })
-      send({ type: 'title', title, sessionId: String(sessionId) })
-    } else {
-      await updateSession(req.email, req.token, sessionId, {})
-    }
+    )
+    const titleTask = (async () => {
+      if (isNew) {
+        const title = await generateTitle(req.token, prompt || attachNames.join(', '), answer)
+        await updateSession(req.email, req.token, sessionId, { title })
+        send({ type: 'title', title, sessionId: String(sessionId) })
+      } else {
+        await updateSession(req.email, req.token, sessionId, {})
+      }
+    })().catch((e) => console.warn('title/session update failed:', e.message))
+    await Promise.all([embedTask, titleTask])
 
     send({ type: 'done' })
     res.end()
@@ -1461,6 +2044,20 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     }
   }
 })
+
+// Recomputes the session's semantic-search embedding from the user messages
+// (topic/intent) — a focused passage beats embedding the verbose full
+// transcript, which dilutes the topic. Shared by the send path (and callable
+// elsewhere). Throws on failure so the caller decides whether to swallow it.
+async function updateSessionEmbedding(req, sessionId, history) {
+  const doc = history
+    .filter((m) => m.role === 'user')
+    .map((m) => stripAttach(m.content))
+    .join('\n')
+    .slice(0, 1500)
+  const [vec] = await embed(req.token, [doc])
+  if (vec) await setSessionEmbedding(req.email, req.token, sessionId, vec)
+}
 
 // ---- recovery: answer a trailing UNANSWERED user message ----
 // A turn can leave a user message with no assistant reply — the server crashed
@@ -1476,9 +2073,11 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
     await ensureReady(req)
 
     const sessionId = req.params.id
-    const model = req.body.model || MODELS[0].id
+    await getUserModels(req)
+    const model = resolveModelId(req.body.model)
     const temperature = typeof req.body.temperature === 'number' ? req.body.temperature : 0.7
     const systemPrompt = (req.body.systemPrompt || '').trim()
+    const responseLang = req.body.responseLang
     const enabledToolRefs = Array.isArray(req.body.enabledTools) ? req.body.enabledTools : []
 
     const history = await listMessages(req.email, req.token, sessionId)
@@ -1497,16 +2096,32 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
 
     const apiMessages = []
     if (systemPrompt) apiMessages.push({ role: 'system', content: systemPrompt })
-    const chartState = await getSessionChartCandidates(req.email, req.token, sessionId)
-    const selectedTemplate = await getSelectedDeckTemplate(req.email, req.token)
-    const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate)
+    const [chartState, selectedTemplate] = await Promise.all([
+      getSessionChartCandidates(req.email, req.token, sessionId),
+      getSelectedDeckTemplate(req.email, req.token),
+    ])
+    // last (unanswered) user message drives capability gating; history blocks
+    // keep an in-progress deck/spreadsheet flow's policy on
+    const lastUserText = history[history.length - 1]?.content || ''
+    const caps = detectCapabilities(lastUserText, history)
+    const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate, caps)
     if (blocksInstruction) apiMessages.push({ role: 'system', content: blocksInstruction })
-    for (const m of history) {
-      apiMessages.push({ role: m.role, content: stripBlockPlaceholders(m.content) })
+    const activeSkills = await routeSkills(req, lastUserText, { forced: req.body.skills })
+    if (activeSkills.length) {
+      apiMessages.push({ role: 'system', content: renderSkillsInstruction(activeSkills) })
     }
+    emitActiveSkills(send, [...activeSystemSkills(caps), ...activeSkills])
+    pushWindowedHistory(apiMessages, history)
 
     const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs)
     if (toolDefs) apiMessages.push({ role: 'system', content: TOOL_NARRATION_POLICY })
+    // forced response language (Preferences) — LAST system message, so it's the
+    // freshest/highest-salience instruction and overrides the PT-authored
+    // policies above and the user's own language. Omitted when 'auto'.
+    {
+      const langDir = responseLangDirective(responseLang)
+      if (langDir) apiMessages.push({ role: 'system', content: langDir })
+    }
 
     const { answer, usage, hadUsage, toolTrace, truncated, stoppedEarly } = await runAssistantTurn({
       req,
@@ -1566,9 +2181,11 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
     await ensureReady(req)
 
     const sessionId = req.params.id
-    const model = req.body.model || MODELS[0].id
+    await getUserModels(req)
+    const model = resolveModelId(req.body.model)
     const temperature = typeof req.body.temperature === 'number' ? req.body.temperature : 0.7
     const systemPrompt = (req.body.systemPrompt || '').trim()
+    const responseLang = req.body.responseLang
     const enabledToolRefs = Array.isArray(req.body.enabledTools) ? req.body.enabledTools : []
 
     const { variantGroup, messages: history } = await listMessagesBeforeMessage(
@@ -1589,16 +2206,32 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
     if (systemPrompt) apiMessages.push({ role: 'system', content: systemPrompt })
     // no new attachment on a regenerate turn, but candidates from earlier in
     // the session (past attachments/Genie calls) are still fair game
-    const chartState = await getSessionChartCandidates(req.email, req.token, sessionId)
-    const selectedTemplate = await getSelectedDeckTemplate(req.email, req.token)
-    const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate)
+    const [chartState, selectedTemplate] = await Promise.all([
+      getSessionChartCandidates(req.email, req.token, sessionId),
+      getSelectedDeckTemplate(req.email, req.token),
+    ])
+    // capability gating keyed on the last user turn being regenerated + the
+    // history's blocks (so an in-progress deck/spreadsheet flow keeps its policy)
+    const lastUserText = [...history].reverse().find((m) => m.role === 'user')?.content || ''
+    const caps = detectCapabilities(lastUserText, history)
+    const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate, caps)
     if (blocksInstruction) apiMessages.push({ role: 'system', content: blocksInstruction })
-    for (const m of history) {
-      apiMessages.push({ role: m.role, content: stripBlockPlaceholders(m.content) })
+    const activeSkills = await routeSkills(req, lastUserText, { forced: req.body.skills })
+    if (activeSkills.length) {
+      apiMessages.push({ role: 'system', content: renderSkillsInstruction(activeSkills) })
     }
+    emitActiveSkills(send, [...activeSystemSkills(caps), ...activeSkills])
+    pushWindowedHistory(apiMessages, history)
 
     const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs)
     if (toolDefs) apiMessages.push({ role: 'system', content: TOOL_NARRATION_POLICY })
+    // forced response language (Preferences) — LAST system message, so it's the
+    // freshest/highest-salience instruction and overrides the PT-authored
+    // policies above and the user's own language. Omitted when 'auto'.
+    {
+      const langDir = responseLangDirective(responseLang)
+      if (langDir) apiMessages.push({ role: 'system', content: langDir })
+    }
 
     const { answer, usage, hadUsage, toolTrace, truncated, stoppedEarly } = await runAssistantTurn({
       req,
@@ -1691,6 +2324,31 @@ app.post('/api/sessions/:id/messages/:messageId/edit', auth, async (req, res) =>
       variantGroup: orig.variantGroup,
     })
     res.json({ id: newMsg.id, variantGroup: orig.variantGroup })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Persist the user's answers into a deck-questions block (so the box shows the
+// history on reload and stays editable). The client sends the raw answers map;
+// it's sanitized against the block's own questions server-side. Returns the
+// updated blocks so the client can re-render the filled state.
+app.post('/api/sessions/:id/messages/:messageId/question-answers', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const messageId = req.params.messageId
+    const orig = await getMessageRaw(req.email, req.token, messageId)
+    if (!orig || orig.sessionId !== req.params.id) {
+      return res.status(404).json({ error: 'mensagem não encontrada' })
+    }
+    // sanitize the incoming answers against the block's own questions
+    const blocksNow = await getMessageBlocks(req.email, req.token, messageId)
+    const dq = (blocksNow || []).find((b) => b && b.type === 'deck-questions')
+    if (!dq) return res.status(400).json({ error: 'mensagem não tem bloco de perguntas' })
+    const clean = sanitizeQuestionAnswers(req.body?.answers, dq.questions || [])
+    const answeredAt = new Date().toISOString()
+    const updated = await setDeckQuestionsAnswers(req.email, req.token, messageId, clean || {}, answeredAt)
+    res.json({ ok: true, blocks: updated })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

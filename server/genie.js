@@ -71,7 +71,14 @@ export async function searchGenieSpaces(token, userEmail, query, limit = 20) {
 
 const TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'QUERY_RESULT_EXPIRED'])
 
-async function pollMessage(token, spaceId, conversationId, messageId, deadlineMs) {
+// A generous ceiling so a legitimately slow Genie query (large warehouse, cold
+// start, complex plan) isn't cut off mid-flight — NOT a latency target. It only
+// exists so a wedged request can't block the turn forever. The live progress
+// events (onProgress → tool_progress SSE) keep the wait from feeling stuck.
+const GENIE_DEADLINE_MS = 5 * 60 * 1000
+
+async function pollMessage(token, spaceId, conversationId, messageId, deadlineMs, onProgress) {
+  const startedAt = Date.now()
   while (Date.now() < deadlineMs) {
     const msg = await apiFetch(
       `/api/2.0/genie/spaces/${spaceId}/conversations/${conversationId}/messages/${messageId}`,
@@ -79,6 +86,10 @@ async function pollMessage(token, spaceId, conversationId, messageId, deadlineMs
       token
     )
     if (TERMINAL_STATES.has(msg.status)) return msg
+    // report elapsed time + Genie's own coarse status so the chip shows live
+    // progress instead of a silent spinner — doesn't speed anything up, but the
+    // wait (up to 90s of blocking poll) stops feeling stuck.
+    onProgress?.({ elapsedMs: Date.now() - startedAt, status: msg.status })
     await new Promise((r) => setTimeout(r, 2000))
   }
   throw new Error('Genie demorou demais para responder.')
@@ -87,7 +98,12 @@ async function pollMessage(token, spaceId, conversationId, messageId, deadlineMs
 // Parses the PROTOBUF_ARRAY-shaped statement response the query-result
 // endpoint returns (distinct from the JSON_ARRAY shape the plain SQL
 // Statement Execution API uses) into a compact markdown table.
-function formatQueryResultTable(statementResponse, maxRows = 15) {
+// maxRows is a runaway backstop only (a query returning tens of thousands of
+// rows shouldn't dump all of them into the prompt), set generously so it never
+// truncates a legitimate result — NOT a quality limit. The full rows also live
+// in queryRows → chart candidates. Speed comes from prompt caching, not from
+// shrinking tool outputs.
+function formatQueryResultTable(statementResponse, maxRows = 500) {
   const cols = (statementResponse?.manifest?.schema?.columns || []).map((c) => c.name)
   const rows = statementResponse?.result?.data_typed_array || []
   if (!cols.length || !rows.length) return null
@@ -127,7 +143,7 @@ function parseQueryResultRows(statementResponse, maxRows = 2000) {
  * table; queryRows is the same query result as plain row objects (or []),
  * for the caller to turn into real chart candidates.
  */
-export async function askGenie(token, spaceId, question, conversationId) {
+export async function askGenie(token, spaceId, question, conversationId, onProgress) {
   let convId = conversationId
   let messageId
   if (!convId) {
@@ -147,7 +163,7 @@ export async function askGenie(token, spaceId, question, conversationId) {
     messageId = sent.message_id
   }
 
-  const msg = await pollMessage(token, spaceId, convId, messageId, Date.now() + 90000)
+  const msg = await pollMessage(token, spaceId, convId, messageId, Date.now() + GENIE_DEADLINE_MS, onProgress)
   if (msg.status !== 'COMPLETED') {
     throw new Error(`Genie não conseguiu responder (status: ${msg.status}).`)
   }
@@ -260,7 +276,7 @@ export function parseMarkdownTableRows(markdown, maxRows = 2000) {
  * Genie yields) so the caller can build real chart candidates from it too.
  * Returns { conversationId, resultText, queryRows }.
  */
-export async function askGenieOne(token, question, conversationId) {
+export async function askGenieOne(token, question, conversationId, onProgress) {
   const url = genieOneUrl()
   const asked = await callMcpTool(url, token, 'genie_ask', {
     question,
@@ -271,8 +287,10 @@ export async function askGenieOne(token, question, conversationId) {
 
   let resultText = asked.text
   if (state.status === 'in_progress') {
-    const deadline = Date.now() + 90000
+    const startedAt = Date.now()
+    const deadline = Date.now() + GENIE_DEADLINE_MS
     while (state.status === 'in_progress' && Date.now() < deadline) {
+      onProgress?.({ elapsedMs: Date.now() - startedAt, status: state.status })
       await new Promise((r) => setTimeout(r, 3000))
       const polled = await callMcpTool(url, token, 'genie_poll_response', {
         conversation_id: state.conversation_id,

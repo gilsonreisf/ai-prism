@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import * as Icon from './Icons.jsx'
 import { getJSON } from '../api.js'
+import { useT } from '../lib/i18n.jsx'
 
 const refKey = (t) => {
   if (t.kind === 'genie') return `genie:${t.spaceId}`
@@ -15,6 +16,7 @@ const refKey = (t) => {
 // user actually opens, instead of hitting every tool backend on every
 // keystroke, and each asset type gets its own scoped result list.
 function ToolCategorySection({ icon, title, comingSoon, searchFn, isEnabled, onToggle, renderLabel }) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -46,7 +48,7 @@ function ToolCategorySection({ icon, title, comingSoon, searchFn, isEnabled, onT
         <span className="text-sm font-semibold flex-1">{title}</span>
         {comingSoon && (
           <span className="text-[9px] uppercase font-bold tracking-wide text-[var(--faint)] border border-[var(--border)] rounded px-1.5 py-0.5">
-            Em breve
+            {t('tools.comingSoon')}
           </span>
         )}
         <Icon.ChevronRight
@@ -59,7 +61,7 @@ function ToolCategorySection({ icon, title, comingSoon, searchFn, isEnabled, onT
         <div className="p-1.5">
           {comingSoon ? (
             <p className="px-2 py-3 text-xs text-[var(--faint)] text-center">
-              Ainda não disponível nesta versão do AI Prism.
+              {t('tools.notAvailableYet')}
             </p>
           ) : (
             <>
@@ -69,14 +71,14 @@ function ToolCategorySection({ icon, title, comingSoon, searchFn, isEnabled, onT
                   autoFocus
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder={`Buscar em ${title}…`}
+                  placeholder={t('tools.searchIn', { title })}
                   className="w-full rounded-lg bg-[var(--surface-2)] border border-[var(--border)] pl-8 pr-3 py-1.5 text-sm outline-none focus:border-[var(--accent)] placeholder:text-[var(--faint)]"
                 />
               </div>
-              {searching && <p className="px-2 py-2 text-xs text-[var(--faint)] text-center">Buscando…</p>}
+              {searching && <p className="px-2 py-2 text-xs text-[var(--faint)] text-center">{t('tools.searching')}</p>}
               {!searching && results.length === 0 && (
                 <p className="px-2 py-2 text-xs text-[var(--faint)] text-center">
-                  {query.trim() ? 'Nada encontrado.' : 'Digite para buscar.'}
+                  {query.trim() ? t('tools.nothingFound') : t('tools.typeToSearch')}
                 </p>
               )}
               {!searching &&
@@ -119,8 +121,10 @@ function ToolCategorySection({ icon, title, comingSoon, searchFn, isEnabled, onT
  * the session (see App.jsx), so reopening a past conversation re-enables the
  * same tools automatically.
  */
-export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange, disabled }) {
+export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange, disabled, onOpenMcpSettings }) {
+  const t = useT()
   const [open, setOpen] = useState(false)
+  const [adoptedMcp, setAdoptedMcp] = useState(null) // connections the user has connected
   const ref = useRef(null)
 
   useEffect(() => {
@@ -131,13 +135,38 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
     return () => document.removeEventListener('mousedown', h)
   }, [])
 
+  // load adopted MCP connections when the picker opens: the picker only shows
+  // connections the user already connected (in Settings) as on/off toggles —
+  // default on. Auto-enable any adopted-but-not-yet-in-session connection.
+  useEffect(() => {
+    if (!open) return
+    getJSON('/api/mcp/connections')
+      .then((r) => {
+        const adopted = (r.connections || []).filter((c) => c.adopted)
+        setAdoptedMcp(adopted)
+        const missing = adopted.filter(
+          (c) => !enabledTools.some((e) => e.kind === 'mcp-external' && e.connectionName === c.connectionName)
+        )
+        if (missing.length) {
+          onChange([
+            ...enabledTools,
+            ...missing.map((c) => ({ kind: 'mcp-external', connectionName: c.connectionName, comment: c.comment })),
+          ])
+        }
+      })
+      .catch(() => setAdoptedMcp([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
   const isEnabled = (t) => enabledTools.some((e) => refKey(e) === refKey(t))
   const toggle = (t) => {
     if (isEnabled(t)) onChange(enabledTools.filter((e) => refKey(e) !== refKey(t)))
     else onChange([...enabledTools, t])
   }
   const genieOneEnabled = isEnabled({ kind: 'genie-one' })
-  const removableTools = enabledTools.filter((t) => t.kind !== 'genie-one')
+  // MCP connections render in their own adopted-toggle section, not the generic
+  // chip list — keep them out of "removableTools" so they aren't shown twice.
+  const removableTools = enabledTools.filter((t) => t.kind !== 'genie-one' && t.kind !== 'mcp-external')
 
   return (
     <div className="relative" ref={ref}>
@@ -148,7 +177,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
         className="relative shrink-0 p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-2)] transition disabled:opacity-50"
-        title="Tools"
+        title={t('tools.title')}
       >
         <Icon.ToolsGlyph size={17} />
         {enabledTools.length > 0 && (
@@ -161,7 +190,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
       {open && (
         <div className="absolute z-40 mt-2 w-[380px] max-w-[calc(100vw-1.5rem)] max-h-[70vh] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/40 p-1.5">
           <div className="px-3 py-2 text-[11px] uppercase tracking-wide font-semibold text-[var(--faint)]">
-            Tools habilitadas
+            {t('tools.enabledHeading')}
           </div>
           {modelSupportsTools ? (
             <>
@@ -170,7 +199,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-semibold">Python</span>
                   <span className="block text-xs text-[var(--faint)]">
-                    Cálculos de precisão exata — sempre disponível para este modelo
+                    {t('tools.pythonDesc')}
                   </span>
                 </span>
                 <Icon.Check size={15} className="text-[var(--accent)] shrink-0" />
@@ -181,7 +210,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-semibold">Genie One</span>
                   <span className="block text-xs text-[var(--faint)]">
-                    Alcança todos os Genie Spaces e assets de Unity Catalog do workspace
+                    {t('tools.genieOneDesc')}
                   </span>
                 </span>
                 <button
@@ -189,7 +218,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
                   className={`shrink-0 w-9 h-5 rounded-full transition relative ${
                     genieOneEnabled ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
                   }`}
-                  title={genieOneEnabled ? 'Desabilitar Genie One' : 'Habilitar Genie One'}
+                  title={genieOneEnabled ? t('tools.genieOneDisable') : t('tools.genieOneEnable')}
                 >
                   <span
                     className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
@@ -202,49 +231,49 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
           ) : (
             <div className="flex items-start gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] text-[var(--faint)] mb-1">
               <Icon.AlertTriangle size={16} className="shrink-0 mt-0.5" />
-              <span className="text-xs">Este modelo não suporta tool calling.</span>
+              <span className="text-xs">{t('tools.noToolCalling')}</span>
             </div>
           )}
 
-          {removableTools.map((t) => (
-            <div key={refKey(t)} className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
-              {t.kind === 'genie' ? (
+          {removableTools.map((tool) => (
+            <div key={refKey(tool)} className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
+              {tool.kind === 'genie' ? (
                 <Icon.GenieSpaces size={18} />
-              ) : t.kind === 'vector-search' ? (
+              ) : tool.kind === 'vector-search' ? (
                 <Icon.VectorSearch size={18} />
-              ) : t.kind === 'mcp-external' ? (
+              ) : tool.kind === 'mcp-external' ? (
                 <Icon.McpExternal size={18} />
-              ) : t.kind === 'uc' ? (
+              ) : tool.kind === 'uc' ? (
                 <Icon.UcFunctions size={18} />
               ) : (
                 <Icon.Wrench size={16} className="text-[var(--accent)] shrink-0" />
               )}
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-semibold truncate">
-                  {t.kind === 'genie'
-                    ? t.title
-                    : t.kind === 'vector-search'
-                      ? t.indexName
-                      : t.kind === 'mcp-external'
-                        ? t.connectionName
-                        : t.fullName}
+                  {tool.kind === 'genie'
+                    ? tool.title
+                    : tool.kind === 'vector-search'
+                      ? tool.indexName
+                      : tool.kind === 'mcp-external'
+                        ? tool.connectionName
+                        : tool.fullName}
                 </span>
-                {t.kind === 'genie' && t.description && (
-                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1">{t.description}</span>
+                {tool.kind === 'genie' && tool.description && (
+                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1">{tool.description}</span>
                 )}
-                {t.kind === 'vector-search' && t.sourceTable && (
+                {tool.kind === 'vector-search' && tool.sourceTable && (
                   <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1 font-mono">
-                    {t.sourceTable}
+                    {tool.sourceTable}
                   </span>
                 )}
-                {t.kind === 'mcp-external' && t.comment && (
-                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1">{t.comment}</span>
+                {tool.kind === 'mcp-external' && tool.comment && (
+                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1">{tool.comment}</span>
                 )}
               </span>
               <button
-                onClick={() => toggle(t)}
+                onClick={() => toggle(tool)}
                 className="shrink-0 p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--faint)] hover:text-[var(--text)] transition"
-                title="Remover"
+                title={t('common.delete')}
               >
                 <Icon.Close size={14} />
               </button>
@@ -252,12 +281,12 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
           ))}
 
           <div className="px-3 pt-2 pb-2 text-[11px] uppercase tracking-wide font-semibold text-[var(--faint)]">
-            Adicionar tools
+            {t('tools.addHeading')}
           </div>
 
           <ToolCategorySection
             icon={<Icon.GenieSpaces size={15} />}
-            title="Genie Spaces"
+            title={t('tools.catGenieSpaces')}
             isEnabled={isEnabled}
             onToggle={toggle}
             searchFn={(q) => getJSON(`/api/tools/genie/search?q=${encodeURIComponent(q)}`).then((r) => r.results)}
@@ -273,7 +302,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
 
           <ToolCategorySection
             icon={<Icon.UcFunctions size={15} />}
-            title="Unity Catalog Functions"
+            title={t('tools.catUcFunctions')}
             isEnabled={isEnabled}
             onToggle={toggle}
             searchFn={(q) => getJSON(`/api/tools/search?q=${encodeURIComponent(q)}`).then((r) => r.results)}
@@ -294,7 +323,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
 
           <ToolCategorySection
             icon={<Icon.VectorSearch size={15} />}
-            title="Vector Search Indexes"
+            title={t('tools.catVectorSearch')}
             isEnabled={isEnabled}
             onToggle={toggle}
             searchFn={(q) =>
@@ -312,23 +341,77 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
             )}
           />
 
-          <ToolCategorySection
-            icon={<Icon.McpExternal size={15} />}
-            title="MCPs Externos"
-            isEnabled={isEnabled}
-            onToggle={toggle}
-            searchFn={(q) =>
-              getJSON(`/api/tools/mcp/external/search?q=${encodeURIComponent(q)}`).then((r) => r.results)
-            }
-            renderLabel={(conn) => (
-              <>
-                <span className="block text-sm font-semibold truncate">{conn.connectionName}</span>
-                {conn.comment && (
-                  <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-2">{conn.comment}</span>
-                )}
-              </>
-            )}
-          />
+          {/* External MCPs: only connections the user has connected (in
+              Settings) appear here, as on/off toggles — default on. Connecting
+              a new one is a one-time flow in Settings, not a per-session search. */}
+          <div className="rounded-xl border border-[var(--border)] overflow-hidden mb-1.5">
+            <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--surface-2)]">
+              <Icon.McpExternal size={15} />
+              <span className="text-sm font-semibold flex-1">{t('tools.catExternalMcp')}</span>
+            </div>
+            <div className="p-1.5">
+              {adoptedMcp === null && (
+                <p className="px-2 py-2 text-xs text-[var(--faint)] text-center">{t('common.loading')}</p>
+              )}
+              {adoptedMcp && adoptedMcp.length === 0 && (
+                <p className="px-2 py-3 text-xs text-[var(--faint)] text-center">
+                  {t('tools.noMcpConnected')}
+                  {onOpenMcpSettings && (
+                    <>
+                      {' '}
+                      <button
+                        onClick={onOpenMcpSettings}
+                        className="text-[var(--accent)] font-semibold hover:underline"
+                      >
+                        {t('tools.connectInSettings')}
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
+              {adoptedMcp &&
+                adoptedMcp.map((conn) => {
+                  const ref = { kind: 'mcp-external', connectionName: conn.connectionName, comment: conn.comment }
+                  const active = isEnabled(ref)
+                  return (
+                    <div
+                      key={conn.connectionName}
+                      className="flex items-center gap-2.5 rounded-lg px-2.5 py-2"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold truncate">{conn.connectionName}</span>
+                        {conn.comment && (
+                          <span className="block text-xs text-[var(--faint)] mt-0.5 line-clamp-1">
+                            {conn.comment}
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        onClick={() => toggle(ref)}
+                        className={`shrink-0 w-9 h-5 rounded-full transition relative ${
+                          active ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
+                        }`}
+                        title={active ? t('tools.disableInChat') : t('tools.enableInChat')}
+                      >
+                        <span
+                          className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                            active ? 'translate-x-4' : ''
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  )
+                })}
+              {adoptedMcp && adoptedMcp.length > 0 && onOpenMcpSettings && (
+                <button
+                  onClick={onOpenMcpSettings}
+                  className="w-full text-left px-2.5 py-2 text-xs text-[var(--accent)] font-semibold hover:underline"
+                >
+                  {t('tools.connectAnotherMcp')}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

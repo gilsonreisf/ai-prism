@@ -625,32 +625,135 @@ function templateHint(template) {
   return hint
 }
 
-export function buildBlocksInstruction(candidates, template) {
-  if (!candidates?.length)
-    return CHART_POLICY + NO_CANDIDATES_INSTRUCTION + DECK_POLICY + SPREADSHEET_POLICY + templateHint(template)
+// Capability detection (progressive disclosure — "skills fase 1"). The deck and
+// spreadsheet policies are BIG (~5k and ~2.2k tokens) and the deck template hint
+// adds more; sending all of them on every turn means a trivial "quanto é 2+2?"
+// pays for the entire deck+spreadsheet+design-system surface it will never use.
+// This detects, deterministically and at zero latency, whether a turn is even
+// PLAUSIBLY about a deck or a spreadsheet, and the caller only includes the
+// heavy policy when it is.
+//
+// Safety is asymmetric and we lean into it: a FALSE POSITIVE just re-adds tokens
+// (harmless); a FALSE NEGATIVE would strip a capability the user wanted (bad).
+// So the vocabulary is generous, and — critically — a capability stays ON for
+// the whole session once its flow is active (a prior deck/deck-questions or
+// spreadsheet block in history, or the answers-marker follow-up), because the
+// deck flow is inherently multi-turn (ask → answer → tweak). CHART_POLICY is
+// always sent regardless: it's small and it's what stops the model from emitting
+// unrenderable Plotly/HTML code for the very common "faça um gráfico" ask.
+const DECK_INTENT_RE =
+  /\b(apresenta[çc][ãa]o|apresenta[çc][õo]es|apresentar|slides?|slide\s*deck|deck|decks|pitch|pptx|powerpoint|power\s*point|keynote|present(ation|e)|capa\s+do\s+deck)\b/i
+const SPREADSHEET_INTENT_RE =
+  /\b(planilhas?|xlsx?|excel|google\s*sheets?|sheets?|workbook|spreadsheet|or[çc]amento|valuation|dcf|proje[çc][ãa]o\s+financeira|modelo\s+(de\s+)?(c[áa]lculo|financeiro|valuation)|fluxo\s+de\s+caixa|planejamento\s+financeiro)\b/i
 
-  return (
-    CHART_POLICY +
-    '\nVocê tem acesso a dados reais pré-calculados para visualização. Quando algum deles ' +
-    'ilustrar bem um trecho da sua resposta, insira o bloco logo APÓS o parágrafo relacionado ' +
-    '(não junte todos no final da mensagem — cada um deve ficar próximo do trecho que comenta), ' +
-    'em sua própria linha, neste formato:\n' +
-    '```prism-block\n{"type":"chart","ref":"candidate_1","caption":"legenda curta"}\n```\n' +
-    'Se você tiver dados reais desta conversa que NÃO estão na lista de candidatos abaixo (ex.: ' +
-    'resultado de uma tool), use o modo de dados em linha descrito acima (chartType + series→data→' +
-    '{label,value}) — nunca invente um "ref" para um candidato inexistente.\n' +
-    'Para destacar um achado importante (sem gráfico), use:\n' +
-    '```prism-block\n{"type":"insight","title":"...","body":"..."}\n```\n' +
-    'Regras: "ref" apenas com os IDs abaixo (nunca invente dados de gráfico); no máximo 12 blocos ' +
-    'no total — se o usuário pediu um relatório com várias seções/métricas, é esperado usar um ' +
-    'bloco por seção, não apenas 1 ou 2; posicione cada um imediatamente após o trecho de texto ' +
-    'que ele ilustra; omita blocos se nenhum candidato for realmente útil para aquele trecho.' +
-    '\n\nCandidatos disponíveis:\n' +
-    candidatesText(candidates) +
-    DECK_POLICY +
-    SPREADSHEET_POLICY +
-    templateHint(template)
-  )
+function historyHasBlock(history, types) {
+  for (const m of history || []) {
+    const blocks = m.blocks
+    if (Array.isArray(blocks) && blocks.some((b) => types.includes(b?.type))) return true
+  }
+  return false
+}
+
+// Returns { deck, spreadsheet } — whether each heavy capability's policy should
+// be included this turn. `userText` is the current prompt; `history` is the
+// prior thread (each message may carry a `blocks` array).
+export function detectCapabilities(userText, history) {
+  const text = String(userText || '')
+  // the deck flow's follow-up turn arrives as "Perguntas respondidas: ..." (see
+  // DECK_POLICY etapa 2) — keep deck on so generation gets the full policy
+  const answeringDeckQuestions = /^\s*perguntas respondidas\s*:/i.test(text)
+  const deck =
+    DECK_INTENT_RE.test(text) ||
+    answeringDeckQuestions ||
+    historyHasBlock(history, ['deck', 'deck-questions'])
+  const spreadsheet =
+    SPREADSHEET_INTENT_RE.test(text) || historyHasBlock(history, ['spreadsheet'])
+  return { deck, spreadsheet }
+}
+
+// The product's built-in capabilities, surfaced as read-only "system skills":
+// they show up in the Skills tab (so every deployment ships them pre-listed,
+// no seeding needed) and drive the ephemeral "skill active" badge when the
+// router turns a capability on. These are NOT stored in the DB — their bodies
+// live in code (DECK_POLICY/SPREADSHEET_POLICY/CHART_POLICY above); this is
+// just their catalog metadata. `chart` is always-on (CHART_POLICY is always
+// injected), so it isn't badged per-turn — only deck/spreadsheet are gated.
+export const SYSTEM_SKILLS = [
+  {
+    name: 'deck-generation',
+    title: 'Geração de apresentações',
+    description:
+      'Cria apresentações (decks de slides) a partir de um pedido, com design system e exportação .pptx.',
+    cap: 'deck',
+  },
+  {
+    name: 'spreadsheet-generation',
+    title: 'Geração de planilhas',
+    description:
+      'Monta planilhas (.xlsx) com abas, tabelas, fórmulas e gráficos a partir de um pedido ou de dados da conversa.',
+    cap: 'spreadsheet',
+  },
+  {
+    name: 'chart-generation',
+    title: 'Gráficos e destaques',
+    description:
+      'Insere gráficos e cartões de destaque na resposta a partir de dados reais da conversa.',
+    cap: 'chart',
+    alwaysOn: true,
+  },
+]
+
+// Maps the detectCapabilities() result to badge-shaped system skills for the
+// turn — the deck/spreadsheet capabilities that were actually turned on. Used
+// to emit the `skill_active` SSE event so built-in capabilities light up the
+// same ephemeral badge as authored skills. Chart is excluded (always on → not
+// a meaningful per-turn signal).
+export function activeSystemSkills(caps) {
+  if (!caps) return []
+  return SYSTEM_SKILLS.filter((s) => !s.alwaysOn && caps[s.cap]).map((s) => ({
+    name: s.name,
+    title: s.title,
+    description: s.description,
+  }))
+}
+
+export function buildBlocksInstruction(candidates, template, caps) {
+  // default to all-on so any caller that doesn't pass caps keeps the original
+  // (always-include-everything) behavior — the gating is strictly opt-in.
+  const c = caps || { deck: true, spreadsheet: true }
+
+  let out
+  if (!candidates?.length) {
+    out = CHART_POLICY + NO_CANDIDATES_INSTRUCTION
+  } else {
+    out =
+      CHART_POLICY +
+      '\nVocê tem acesso a dados reais pré-calculados para visualização. Quando algum deles ' +
+      'ilustrar bem um trecho da sua resposta, insira o bloco logo APÓS o parágrafo relacionado ' +
+      '(não junte todos no final da mensagem — cada um deve ficar próximo do trecho que comenta), ' +
+      'em sua própria linha, neste formato:\n' +
+      '```prism-block\n{"type":"chart","ref":"candidate_1","caption":"legenda curta"}\n```\n' +
+      'Se você tiver dados reais desta conversa que NÃO estão na lista de candidatos abaixo (ex.: ' +
+      'resultado de uma tool), use o modo de dados em linha descrito acima (chartType + series→data→' +
+      '{label,value}) — nunca invente um "ref" para um candidato inexistente.\n' +
+      'Para destacar um achado importante (sem gráfico), use:\n' +
+      '```prism-block\n{"type":"insight","title":"...","body":"..."}\n```\n' +
+      'Regras: "ref" apenas com os IDs abaixo (nunca invente dados de gráfico); no máximo 12 blocos ' +
+      'no total — se o usuário pediu um relatório com várias seções/métricas, é esperado usar um ' +
+      'bloco por seção, não apenas 1 ou 2; posicione cada um imediatamente após o trecho de texto ' +
+      'que ele ilustra; omita blocos se nenhum candidato for realmente útil para aquele trecho.' +
+      '\n\nCandidatos disponíveis:\n' +
+      candidatesText(candidates)
+  }
+
+  // heavy, capability-specific policies — included only when the turn is
+  // plausibly about that capability. Order preserved from the original
+  // (DECK, then SPREADSHEET, then the deck templateHint) for byte-stability
+  // when both are on, which also keeps the prompt-cache prefix stable.
+  if (c.deck) out += DECK_POLICY
+  if (c.spreadsheet) out += SPREADSHEET_POLICY
+  if (c.deck) out += templateHint(template)
+  return out
 }
 
 function candidatesText(candidates) {
@@ -1512,7 +1615,36 @@ function sanitizeDeckQuestions(raw) {
   if (!questions.length) return null
   const out = { questions }
   if (typeof raw.intro === 'string' && raw.intro.trim()) out.intro = raw.intro.slice(0, 400)
+  // answers are persisted into the block once the user submits (so the box
+  // shows the history on reload and stays editable) — carry them through
+  // sanitize too, keyed by question id. Values: string | string[].
+  const answers = sanitizeQuestionAnswers(raw.answers, questions)
+  if (answers) {
+    out.answers = answers
+    if (typeof raw.answeredAt === 'string') out.answeredAt = raw.answeredAt.slice(0, 40)
+  }
   return out
+}
+
+// Coerces a client/model-supplied answers map to a safe shape: only keys that
+// are real question ids, values trimmed strings (or string arrays for multi).
+export function sanitizeQuestionAnswers(raw, questions) {
+  if (!raw || typeof raw !== 'object') return null
+  const byId = new Map(questions.map((q) => [q.id, q]))
+  const out = {}
+  for (const [qid, val] of Object.entries(raw)) {
+    const q = byId.get(qid)
+    if (!q) continue
+    if (q.type === 'multi') {
+      const arr = (Array.isArray(val) ? val : [val])
+        .filter((v) => typeof v === 'string' && v.trim())
+        .map((v) => v.slice(0, 200))
+      if (arr.length) out[qid] = arr
+    } else if (typeof val === 'string' && val.trim()) {
+      out[qid] = val.slice(0, 500)
+    }
+  }
+  return Object.keys(out).length ? out : null
 }
 
 // ---- spreadsheet blocks ---------------------------------------------------

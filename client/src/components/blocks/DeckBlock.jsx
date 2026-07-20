@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react'
 import * as Icon from '../Icons.jsx'
 import DeckSlidePreview from '../DeckSlidePreview.jsx'
 import { getJSON } from '../../api.js'
+import { useT } from '../../lib/i18n.jsx'
 
 export default function DeckBlock({ block, onOpenDeck }) {
+  const t = useT()
   const [template, setTemplate] = useState(null)
 
   useEffect(() => {
@@ -20,7 +22,7 @@ export default function DeckBlock({ block, onOpenDeck }) {
         <Icon.Presentation size={16} className="text-[var(--accent)]" />
         <span className="truncate">{block.title}</span>
         <span className="text-xs font-normal text-[var(--faint)] shrink-0">
-          {block.slides?.length || 0} slide{(block.slides?.length || 0) !== 1 ? 's' : ''}
+          {t('deckBlock.slideCount', { count: block.slides?.length || 0, slide: (block.slides?.length || 0) !== 1 ? t('deckBlock.slidePlural') : t('deckBlock.slideSingular') })}
         </span>
       </div>
 
@@ -35,7 +37,7 @@ export default function DeckBlock({ block, onOpenDeck }) {
         disabled={!block.deckId}
         className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm py-2 transition"
       >
-        <Icon.Presentation size={15} /> Abrir no Estúdio de Slides
+        <Icon.Presentation size={15} /> {t('deckBlock.openStudio')}
       </button>
     </div>
   )

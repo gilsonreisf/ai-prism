@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { useT } from '../../lib/i18n.jsx'
 
 const CAP = 12
 
 export default function TableBlock({ block }) {
+  const t = useT()
   const { title, columns, rows } = block
   const [expanded, setExpanded] = useState(false)
   const visible = expanded ? rows : rows.slice(0, CAP)
@@ -38,7 +40,7 @@ export default function TableBlock({ block }) {
           onClick={() => setExpanded(true)}
           className="mt-2 text-xs text-[var(--accent)] hover:underline"
         >
-          + {hidden} linhas
+          {t('table.moreRows', { count: hidden })}
         </button>
       )}
     </div>
