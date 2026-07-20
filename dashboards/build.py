@@ -138,17 +138,65 @@ agg AS (
          COUNT(*) turns, COUNT(DISTINCT user_email) users,
          AVG(latency_ms) lat, AVG(time_to_first_byte_ms) ttft
   FROM alloc WHERE bucket IS NOT NULL GROUP BY 1
+),
+piv AS (
+  SELECT
+    MAX(CASE WHEN bucket='cur'  THEN usd   END) AS usd_cur,   MAX(CASE WHEN bucket='prev' THEN usd   END) AS usd_prev,
+    MAX(CASE WHEN bucket='cur'  THEN dbu   END) AS dbu_cur,   MAX(CASE WHEN bucket='prev' THEN dbu   END) AS dbu_prev,
+    MAX(CASE WHEN bucket='cur'  THEN inp   END) AS inp_cur,   MAX(CASE WHEN bucket='prev' THEN inp   END) AS inp_prev,
+    MAX(CASE WHEN bucket='cur'  THEN outp  END) AS outp_cur,  MAX(CASE WHEN bucket='prev' THEN outp  END) AS outp_prev,
+    MAX(CASE WHEN bucket='cur'  THEN turns END) AS turns_cur, MAX(CASE WHEN bucket='prev' THEN turns END) AS turns_prev,
+    MAX(CASE WHEN bucket='cur'  THEN users END) AS users_cur, MAX(CASE WHEN bucket='prev' THEN users END) AS users_prev,
+    MAX(CASE WHEN bucket='cur'  THEN lat   END) AS lat_cur,   MAX(CASE WHEN bucket='prev' THEN lat   END) AS lat_prev,
+    MAX(CASE WHEN bucket='cur'  THEN ttft  END) AS ttft_cur,  MAX(CASE WHEN bucket='prev' THEN ttft  END) AS ttft_prev
+  FROM agg
 )
-SELECT
-  MAX(CASE WHEN bucket='cur'  THEN usd   END) AS usd_cur,   MAX(CASE WHEN bucket='prev' THEN usd   END) AS usd_prev,
-  MAX(CASE WHEN bucket='cur'  THEN dbu   END) AS dbu_cur,   MAX(CASE WHEN bucket='prev' THEN dbu   END) AS dbu_prev,
-  MAX(CASE WHEN bucket='cur'  THEN inp   END) AS inp_cur,   MAX(CASE WHEN bucket='prev' THEN inp   END) AS inp_prev,
-  MAX(CASE WHEN bucket='cur'  THEN outp  END) AS outp_cur,  MAX(CASE WHEN bucket='prev' THEN outp  END) AS outp_prev,
-  MAX(CASE WHEN bucket='cur'  THEN turns END) AS turns_cur, MAX(CASE WHEN bucket='prev' THEN turns END) AS turns_prev,
-  MAX(CASE WHEN bucket='cur'  THEN users END) AS users_cur, MAX(CASE WHEN bucket='prev' THEN users END) AS users_prev,
-  MAX(CASE WHEN bucket='cur'  THEN lat   END) AS lat_cur,   MAX(CASE WHEN bucket='prev' THEN lat   END) AS lat_prev,
-  MAX(CASE WHEN bucket='cur'  THEN ttft  END) AS ttft_cur,  MAX(CASE WHEN bucket='prev' THEN ttft  END) AS ttft_prev
-FROM agg"""
+-- *_pct = real signed fractional change vs the previous 30 days ((cur-prev)/prev),
+-- shown as a percent on each KPI card. NULL when there's no previous-period
+-- baseline (division by zero guarded). The counter colors it by direction:
+-- for cost/DBU/latency a negative change is good (green), so the color rule flips.
+SELECT *,
+  (usd_cur   - usd_prev)   / NULLIF(usd_prev,   0) AS usd_pct,
+  (dbu_cur   - dbu_prev)   / NULLIF(dbu_prev,   0) AS dbu_pct,
+  (inp_cur   - inp_prev)   / NULLIF(inp_prev,   0) AS inp_pct,
+  (outp_cur  - outp_prev)  / NULLIF(outp_prev,  0) AS outp_pct,
+  (turns_cur - turns_prev) / NULLIF(turns_prev, 0) AS turns_pct,
+  (users_cur - users_prev) / NULLIF(users_prev, 0) AS users_pct,
+  (lat_cur   - lat_prev)   / NULLIF(lat_prev,   0) AS lat_pct,
+  (ttft_cur  - ttft_prev)  / NULLIF(ttft_prev,  0) AS ttft_pct
+FROM piv"""
+
+
+# Long-format token composition (model, token_type, tokens) so a stacked bar can
+# use color=token_type — the multi-measure y.fields form renders as one solid bar.
+# Built by UNPIVOT over ai_prism_detail's per-model token sums.
+TOKENS_SQL = f"""-- Token composition per model, long format for a stacked bar (color=token_type).
+WITH scoped AS (
+{SCOPED}
+),
+gw AS (
+  SELECT request_id AS rid, destination_model,
+         token_details.cache_read_input_tokens     AS cache_read,
+         token_details.cache_creation_input_tokens AS cache_creation,
+         token_details.output_reasoning_tokens     AS reasoning
+  FROM system.ai_gateway.usage WHERE event_time > current_date() - INTERVAL 180 DAYS
+),
+per_model AS (
+  SELECT COALESCE(g.destination_model, s.endpoint_name) AS model,
+         SUM(s.inp) AS input, SUM(s.outp) AS output,
+         SUM(COALESCE(g.cache_read,0)) AS cache_read,
+         SUM(COALESCE(g.cache_creation,0)) AS cache_creation,
+         SUM(COALESCE(g.reasoning,0)) AS reasoning
+  FROM scoped s LEFT JOIN gw g ON s.rid = g.rid
+  GROUP BY 1
+)
+SELECT model, token_type, tokens
+FROM per_model
+LATERAL VIEW STACK(5,
+  'Input', input, 'Output', output, 'Cache read', cache_read,
+  'Cache creation', cache_creation, 'Reasoning', reasoning
+) t AS token_type, tokens
+WHERE tokens > 0"""
 
 
 def lines(sql):
@@ -164,24 +212,47 @@ def q(dataset, fields, disagg=False, name="main_query"):
     return [{"name": name, "query": {"datasetName": dataset, "fields": fields, "disaggregated": disagg}}]
 
 
+PCT = {"type": "number-percent", "decimalPlaces": {"type": "max", "places": 1}}
+
+
 def counter(name, value_field, target_field, title, fmt, higher_is_good):
-    """Delta counter: value vs target (previous period). Conditional coloring:
-    positive-when-good uses green up / red down; inverted for cost/latency."""
-    val = {"fieldName": value_field, "displayName": title, "format": fmt}
-    tgt = {"fieldName": target_field, "displayName": "Período anterior", "format": fmt}
+    """KPI card showing the REAL signed % change vs the previous 30 days (e.g.
+    "+12.5%" / "-5.0%"), with the current-period absolute value as the `target`
+    subtitle. Conditional color keys off the shown % via `style.rules` — the exact
+    shape verified on a live workspace dashboard (condition {operator, operand:
+    data-value} + themeColorType color): green when the change is in the good
+    direction, red otherwise. For "higher is good" metrics that's >=0 → green; for
+    cost/DBU/latency ("lower is good") the comparison flips so a drop stays green.
+
+    NO `trend` encoding (invalid v2 key — it made every counter render as an empty
+    'Ask the assistant' draft in the previous build) and NO `conditionField`
+    (unverified). The % change field is `<metric>_pct`, produced sign-real in SQL."""
+    pct_field = value_field.replace("_cur", "_pct")
+    green = {"themeColorType": "visualizationColors", "position": 3}
+    red = {"themeColorType": "visualizationColors", "position": 1}
+    if higher_is_good:
+        rules = [
+            {"condition": {"operator": ">=", "operand": {"type": "data-value", "value": "0"}}, "color": green},
+            {"condition": {"operator": "<", "operand": {"type": "data-value", "value": "0"}}, "color": red},
+        ]
+    else:  # lower is good (cost, DBU, latency, TTFT): a negative change is green
+        rules = [
+            {"condition": {"operator": "<=", "operand": {"type": "data-value", "value": "0"}}, "color": green},
+            {"condition": {"operator": ">", "operand": {"type": "data-value", "value": "0"}}, "color": red},
+        ]
+    val = {"fieldName": pct_field, "displayName": "variação vs 30d anteriores",
+           "format": PCT, "style": {"rules": rules}}
+    tgt = {"fieldName": value_field, "displayName": "período atual", "format": fmt}
     return {
         "widget": {
             "name": name,
-            "queries": q("ai_prism_kpi", [field(value_field, f"`{value_field}`"),
-                                          field(target_field, f"`{target_field}`")], disagg=True),
+            "queries": q("ai_prism_kpi", [
+                field(pct_field, f"`{pct_field}`"),
+                field(value_field, f"`{value_field}`"),
+            ], disagg=True),
             "spec": {
                 "version": 2, "widgetType": "counter",
-                "encodings": {
-                    "value": val,
-                    "target": tgt,
-                    "trend": {"type": "percentage-change",
-                              "positiveIsGood": bool(higher_is_good)},
-                },
+                "encodings": {"value": val, "target": tgt},
                 "frame": {"showTitle": True, "title": title},
             },
         }
@@ -318,30 +389,31 @@ bar_model = {
                         "mark": {"colors": [ACCENT]}}}}
 add(bar_model, 0, y, 3, 6)
 
-# token_details composition: input / output / cache_read / cache_creation / reasoning per model (stacked)
+# Token composition per model — horizontal stacked bar (color = token type) from
+# the long-format ai_prism_tokens dataset (y.fields multi-measure rendered as a
+# solid bar; color-stacking is the reliable path). Horizontal so model labels are
+# readable instead of vertically clipped.
 tok_stack = {
     "widget": {"name": "tok_by_model",
                "queries": [{"name": "main_query", "query": {
-                   "datasetName": "ai_prism_detail",
+                   "datasetName": "ai_prism_tokens",
                    "fields": [
                        field("model", "`model`"),
-                       field("input", "SUM(`prompt_tokens`)"),
-                       field("output", "SUM(`completion_tokens`)"),
-                       field("cache_read", "SUM(`cache_read_tokens`)"),
-                       field("cache_creation", "SUM(`cache_creation_tokens`)"),
-                       field("reasoning", "SUM(`reasoning_tokens`)"),
+                       field("token_type", "`token_type`"),
+                       field("sum_tokens", "SUM(`tokens`)"),
                    ], "disaggregated": False}}],
                "spec": {"version": 3, "widgetType": "bar",
                         "encodings": {
-                            "x": {"fieldName": "model", "scale": {"type": "categorical"}, "displayName": "Modelo"},
-                            "y": {"scale": {"type": "quantitative"}, "displayName": "Tokens",
-                                  "fields": [
-                                      {"fieldName": "input", "displayName": "Input"},
-                                      {"fieldName": "output", "displayName": "Output"},
-                                      {"fieldName": "cache_read", "displayName": "Cache read"},
-                                      {"fieldName": "cache_creation", "displayName": "Cache creation"},
-                                      {"fieldName": "reasoning", "displayName": "Reasoning"},
-                                  ]},
+                            "x": {"fieldName": "sum_tokens", "scale": {"type": "quantitative"}, "displayName": "Tokens", "format": NUM},
+                            "y": {"fieldName": "model", "scale": {"type": "categorical", "sort": {"by": "x-reversed"}}, "displayName": "Modelo"},
+                            "color": {"fieldName": "token_type", "scale": {"type": "categorical",
+                                      "mappings": [
+                                          {"value": "Input", "color": PALETTE[1]},
+                                          {"value": "Output", "color": PALETTE[0]},
+                                          {"value": "Cache read", "color": PALETTE[2]},
+                                          {"value": "Cache creation", "color": PALETTE[3]},
+                                          {"value": "Reasoning", "color": PALETTE[4]},
+                                      ]}, "displayName": "Tipo de token"},
                             "label": {"show": False}},
                         "frame": {"showTitle": True, "title": "Composição de tokens por modelo (token_details)"},
                         "mark": {"colors": PALETTE}}}}
@@ -383,6 +455,7 @@ dashboard = {
     "datasets": [
         {"name": "ai_prism_detail", "displayName": "AI Prism — uso, custo e performance", "queryLines": lines(DETAIL_SQL)},
         {"name": "ai_prism_kpi", "displayName": "AI Prism — KPIs período atual vs anterior", "queryLines": lines(KPI_SQL)},
+        {"name": "ai_prism_tokens", "displayName": "AI Prism — composição de tokens (long)", "queryLines": lines(TOKENS_SQL)},
     ],
     "pages": [{"name": "ai_costs_overview", "displayName": "AI costs", "pageType": "PAGE_TYPE_CANVAS", "layout": layout}],
     "uiSettings": {"theme": {"widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"}},

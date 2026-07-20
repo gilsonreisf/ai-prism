@@ -134,17 +134,71 @@
         "         COUNT(*) turns, COUNT(DISTINCT user_email) users,\n",
         "         AVG(latency_ms) lat, AVG(time_to_first_byte_ms) ttft\n",
         "  FROM alloc WHERE bucket IS NOT NULL GROUP BY 1\n",
+        "),\n",
+        "piv AS (\n",
+        "  SELECT\n",
+        "    MAX(CASE WHEN bucket='cur'  THEN usd   END) AS usd_cur,   MAX(CASE WHEN bucket='prev' THEN usd   END) AS usd_prev,\n",
+        "    MAX(CASE WHEN bucket='cur'  THEN dbu   END) AS dbu_cur,   MAX(CASE WHEN bucket='prev' THEN dbu   END) AS dbu_prev,\n",
+        "    MAX(CASE WHEN bucket='cur'  THEN inp   END) AS inp_cur,   MAX(CASE WHEN bucket='prev' THEN inp   END) AS inp_prev,\n",
+        "    MAX(CASE WHEN bucket='cur'  THEN outp  END) AS outp_cur,  MAX(CASE WHEN bucket='prev' THEN outp  END) AS outp_prev,\n",
+        "    MAX(CASE WHEN bucket='cur'  THEN turns END) AS turns_cur, MAX(CASE WHEN bucket='prev' THEN turns END) AS turns_prev,\n",
+        "    MAX(CASE WHEN bucket='cur'  THEN users END) AS users_cur, MAX(CASE WHEN bucket='prev' THEN users END) AS users_prev,\n",
+        "    MAX(CASE WHEN bucket='cur'  THEN lat   END) AS lat_cur,   MAX(CASE WHEN bucket='prev' THEN lat   END) AS lat_prev,\n",
+        "    MAX(CASE WHEN bucket='cur'  THEN ttft  END) AS ttft_cur,  MAX(CASE WHEN bucket='prev' THEN ttft  END) AS ttft_prev\n",
+        "  FROM agg\n",
         ")\n",
-        "SELECT\n",
-        "  MAX(CASE WHEN bucket='cur'  THEN usd   END) AS usd_cur,   MAX(CASE WHEN bucket='prev' THEN usd   END) AS usd_prev,\n",
-        "  MAX(CASE WHEN bucket='cur'  THEN dbu   END) AS dbu_cur,   MAX(CASE WHEN bucket='prev' THEN dbu   END) AS dbu_prev,\n",
-        "  MAX(CASE WHEN bucket='cur'  THEN inp   END) AS inp_cur,   MAX(CASE WHEN bucket='prev' THEN inp   END) AS inp_prev,\n",
-        "  MAX(CASE WHEN bucket='cur'  THEN outp  END) AS outp_cur,  MAX(CASE WHEN bucket='prev' THEN outp  END) AS outp_prev,\n",
-        "  MAX(CASE WHEN bucket='cur'  THEN turns END) AS turns_cur, MAX(CASE WHEN bucket='prev' THEN turns END) AS turns_prev,\n",
-        "  MAX(CASE WHEN bucket='cur'  THEN users END) AS users_cur, MAX(CASE WHEN bucket='prev' THEN users END) AS users_prev,\n",
-        "  MAX(CASE WHEN bucket='cur'  THEN lat   END) AS lat_cur,   MAX(CASE WHEN bucket='prev' THEN lat   END) AS lat_prev,\n",
-        "  MAX(CASE WHEN bucket='cur'  THEN ttft  END) AS ttft_cur,  MAX(CASE WHEN bucket='prev' THEN ttft  END) AS ttft_prev\n",
-        "FROM agg"
+        "-- *_pct = real signed fractional change vs the previous 30 days ((cur-prev)/prev),\n",
+        "-- shown as a percent on each KPI card. NULL when there's no previous-period\n",
+        "-- baseline (division by zero guarded). The counter colors it by direction:\n",
+        "-- for cost/DBU/latency a negative change is good (green), so the color rule flips.\n",
+        "SELECT *,\n",
+        "  (usd_cur   - usd_prev)   / NULLIF(usd_prev,   0) AS usd_pct,\n",
+        "  (dbu_cur   - dbu_prev)   / NULLIF(dbu_prev,   0) AS dbu_pct,\n",
+        "  (inp_cur   - inp_prev)   / NULLIF(inp_prev,   0) AS inp_pct,\n",
+        "  (outp_cur  - outp_prev)  / NULLIF(outp_prev,  0) AS outp_pct,\n",
+        "  (turns_cur - turns_prev) / NULLIF(turns_prev, 0) AS turns_pct,\n",
+        "  (users_cur - users_prev) / NULLIF(users_prev, 0) AS users_pct,\n",
+        "  (lat_cur   - lat_prev)   / NULLIF(lat_prev,   0) AS lat_pct,\n",
+        "  (ttft_cur  - ttft_prev)  / NULLIF(ttft_prev,  0) AS ttft_pct\n",
+        "FROM piv"
+      ]
+    },
+    {
+      "name": "ai_prism_tokens",
+      "displayName": "AI Prism — composição de tokens (long)",
+      "queryLines": [
+        "-- Token composition per model, long format for a stacked bar (color=token_type).\n",
+        "WITH scoped AS (\n",
+        "  SELECT eu.databricks_request_id AS rid, lower(eu.requester) AS user_email,\n",
+        "         eu.request_time AS ts, eu.input_token_count AS inp, eu.output_token_count AS outp,\n",
+        "         se.endpoint_name AS endpoint_name\n",
+        "  FROM system.serving.endpoint_usage eu\n",
+        "  JOIN system.serving.served_entities se ON eu.served_entity_id = se.served_entity_id\n",
+        "  WHERE eu.usage_context['application'] = 'ai-prism' AND se.endpoint_name IS NOT NULL\n",
+        "),\n",
+        "gw AS (\n",
+        "  SELECT request_id AS rid, destination_model,\n",
+        "         token_details.cache_read_input_tokens     AS cache_read,\n",
+        "         token_details.cache_creation_input_tokens AS cache_creation,\n",
+        "         token_details.output_reasoning_tokens     AS reasoning\n",
+        "  FROM system.ai_gateway.usage WHERE event_time > current_date() - INTERVAL 180 DAYS\n",
+        "),\n",
+        "per_model AS (\n",
+        "  SELECT COALESCE(g.destination_model, s.endpoint_name) AS model,\n",
+        "         SUM(s.inp) AS input, SUM(s.outp) AS output,\n",
+        "         SUM(COALESCE(g.cache_read,0)) AS cache_read,\n",
+        "         SUM(COALESCE(g.cache_creation,0)) AS cache_creation,\n",
+        "         SUM(COALESCE(g.reasoning,0)) AS reasoning\n",
+        "  FROM scoped s LEFT JOIN gw g ON s.rid = g.rid\n",
+        "  GROUP BY 1\n",
+        ")\n",
+        "SELECT model, token_type, tokens\n",
+        "FROM per_model\n",
+        "LATERAL VIEW STACK(5,\n",
+        "  'Input', input, 'Output', output, 'Cache read', cache_read,\n",
+        "  'Cache creation', cache_creation, 'Reasoning', reasoning\n",
+        ") t AS token_type, tokens\n",
+        "WHERE tokens > 0"
       ]
     }
   ],
@@ -164,12 +218,12 @@
                   "datasetName": "ai_prism_kpi",
                   "fields": [
                     {
-                      "name": "usd_cur",
-                      "expression": "`usd_cur`"
+                      "name": "usd_pct",
+                      "expression": "`usd_pct`"
                     },
                     {
-                      "name": "usd_prev",
-                      "expression": "`usd_prev`"
+                      "name": "usd_cur",
+                      "expression": "`usd_cur`"
                     }
                   ],
                   "disaggregated": true
@@ -181,20 +235,49 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "usd_cur",
-                  "displayName": "Custo (USD)",
+                  "fieldName": "usd_pct",
+                  "displayName": "variação vs 30d anteriores",
                   "format": {
-                    "type": "number-currency",
-                    "currencyCode": "USD",
+                    "type": "number-percent",
                     "decimalPlaces": {
                       "type": "max",
-                      "places": 2
+                      "places": 1
                     }
+                  },
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operator": "<=",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "condition": {
+                          "operator": ">",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 1
+                        }
+                      }
+                    ]
                   }
                 },
                 "target": {
-                  "fieldName": "usd_prev",
-                  "displayName": "Período anterior",
+                  "fieldName": "usd_cur",
+                  "displayName": "período atual",
                   "format": {
                     "type": "number-currency",
                     "currencyCode": "USD",
@@ -203,10 +286,6 @@
                       "places": 2
                     }
                   }
-                },
-                "trend": {
-                  "type": "percentage-change",
-                  "positiveIsGood": false
                 }
               },
               "frame": {
@@ -232,12 +311,12 @@
                   "datasetName": "ai_prism_kpi",
                   "fields": [
                     {
-                      "name": "turns_cur",
-                      "expression": "`turns_cur`"
+                      "name": "turns_pct",
+                      "expression": "`turns_pct`"
                     },
                     {
-                      "name": "turns_prev",
-                      "expression": "`turns_prev`"
+                      "name": "turns_cur",
+                      "expression": "`turns_cur`"
                     }
                   ],
                   "disaggregated": true
@@ -249,20 +328,49 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "turns_cur",
-                  "displayName": "Turns",
+                  "fieldName": "turns_pct",
+                  "displayName": "variação vs 30d anteriores",
                   "format": {
-                    "type": "number-plain",
-                    "abbreviation": "compact",
+                    "type": "number-percent",
                     "decimalPlaces": {
                       "type": "max",
                       "places": 1
                     }
+                  },
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operator": ">=",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "condition": {
+                          "operator": "<",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 1
+                        }
+                      }
+                    ]
                   }
                 },
                 "target": {
-                  "fieldName": "turns_prev",
-                  "displayName": "Período anterior",
+                  "fieldName": "turns_cur",
+                  "displayName": "período atual",
                   "format": {
                     "type": "number-plain",
                     "abbreviation": "compact",
@@ -271,10 +379,6 @@
                       "places": 1
                     }
                   }
-                },
-                "trend": {
-                  "type": "percentage-change",
-                  "positiveIsGood": true
                 }
               },
               "frame": {
@@ -300,12 +404,12 @@
                   "datasetName": "ai_prism_kpi",
                   "fields": [
                     {
-                      "name": "users_cur",
-                      "expression": "`users_cur`"
+                      "name": "users_pct",
+                      "expression": "`users_pct`"
                     },
                     {
-                      "name": "users_prev",
-                      "expression": "`users_prev`"
+                      "name": "users_cur",
+                      "expression": "`users_cur`"
                     }
                   ],
                   "disaggregated": true
@@ -317,20 +421,49 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "users_cur",
-                  "displayName": "Usuários distintos",
+                  "fieldName": "users_pct",
+                  "displayName": "variação vs 30d anteriores",
                   "format": {
-                    "type": "number-plain",
-                    "abbreviation": "compact",
+                    "type": "number-percent",
                     "decimalPlaces": {
                       "type": "max",
                       "places": 1
                     }
+                  },
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operator": ">=",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "condition": {
+                          "operator": "<",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 1
+                        }
+                      }
+                    ]
                   }
                 },
                 "target": {
-                  "fieldName": "users_prev",
-                  "displayName": "Período anterior",
+                  "fieldName": "users_cur",
+                  "displayName": "período atual",
                   "format": {
                     "type": "number-plain",
                     "abbreviation": "compact",
@@ -339,10 +472,6 @@
                       "places": 1
                     }
                   }
-                },
-                "trend": {
-                  "type": "percentage-change",
-                  "positiveIsGood": true
                 }
               },
               "frame": {
@@ -368,12 +497,12 @@
                   "datasetName": "ai_prism_kpi",
                   "fields": [
                     {
-                      "name": "inp_cur",
-                      "expression": "`inp_cur`"
+                      "name": "inp_pct",
+                      "expression": "`inp_pct`"
                     },
                     {
-                      "name": "inp_prev",
-                      "expression": "`inp_prev`"
+                      "name": "inp_cur",
+                      "expression": "`inp_cur`"
                     }
                   ],
                   "disaggregated": true
@@ -385,20 +514,49 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "inp_cur",
-                  "displayName": "Tokens de input",
+                  "fieldName": "inp_pct",
+                  "displayName": "variação vs 30d anteriores",
                   "format": {
-                    "type": "number-plain",
-                    "abbreviation": "compact",
+                    "type": "number-percent",
                     "decimalPlaces": {
                       "type": "max",
                       "places": 1
                     }
+                  },
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operator": ">=",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "condition": {
+                          "operator": "<",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 1
+                        }
+                      }
+                    ]
                   }
                 },
                 "target": {
-                  "fieldName": "inp_prev",
-                  "displayName": "Período anterior",
+                  "fieldName": "inp_cur",
+                  "displayName": "período atual",
                   "format": {
                     "type": "number-plain",
                     "abbreviation": "compact",
@@ -407,10 +565,6 @@
                       "places": 1
                     }
                   }
-                },
-                "trend": {
-                  "type": "percentage-change",
-                  "positiveIsGood": true
                 }
               },
               "frame": {
@@ -436,12 +590,12 @@
                   "datasetName": "ai_prism_kpi",
                   "fields": [
                     {
-                      "name": "outp_cur",
-                      "expression": "`outp_cur`"
+                      "name": "outp_pct",
+                      "expression": "`outp_pct`"
                     },
                     {
-                      "name": "outp_prev",
-                      "expression": "`outp_prev`"
+                      "name": "outp_cur",
+                      "expression": "`outp_cur`"
                     }
                   ],
                   "disaggregated": true
@@ -453,20 +607,49 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "outp_cur",
-                  "displayName": "Tokens de output",
+                  "fieldName": "outp_pct",
+                  "displayName": "variação vs 30d anteriores",
                   "format": {
-                    "type": "number-plain",
-                    "abbreviation": "compact",
+                    "type": "number-percent",
                     "decimalPlaces": {
                       "type": "max",
                       "places": 1
                     }
+                  },
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operator": ">=",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "condition": {
+                          "operator": "<",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 1
+                        }
+                      }
+                    ]
                   }
                 },
                 "target": {
-                  "fieldName": "outp_prev",
-                  "displayName": "Período anterior",
+                  "fieldName": "outp_cur",
+                  "displayName": "período atual",
                   "format": {
                     "type": "number-plain",
                     "abbreviation": "compact",
@@ -475,10 +658,6 @@
                       "places": 1
                     }
                   }
-                },
-                "trend": {
-                  "type": "percentage-change",
-                  "positiveIsGood": true
                 }
               },
               "frame": {
@@ -504,12 +683,12 @@
                   "datasetName": "ai_prism_kpi",
                   "fields": [
                     {
-                      "name": "dbu_cur",
-                      "expression": "`dbu_cur`"
+                      "name": "dbu_pct",
+                      "expression": "`dbu_pct`"
                     },
                     {
-                      "name": "dbu_prev",
-                      "expression": "`dbu_prev`"
+                      "name": "dbu_cur",
+                      "expression": "`dbu_cur`"
                     }
                   ],
                   "disaggregated": true
@@ -521,20 +700,49 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "dbu_cur",
-                  "displayName": "DBU",
+                  "fieldName": "dbu_pct",
+                  "displayName": "variação vs 30d anteriores",
                   "format": {
-                    "type": "number-plain",
-                    "abbreviation": "compact",
+                    "type": "number-percent",
                     "decimalPlaces": {
                       "type": "max",
                       "places": 1
                     }
+                  },
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operator": "<=",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "condition": {
+                          "operator": ">",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 1
+                        }
+                      }
+                    ]
                   }
                 },
                 "target": {
-                  "fieldName": "dbu_prev",
-                  "displayName": "Período anterior",
+                  "fieldName": "dbu_cur",
+                  "displayName": "período atual",
                   "format": {
                     "type": "number-plain",
                     "abbreviation": "compact",
@@ -543,10 +751,6 @@
                       "places": 1
                     }
                   }
-                },
-                "trend": {
-                  "type": "percentage-change",
-                  "positiveIsGood": false
                 }
               },
               "frame": {
@@ -572,12 +776,12 @@
                   "datasetName": "ai_prism_kpi",
                   "fields": [
                     {
-                      "name": "lat_cur",
-                      "expression": "`lat_cur`"
+                      "name": "lat_pct",
+                      "expression": "`lat_pct`"
                     },
                     {
-                      "name": "lat_prev",
-                      "expression": "`lat_prev`"
+                      "name": "lat_cur",
+                      "expression": "`lat_cur`"
                     }
                   ],
                   "disaggregated": true
@@ -589,20 +793,49 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "lat_cur",
-                  "displayName": "Latência média (ms)",
+                  "fieldName": "lat_pct",
+                  "displayName": "variação vs 30d anteriores",
                   "format": {
-                    "type": "number-plain",
-                    "abbreviation": "none",
+                    "type": "number-percent",
                     "decimalPlaces": {
                       "type": "max",
-                      "places": 0
+                      "places": 1
                     }
+                  },
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operator": "<=",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "condition": {
+                          "operator": ">",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 1
+                        }
+                      }
+                    ]
                   }
                 },
                 "target": {
-                  "fieldName": "lat_prev",
-                  "displayName": "Período anterior",
+                  "fieldName": "lat_cur",
+                  "displayName": "período atual",
                   "format": {
                     "type": "number-plain",
                     "abbreviation": "none",
@@ -611,10 +844,6 @@
                       "places": 0
                     }
                   }
-                },
-                "trend": {
-                  "type": "percentage-change",
-                  "positiveIsGood": false
                 }
               },
               "frame": {
@@ -640,12 +869,12 @@
                   "datasetName": "ai_prism_kpi",
                   "fields": [
                     {
-                      "name": "ttft_cur",
-                      "expression": "`ttft_cur`"
+                      "name": "ttft_pct",
+                      "expression": "`ttft_pct`"
                     },
                     {
-                      "name": "ttft_prev",
-                      "expression": "`ttft_prev`"
+                      "name": "ttft_cur",
+                      "expression": "`ttft_cur`"
                     }
                   ],
                   "disaggregated": true
@@ -657,20 +886,49 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "ttft_cur",
-                  "displayName": "TTFT médio (ms)",
+                  "fieldName": "ttft_pct",
+                  "displayName": "variação vs 30d anteriores",
                   "format": {
-                    "type": "number-plain",
-                    "abbreviation": "none",
+                    "type": "number-percent",
                     "decimalPlaces": {
                       "type": "max",
-                      "places": 0
+                      "places": 1
                     }
+                  },
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operator": "<=",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "condition": {
+                          "operator": ">",
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0"
+                          }
+                        },
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 1
+                        }
+                      }
+                    ]
                   }
                 },
                 "target": {
-                  "fieldName": "ttft_prev",
-                  "displayName": "Período anterior",
+                  "fieldName": "ttft_cur",
+                  "displayName": "período atual",
                   "format": {
                     "type": "number-plain",
                     "abbreviation": "none",
@@ -679,10 +937,6 @@
                       "places": 0
                     }
                   }
-                },
-                "trend": {
-                  "type": "percentage-change",
-                  "positiveIsGood": false
                 }
               },
               "frame": {
@@ -1139,31 +1393,19 @@
               {
                 "name": "main_query",
                 "query": {
-                  "datasetName": "ai_prism_detail",
+                  "datasetName": "ai_prism_tokens",
                   "fields": [
                     {
                       "name": "model",
                       "expression": "`model`"
                     },
                     {
-                      "name": "input",
-                      "expression": "SUM(`prompt_tokens`)"
+                      "name": "token_type",
+                      "expression": "`token_type`"
                     },
                     {
-                      "name": "output",
-                      "expression": "SUM(`completion_tokens`)"
-                    },
-                    {
-                      "name": "cache_read",
-                      "expression": "SUM(`cache_read_tokens`)"
-                    },
-                    {
-                      "name": "cache_creation",
-                      "expression": "SUM(`cache_creation_tokens`)"
-                    },
-                    {
-                      "name": "reasoning",
-                      "expression": "SUM(`reasoning_tokens`)"
+                      "name": "sum_tokens",
+                      "expression": "SUM(`tokens`)"
                     }
                   ],
                   "disaggregated": false
@@ -1175,39 +1417,58 @@
               "widgetType": "bar",
               "encodings": {
                 "x": {
-                  "fieldName": "model",
-                  "scale": {
-                    "type": "categorical"
-                  },
-                  "displayName": "Modelo"
-                },
-                "y": {
+                  "fieldName": "sum_tokens",
                   "scale": {
                     "type": "quantitative"
                   },
                   "displayName": "Tokens",
-                  "fields": [
-                    {
-                      "fieldName": "input",
-                      "displayName": "Input"
-                    },
-                    {
-                      "fieldName": "output",
-                      "displayName": "Output"
-                    },
-                    {
-                      "fieldName": "cache_read",
-                      "displayName": "Cache read"
-                    },
-                    {
-                      "fieldName": "cache_creation",
-                      "displayName": "Cache creation"
-                    },
-                    {
-                      "fieldName": "reasoning",
-                      "displayName": "Reasoning"
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
                     }
-                  ]
+                  }
+                },
+                "y": {
+                  "fieldName": "model",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "x-reversed"
+                    }
+                  },
+                  "displayName": "Modelo"
+                },
+                "color": {
+                  "fieldName": "token_type",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Input",
+                        "color": "#4285F4"
+                      },
+                      {
+                        "value": "Output",
+                        "color": "#ff3621"
+                      },
+                      {
+                        "value": "Cache read",
+                        "color": "#10A37F"
+                      },
+                      {
+                        "value": "Cache creation",
+                        "color": "#FF6A00"
+                      },
+                      {
+                        "value": "Reasoning",
+                        "color": "#7C6FF0"
+                      }
+                    ]
+                  },
+                  "displayName": "Tipo de token"
                 },
                 "label": {
                   "show": false
