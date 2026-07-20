@@ -51,10 +51,12 @@ matches the app's visual language rather than a different color per chart.
 
 ## Deploy
 
-Usually you don't run this by hand: the **bundle deploys the dashboard for you**
-(`databricks.yml` references `./dashboards/ai-costs.lvdash.json`), so a normal
-`databricks bundle deploy` ships it into your own workspace. Use `deploy.sh` only
-when you want to push the dashboard on its own, outside the bundle.
+Usually you don't run this by hand: the **bundle deploys _and publishes_ the
+dashboard for you**. `databricks.yml` references `./dashboards/ai-costs.lvdash.json`,
+so `databricks bundle deploy` ships it into your workspace as a draft, and the
+post-deploy auto-config job (`bundle/auto_config.py`) publishes it — so admins see
+it live with no manual step. Use `deploy.sh` only to push the dashboard on its own,
+outside the bundle (then publish it yourself, as noted below).
 
 `deploy.sh` needs an authenticated `databricks` CLI profile and `jq`. Set these
 to your own values (nothing here is tied to a specific account):

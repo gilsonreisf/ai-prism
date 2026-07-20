@@ -1847,8 +1847,8 @@
                       "expression": "`day`"
                     },
                     {
-                      "name": "sum(dbus)",
-                      "expression": "SUM(`dbus`)"
+                      "name": "sum(turns)",
+                      "expression": "SUM(`turns`)"
                     }
                   ],
                   "disaggregated": false
@@ -1909,14 +1909,14 @@
               "encodings": {
                 "x": {
                   "fieldName": "day",
-                  "displayName": "day",
+                  "displayName": "Dia",
                   "scale": {
                     "type": "temporal"
                   }
                 },
                 "y": {
-                  "fieldName": "sum(dbus)",
-                  "displayName": "dbus",
+                  "fieldName": "sum(turns)",
+                  "displayName": "Turns",
                   "scale": {
                     "type": "quantitative"
                   }
