@@ -119,6 +119,8 @@ export default {
   'costs.trend': 'Custo por dia',
   'costs.byModel': 'Por modelo',
   'costs.detail': 'Detalhamento',
+  'costs.rowsRange': '{from}–{to} de {total}',
+  'costs.pageOf': '{page} / {total}',
   'costs.cost': 'Custo',
   'costs.asOf': 'Atualizado até {age} atrás',
   'costs.ageMin': '{n} min',

@@ -116,6 +116,8 @@ export default {
   'costs.trend': 'Cost per day',
   'costs.byModel': 'By model',
   'costs.detail': 'Breakdown',
+  'costs.rowsRange': '{from}–{to} of {total}',
+  'costs.pageOf': '{page} / {total}',
   'costs.cost': 'Cost',
   'costs.asOf': 'Updated as of {age} ago',
   'costs.ageMin': '{n} min',

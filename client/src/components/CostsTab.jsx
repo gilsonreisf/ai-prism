@@ -58,7 +58,7 @@ function KpiTile({ label, value, sub }) {
 function CostTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] px-3 py-2 text-xs shadow-lg">
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs shadow-lg">
       <div className="font-medium text-[var(--text)] mb-1">{label}</div>
       {payload.map((p, i) => (
         <div key={i} className="flex items-center gap-2 text-[var(--muted)]">
@@ -88,11 +88,12 @@ function FilterCombo({ icon, value, onChange, options, placeholder }) {
     .filter((o) => !ql || o.label.toLowerCase().includes(ql) || o.value.toLowerCase().includes(ql))
     .slice(0, 40)
   const Ic = icon
+  const selectedLabel = value ? (options.find((o) => o.value === value)?.label ?? value) : ''
   return (
-    <div className="relative min-w-[180px] max-w-xs flex-1" ref={ref}>
+    <div className="relative w-full sm:w-64" ref={ref}>
       <Ic size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--faint)] pointer-events-none" />
       <input
-        value={open ? q : value ? (options.find((o) => o.value === value)?.label ?? value) : q}
+        value={open ? q : selectedLabel}
         onChange={(e) => {
           setQ(e.target.value)
           if (!open) setOpen(true)
@@ -102,7 +103,7 @@ function FilterCombo({ icon, value, onChange, options, placeholder }) {
           setOpen(true)
         }}
         placeholder={placeholder}
-        className="w-full pl-8 pr-7 py-1.5 text-xs rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text)] placeholder:text-[var(--faint)]"
+        className="w-full pl-8 pr-7 py-1.5 text-xs rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text)] placeholder:text-[var(--faint)] outline-none focus:border-[var(--accent)] truncate"
       />
       {value && (
         <button
@@ -116,21 +117,27 @@ function FilterCombo({ icon, value, onChange, options, placeholder }) {
           <Icon.Close size={13} />
         </button>
       )}
-      {open && matches.length > 0 && (
-        <div className="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-[var(--border)] bg-[var(--surface-1)] shadow-lg py-1">
-          {matches.map((o) => (
-            <button
-              key={o.value}
-              onClick={() => {
-                onChange(o.value)
-                setOpen(false)
-              }}
-              className="w-full text-left px-3 py-1.5 text-xs text-[var(--text)] hover:bg-[var(--surface-3)] flex items-center justify-between gap-2"
-            >
-              <span className="truncate">{o.label}</span>
-              {o.hint != null && <span className="text-[var(--faint)] tabular-nums shrink-0">{o.hint}</span>}
-            </button>
-          ))}
+      {open && (
+        <div className="absolute z-30 mt-1 w-full min-w-[280px] max-h-72 overflow-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/50 py-1">
+          {matches.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-[var(--faint)]">—</div>
+          ) : (
+            matches.map((o) => (
+              <button
+                key={o.value}
+                onClick={() => {
+                  onChange(o.value)
+                  setOpen(false)
+                }}
+                className={`w-full text-left px-3 py-2 text-xs hover:bg-[var(--surface-3)] flex items-center justify-between gap-3 ${
+                  o.value === value ? 'bg-[var(--surface-3)] text-[var(--text)]' : 'text-[var(--text)]'
+                }`}
+              >
+                <span className="truncate flex-1" title={o.label}>{o.label}</span>
+                {o.hint != null && <span className="text-[var(--muted)] tabular-nums shrink-0">{o.hint}</span>}
+              </button>
+            ))
+          )}
         </div>
       )}
     </div>
@@ -149,6 +156,8 @@ export default function CostsTab({ open }) {
   const [preset, setPreset] = useState('30d')
   const [userFilter, setUserFilter] = useState('')
   const [modelFilter, setModelFilter] = useState('')
+  const [page, setPage] = useState(0)
+  const PAGE_SIZE = 15
 
   const load = async (p) => {
     setLoading(true)
@@ -241,6 +250,17 @@ export default function CostsTab({ open }) {
     }
     return [...m.entries()].map(([value, label]) => ({ value, label }))
   }, [data])
+
+  // paginated detail rows (cost desc). Reset to page 0 whenever the underlying
+  // filter set changes so we never land on an out-of-range page.
+  const sortedRows = useMemo(
+    () => [...view.filtered].sort((a, b) => b.cost - a.cost),
+    [view.filtered]
+  )
+  useEffect(() => setPage(0), [userFilter, modelFilter, preset, data])
+  const pageCount = Math.max(1, Math.ceil(sortedRows.length / PAGE_SIZE))
+  const pageStart = page * PAGE_SIZE
+  const pageRows = sortedRows.slice(pageStart, pageStart + PAGE_SIZE)
 
   const presets = [
     { id: '7d', label: t('costs.range.7d') },
@@ -367,26 +387,18 @@ export default function CostsTab({ open }) {
                 </div>
               )}
 
-              {/* per-model breakdown */}
+              {/* detailed table (user × model), paginated */}
               <div>
-                <div className="text-xs font-medium text-[var(--muted)] mb-2">{t('costs.byModel')}</div>
-                <div className="flex flex-wrap gap-2">
-                  {view.models.map((m, i) => (
-                    <div
-                      key={m.model}
-                      className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1.5 text-xs"
-                    >
-                      <span className="inline-block w-2 h-2 rounded-full" style={{ background: COLORS[i % COLORS.length] }} />
-                      <span className="text-[var(--text)]">{m.modelLabel}</span>
-                      <span className="text-[var(--muted)] tabular-nums">{fmtUSD(m.cost)}</span>
-                    </div>
-                  ))}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-medium text-[var(--muted)]">{t('costs.detail')}</div>
+                  <div className="text-[11px] text-[var(--faint)] tabular-nums">
+                    {t('costs.rowsRange', {
+                      from: sortedRows.length ? pageStart + 1 : 0,
+                      to: Math.min(pageStart + PAGE_SIZE, sortedRows.length),
+                      total: sortedRows.length,
+                    })}
+                  </div>
                 </div>
-              </div>
-
-              {/* detailed table (user × model) */}
-              <div>
-                <div className="text-xs font-medium text-[var(--muted)] mb-2">{t('costs.detail')}</div>
                 <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
                   <table className="w-full text-xs">
                     <thead>
@@ -401,22 +413,43 @@ export default function CostsTab({ open }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {[...view.filtered]
-                        .sort((a, b) => b.cost - a.cost)
-                        .map((r, i) => (
-                          <tr key={i} className="border-t border-[var(--border)] text-[var(--text)]">
-                            <td className="px-3 py-2">{r.userEmail}</td>
-                            <td className="px-3 py-2 text-[var(--muted)]">{r.modelLabel}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{r.turns.toLocaleString()}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{fmtTokens(r.promptTokens)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{fmtTokens(r.completionTokens)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-[var(--muted)]">{fmtDBU(r.dbus || 0)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtUSD(r.cost)}</td>
-                          </tr>
-                        ))}
+                      {pageRows.map((r, i) => (
+                        <tr key={pageStart + i} className="border-t border-[var(--border)] text-[var(--text)]">
+                          <td className="px-3 py-2">{r.userEmail}</td>
+                          <td className="px-3 py-2 text-[var(--muted)]">{r.modelLabel}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{r.turns.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmtTokens(r.promptTokens)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmtTokens(r.completionTokens)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-[var(--muted)]">{fmtDBU(r.dbus || 0)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtUSD(r.cost)}</td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
+                {pageCount > 1 && (
+                  <div className="flex items-center justify-end gap-2 mt-2">
+                    <button
+                      onClick={() => setPage((p) => Math.max(0, p - 1))}
+                      disabled={page === 0}
+                      className="p-1.5 rounded-lg border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--surface-3)] disabled:opacity-40 disabled:hover:bg-transparent"
+                      aria-label="previous page"
+                    >
+                      <Icon.ChevronLeft size={14} />
+                    </button>
+                    <span className="text-[11px] text-[var(--muted)] tabular-nums">
+                      {t('costs.pageOf', { page: page + 1, total: pageCount })}
+                    </span>
+                    <button
+                      onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                      disabled={page >= pageCount - 1}
+                      className="p-1.5 rounded-lg border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--surface-3)] disabled:opacity-40 disabled:hover:bg-transparent"
+                      aria-label="next page"
+                    >
+                      <Icon.ChevronRight size={14} />
+                    </button>
+                  </div>
+                )}
               </div>
             </>
           )}
