@@ -1,202 +1,103 @@
 #!/usr/bin/env python3
-"""Builds dashboards/ai-costs.lvdash.json for AI Prism cost/usage auditing.
+"""Builds dashboards/ai-costs.lvdash.json — the AI Prism cost/usage AI/BI dashboard.
 
-Two datasets:
-  - ai_prism_detail: per user x model x day allocation, enriched with gateway
-    token_details (cache read/creation, reasoning) + latency, scoped to AI Prism
-    via usage_context and joined to system.ai_gateway.usage on request_id.
-  - ai_prism_kpi:  single-row current(30d) vs previous(30d) for delta counters.
+This mirrors the version curated in the Databricks dashboard editor. A single
+dataset (`ai_prism_detail`) feeds every widget; the layout is organized in
+sections (KPIs, then USD / Tokens / DBUs / Turns), each with a per-endpoint,
+per-day and per-user breakdown.
 
-`model` = destination_model (fallback endpoint_name). Cost = DBU x list price,
-allocated by each row's token share of the endpoint's daily tokens.
+Data source (important): AI Prism scopes its traffic via the `usage_context`
+stamp `server/llm.js` sets on every gateway call, which lands in
+`system.serving.endpoint_usage.usage_context` (NOT `system.ai_gateway.usage`
+`.request_tags`). Cost = DBU x list price from `system.billing.usage` allocated
+to each user by their token share of the endpoint's daily tokens.
+
+Edit this file and run `python3 dashboards/build.py` to regenerate the JSON.
+Colors use the workspace theme's `visualizationColors` positions (kept from the
+editor version) so the dashboard matches the app's visual language.
 """
 import json
+import os
 
-# Match the app's own chart palette (client/src/components/blocks/ChartBlock.jsx)
-# so the dashboard reads as the same product. ACCENT is the app's brand color
-# (--accent). Single-series charts all use ACCENT (one visual language, not a
-# different color per chart); only genuinely multi-series charts use the full
-# ordered palette.
-ACCENT = "#ff3621"
-PALETTE = ["#ff3621", "#4285F4", "#10A37F", "#FF6A00", "#7C6FF0", "#98a2b3"]
+DATASET = "ai_prism_detail"
 
-# ---- shared SQL fragments -------------------------------------------------
-SCOPED = """  SELECT eu.databricks_request_id AS rid, lower(eu.requester) AS user_email,
-         eu.request_time AS ts, eu.input_token_count AS inp, eu.output_token_count AS outp,
-         se.endpoint_name AS endpoint_name
-  FROM system.serving.endpoint_usage eu
-  JOIN system.serving.served_entities se ON eu.served_entity_id = se.served_entity_id
-  WHERE eu.usage_context['application'] = 'ai-prism' AND se.endpoint_name IS NOT NULL"""
-
-# system tables carry cost only for MODEL_SERVING billed usage
-COST = """  SELECT u.usage_metadata.endpoint_name AS endpoint_name, u.usage_date AS day,
-         SUM(u.usage_quantity) AS dbus, SUM(u.usage_quantity * p.pricing.default) AS usd
-  FROM system.billing.usage u
-  JOIN system.billing.list_prices p ON u.sku_name = p.sku_name
-   AND u.usage_start_time >= p.price_start_time
-   AND (p.price_end_time IS NULL OR u.usage_start_time < p.price_end_time)
-  WHERE u.billing_origin_product = 'MODEL_SERVING' AND u.usage_metadata.endpoint_name IS NOT NULL
-  GROUP BY 1, 2"""
-
-DETAIL_SQL = f"""-- AI Prism LLM cost/usage & performance, from Databricks SYSTEM TABLES.
--- Scope: usage_context['application']='ai-prism' in system.serving.endpoint_usage
--- (server/llm.js stamps it). Enriched with system.ai_gateway.usage (joined on
--- databricks_request_id = request_id) for destination_model, token_details
--- (cache read/creation, reasoning) and latency. Cost = DBU x list price,
--- allocated to each user by their token share of the endpoint's daily tokens.
-WITH scoped AS (
-{SCOPED}
-),
-gw AS (
-  -- Enrichment: destination_model, token_details and latency live ONLY in
-  -- system.ai_gateway.usage. Joined to our scoped rows by request_id (the only
-  -- key that scopes gateway metrics to AI Prism precisely). LEFT JOIN below, so
-  -- rows degrade gracefully to endpoint_name / null latency until the gateway
-  -- side ingests (its lag is longer than serving.endpoint_usage's). 180d bound
-  -- keeps the scan bounded.
-  SELECT request_id AS rid, destination_model, latency_ms, time_to_first_byte_ms,
-         token_details.cache_read_input_tokens     AS cache_read,
-         token_details.cache_creation_input_tokens AS cache_creation,
-         token_details.output_reasoning_tokens     AS reasoning
-  FROM system.ai_gateway.usage
-  WHERE event_time > current_date() - INTERVAL 180 DAYS
-),
-enriched AS (
-  SELECT s.user_email, s.endpoint_name, date(s.ts) AS day, s.inp, s.outp,
-         COALESCE(g.destination_model, s.endpoint_name) AS model,
-         g.latency_ms, g.time_to_first_byte_ms, g.cache_read, g.cache_creation, g.reasoning
-  FROM scoped s LEFT JOIN gw g ON s.rid = g.rid
-),
-agg AS (
-  SELECT user_email, model, endpoint_name, day,
-         SUM(inp) AS prompt_tokens, SUM(outp) AS completion_tokens,
-         SUM(COALESCE(cache_read,0))     AS cache_read_tokens,
-         SUM(COALESCE(cache_creation,0)) AS cache_creation_tokens,
-         SUM(COALESCE(reasoning,0))      AS reasoning_tokens,
-         COUNT(*) AS turns,
-         SUM(latency_ms) AS sum_latency, COUNT(latency_ms) AS lat_n,
-         SUM(time_to_first_byte_ms) AS sum_ttft, COUNT(time_to_first_byte_ms) AS ttft_n
-  FROM enriched GROUP BY 1,2,3,4
-),
-total AS (
-  SELECT se.endpoint_name AS endpoint_name, date(eu.request_time) AS day,
-         SUM(eu.input_token_count + eu.output_token_count) AS ep_tokens
-  FROM system.serving.endpoint_usage eu
-  JOIN system.serving.served_entities se ON eu.served_entity_id = se.served_entity_id
-  WHERE se.endpoint_name IS NOT NULL GROUP BY 1,2
-),
-cost AS (
-{COST}
-)
-SELECT a.user_email, a.model, a.day,
-       a.prompt_tokens, a.completion_tokens,
-       a.cache_read_tokens, a.cache_creation_tokens, a.reasoning_tokens,
-       a.turns, a.sum_latency, a.lat_n, a.sum_ttft, a.ttft_n,
-       COALESCE(c.dbus,0) * (a.prompt_tokens+a.completion_tokens)/NULLIF(t.ep_tokens,0) AS dbus,
-       COALESCE(c.usd, 0) * (a.prompt_tokens+a.completion_tokens)/NULLIF(t.ep_tokens,0) AS usd
-FROM agg a
-JOIN total t ON t.endpoint_name = a.endpoint_name AND t.day = a.day
-LEFT JOIN cost c ON c.endpoint_name = a.endpoint_name AND c.day = a.day"""
-
-KPI_SQL = f"""-- Single-row KPI dataset: current 30 days vs previous 30 days, for delta
--- counters (value vs target). Same scope/enrichment as ai_prism_detail. NOT
--- wired to the period filter (the windows are fixed by definition).
-WITH scoped AS (
-{SCOPED}
-    AND eu.request_time > current_date() - INTERVAL 60 DAYS
-),
-gw AS (
-  SELECT request_id AS rid, latency_ms, time_to_first_byte_ms
-  FROM system.ai_gateway.usage WHERE event_time > current_date() - INTERVAL 60 DAYS
-),
-total AS (
-  SELECT se.endpoint_name AS endpoint_name, date(eu.request_time) AS day,
-         SUM(eu.input_token_count + eu.output_token_count) AS ep_tokens
-  FROM system.serving.endpoint_usage eu
-  JOIN system.serving.served_entities se ON eu.served_entity_id = se.served_entity_id
-  WHERE se.endpoint_name IS NOT NULL AND eu.request_time > current_date() - INTERVAL 60 DAYS
-  GROUP BY 1,2
-),
-cost AS (
-{COST.replace("GROUP BY 1, 2", "AND u.usage_date > current_date() - INTERVAL 60 DAYS\n  GROUP BY 1, 2")}
-),
-j AS (
-  SELECT s.user_email, date(s.ts) AS day, s.inp, s.outp, s.endpoint_name,
-         g.latency_ms, g.time_to_first_byte_ms,
-         CASE WHEN s.ts >= current_date() - INTERVAL 30 DAYS THEN 'cur'
-              WHEN s.ts >= current_date() - INTERVAL 60 DAYS THEN 'prev' END AS bucket
-  FROM scoped s LEFT JOIN gw g ON s.rid = g.rid
-),
-alloc AS (
-  SELECT j.*, COALESCE(c.dbus,0)*(j.inp+j.outp)/NULLIF(t.ep_tokens,0) AS dbu_row,
-              COALESCE(c.usd, 0)*(j.inp+j.outp)/NULLIF(t.ep_tokens,0) AS usd_row
-  FROM j JOIN total t ON t.endpoint_name=j.endpoint_name AND t.day=j.day
-         LEFT JOIN cost c ON c.endpoint_name=j.endpoint_name AND c.day=j.day
-),
-agg AS (
-  SELECT bucket, SUM(usd_row) usd, SUM(dbu_row) dbu, SUM(inp) inp, SUM(outp) outp,
-         COUNT(*) turns, COUNT(DISTINCT user_email) users,
-         AVG(latency_ms) lat, AVG(time_to_first_byte_ms) ttft
-  FROM alloc WHERE bucket IS NOT NULL GROUP BY 1
-),
-piv AS (
+# --- dataset SQL (scoped to AI Prism, cost allocated by token share) ----------
+DETAIL_SQL = """WITH token_base AS (
   SELECT
-    MAX(CASE WHEN bucket='cur'  THEN usd   END) AS usd_cur,   MAX(CASE WHEN bucket='prev' THEN usd   END) AS usd_prev,
-    MAX(CASE WHEN bucket='cur'  THEN dbu   END) AS dbu_cur,   MAX(CASE WHEN bucket='prev' THEN dbu   END) AS dbu_prev,
-    MAX(CASE WHEN bucket='cur'  THEN inp   END) AS inp_cur,   MAX(CASE WHEN bucket='prev' THEN inp   END) AS inp_prev,
-    MAX(CASE WHEN bucket='cur'  THEN outp  END) AS outp_cur,  MAX(CASE WHEN bucket='prev' THEN outp  END) AS outp_prev,
-    MAX(CASE WHEN bucket='cur'  THEN turns END) AS turns_cur, MAX(CASE WHEN bucket='prev' THEN turns END) AS turns_prev,
-    MAX(CASE WHEN bucket='cur'  THEN users END) AS users_cur, MAX(CASE WHEN bucket='prev' THEN users END) AS users_prev,
-    MAX(CASE WHEN bucket='cur'  THEN lat   END) AS lat_cur,   MAX(CASE WHEN bucket='prev' THEN lat   END) AS lat_prev,
-    MAX(CASE WHEN bucket='cur'  THEN ttft  END) AS ttft_cur,  MAX(CASE WHEN bucket='prev' THEN ttft  END) AS ttft_prev
-  FROM agg
-)
--- *_pct = real signed fractional change vs the previous 30 days ((cur-prev)/prev),
--- shown as a percent on each KPI card. NULL when there's no previous-period
--- baseline (division by zero guarded). The counter colors it by direction:
--- for cost/DBU/latency a negative change is good (green), so the color rule flips.
-SELECT *,
-  (usd_cur   - usd_prev)   / NULLIF(usd_prev,   0) AS usd_pct,
-  (dbu_cur   - dbu_prev)   / NULLIF(dbu_prev,   0) AS dbu_pct,
-  (inp_cur   - inp_prev)   / NULLIF(inp_prev,   0) AS inp_pct,
-  (outp_cur  - outp_prev)  / NULLIF(outp_prev,  0) AS outp_pct,
-  (turns_cur - turns_prev) / NULLIF(turns_prev, 0) AS turns_pct,
-  (users_cur - users_prev) / NULLIF(users_prev, 0) AS users_pct,
-  (lat_cur   - lat_prev)   / NULLIF(lat_prev,   0) AS lat_pct,
-  (ttft_cur  - ttft_prev)  / NULLIF(ttft_prev,  0) AS ttft_pct
-FROM piv"""
-
-
-# Long-format token composition (model, token_type, tokens) so a stacked bar can
-# use color=token_type — the multi-measure y.fields form renders as one solid bar.
-# Built by UNPIVOT over ai_prism_detail's per-model token sums.
-TOKENS_SQL = f"""-- Token composition per model, long format for a stacked bar (color=token_type).
-WITH scoped AS (
-{SCOPED}
+    lower(eu.requester) AS user_email,
+    se.endpoint_name,
+    date(eu.request_time) AS day,
+    SUM(eu.input_token_count) AS prompt_tokens,
+    SUM(eu.output_token_count) AS completion_tokens,
+    SUM(eu.input_token_count + eu.output_token_count) AS total_tokens,
+    COUNT(*) AS turns
+  FROM
+    system.serving.endpoint_usage eu
+      JOIN system.serving.served_entities se
+        ON eu.served_entity_id = se.served_entity_id
+  WHERE
+    eu.usage_context['application'] = 'ai-prism'
+    AND se.endpoint_name IS NOT NULL
+    AND date(eu.request_time) >= date_add(current_date(), -90)
+  GROUP BY
+    1,
+    2,
+    3
 ),
-gw AS (
-  SELECT request_id AS rid, destination_model,
-         token_details.cache_read_input_tokens     AS cache_read,
-         token_details.cache_creation_input_tokens AS cache_creation,
-         token_details.output_reasoning_tokens     AS reasoning
-  FROM system.ai_gateway.usage WHERE event_time > current_date() - INTERVAL 180 DAYS
+endpoint_tokens AS (
+  SELECT
+    endpoint_name,
+    day,
+    SUM(total_tokens) AS endpoint_total_tokens
+  FROM
+    token_base
+  GROUP BY
+    1,
+    2
 ),
-per_model AS (
-  SELECT COALESCE(g.destination_model, s.endpoint_name) AS model,
-         SUM(s.inp) AS input, SUM(s.outp) AS output,
-         SUM(COALESCE(g.cache_read,0)) AS cache_read,
-         SUM(COALESCE(g.cache_creation,0)) AS cache_creation,
-         SUM(COALESCE(g.reasoning,0)) AS reasoning
-  FROM scoped s LEFT JOIN gw g ON s.rid = g.rid
-  GROUP BY 1
+endpoint_cost AS (
+  SELECT
+    u.usage_metadata.endpoint_name AS endpoint_name,
+    u.usage_date AS day,
+    SUM(u.usage_quantity) AS dbus,
+    SUM(u.usage_quantity * lp.pricing.default) AS usd
+  FROM
+    system.billing.usage u
+      JOIN system.billing.list_prices lp
+        ON u.sku_name = lp.sku_name
+        AND lp.price_start_time <= u.usage_start_time
+        AND (
+          lp.price_end_time IS NULL
+          OR lp.price_end_time > u.usage_start_time
+        )
+  WHERE
+    u.billing_origin_product = 'MODEL_SERVING'
+    AND u.usage_date >= date_add(current_date(), -90)
+  GROUP BY
+    1,
+    2
 )
-SELECT model, token_type, tokens
-FROM per_model
-LATERAL VIEW STACK(5,
-  'Input', input, 'Output', output, 'Cache read', cache_read,
-  'Cache creation', cache_creation, 'Reasoning', reasoning
-) t AS token_type, tokens
-WHERE tokens > 0"""
+SELECT
+  t.user_email,
+  t.endpoint_name,
+  t.day,
+  t.prompt_tokens,
+  t.completion_tokens,
+  t.total_tokens,
+  t.turns,
+  ROUND(ec.dbus * t.total_tokens / NULLIF(et.endpoint_total_tokens, 0), 6) AS dbus,
+  ROUND(ec.usd * t.total_tokens / NULLIF(et.endpoint_total_tokens, 0), 4) AS usd
+FROM
+  token_base t
+    LEFT JOIN endpoint_tokens et
+      ON t.endpoint_name = et.endpoint_name
+      AND t.day = et.day
+    LEFT JOIN endpoint_cost ec
+      ON t.endpoint_name = ec.endpoint_name
+      AND t.day = ec.day
+ORDER BY
+  t.day DESC,
+  t.total_tokens DESC"""
 
 
 def lines(sql):
@@ -204,264 +105,222 @@ def lines(sql):
     return [p + "\n" for p in parts[:-1]] + [parts[-1]]
 
 
-def field(name, expr):
-    return {"name": name, "expression": expr}
+# --- theme color helpers ------------------------------------------------------
+def vcolors(positions):
+    return [{"themeColorType": "visualizationColors", "position": p} for p in positions]
 
 
-def q(dataset, fields, disagg=False, name="main_query"):
-    return [{"name": name, "query": {"datasetName": dataset, "fields": fields, "disaggregated": disagg}}]
+# The editor left each bar with a 10-slot theme palette; the first slot varies
+# per section (it's the accent the section leads with), the rest are 2..10.
+PALETTE_DEFAULT = vcolors([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])   # tokens section
+PALETTE_TURNS = vcolors([4, 2, 3, 4, 5, 6, 7, 8, 9, 10])     # turns section
+PALETTE_DBU = vcolors([2, 2, 3, 4, 5, 6, 7, 8, 9, 10])       # DBUs section
+PALETTE_USD = vcolors([3, 2, 3, 4, 5, 6, 7, 8, 9, 10])       # USD section
 
-
-PCT = {"type": "number-percent", "decimalPlaces": {"type": "max", "places": 1}}
-
-
-def counter(name, value_field, target_field, title, fmt, higher_is_good):
-    """KPI card showing the REAL signed % change vs the previous 30 days (e.g.
-    "+12.5%" / "-5.0%"), with the current-period absolute value as the `target`
-    subtitle. Conditional color keys off the shown % via `style.rules` — the exact
-    shape verified on a live workspace dashboard (condition {operator, operand:
-    data-value} + themeColorType color): green when the change is in the good
-    direction, red otherwise. For "higher is good" metrics that's >=0 → green; for
-    cost/DBU/latency ("lower is good") the comparison flips so a drop stays green.
-
-    NO `trend` encoding (invalid v2 key — it made every counter render as an empty
-    'Ask the assistant' draft in the previous build) and NO `conditionField`
-    (unverified). The % change field is `<metric>_pct`, produced sign-real in SQL."""
-    pct_field = value_field.replace("_cur", "_pct")
-    green = {"themeColorType": "visualizationColors", "position": 3}
-    red = {"themeColorType": "visualizationColors", "position": 1}
-    if higher_is_good:
-        rules = [
-            {"condition": {"operator": ">=", "operand": {"type": "data-value", "value": "0"}}, "color": green},
-            {"condition": {"operator": "<", "operand": {"type": "data-value", "value": "0"}}, "color": red},
-        ]
-    else:  # lower is good (cost, DBU, latency, TTFT): a negative change is green
-        rules = [
-            {"condition": {"operator": "<=", "operand": {"type": "data-value", "value": "0"}}, "color": green},
-            {"condition": {"operator": ">", "operand": {"type": "data-value", "value": "0"}}, "color": red},
-        ]
-    val = {"fieldName": pct_field, "displayName": "variação vs 30d anteriores",
-           "format": PCT, "style": {"rules": rules}}
-    tgt = {"fieldName": value_field, "displayName": "período atual", "format": fmt}
-    return {
-        "widget": {
-            "name": name,
-            "queries": q("ai_prism_kpi", [
-                field(pct_field, f"`{pct_field}`"),
-                field(value_field, f"`{value_field}`"),
-            ], disagg=True),
-            "spec": {
-                "version": 2, "widgetType": "counter",
-                "encodings": {"value": val, "target": tgt},
-                "frame": {"showTitle": True, "title": title},
-            },
-        }
-    }
-
-
-NUM = {"type": "number-plain", "abbreviation": "compact", "decimalPlaces": {"type": "max", "places": 1}}
-USD = {"type": "number-currency", "currencyCode": "USD", "decimalPlaces": {"type": "max", "places": 2}}
-MS = {"type": "number-plain", "abbreviation": "none", "decimalPlaces": {"type": "max", "places": 0}}
+NUM1 = {"type": "number-plain", "abbreviation": "compact", "decimalPlaces": {"type": "max", "places": 1}}
+NUM0 = {"type": "number-plain", "abbreviation": "compact", "decimalPlaces": {"type": "max", "places": 0}}
+NUM2E = {"type": "number-plain", "abbreviation": "compact", "decimalPlaces": {"type": "exact", "places": 2}}
+USD2E = {"type": "number-currency", "abbreviation": "compact", "currencyCode": "USD", "decimalPlaces": {"type": "exact", "places": 2}}
+USD_AXIS = {"type": "number-currency", "currencyCode": "USD", "abbreviation": "compact", "decimalPlaces": {"type": "max", "places": 2}}
 
 layout = []
 
 
 def add(widget, x, y, w, h):
-    # Widget constructors already return {"widget": {...}}; unwrap so we don't
-    # double-nest. Accept either shape defensively.
-    inner = widget["widget"] if set(widget.keys()) == {"widget"} else widget
-    layout.append({"widget": inner, "position": {"x": x, "y": y, "width": w, "height": h}})
+    layout.append({"widget": widget, "position": {"x": x, "y": y, "width": w, "height": h}})
 
 
-# ---- Row: period note + delta KPI cards (fixed 30d vs prev 30d) -----------
-# 8 delta counters, 3 per row (width 2) => 3 rows
-kpis = [
-    ("kpi_cost",   "usd_cur",   "usd_prev",   "Custo (USD)",        USD, False),
-    ("kpi_turns",  "turns_cur", "turns_prev", "Turns",              NUM, True),
-    ("kpi_users",  "users_cur", "users_prev", "Usuários distintos", NUM, True),
-    ("kpi_inp",    "inp_cur",   "inp_prev",   "Tokens de input",    NUM, True),
-    ("kpi_outp",   "outp_cur",  "outp_prev",  "Tokens de output",   NUM, True),
-    ("kpi_dbu",    "dbu_cur",   "dbu_prev",   "DBU",                NUM, False),
-    ("kpi_lat",    "lat_cur",   "lat_prev",   "Latência média (ms)", MS, False),
-    ("kpi_ttft",   "ttft_cur",  "ttft_prev",  "TTFT médio (ms)",     MS, False),
-]
-y = 0
-for i, (nm, vc, vp, title, fmt, good) in enumerate(kpis):
-    col = (i % 3) * 2
-    row = y + (i // 3) * 3
-    add(counter(nm, vc, vp, title, fmt, good), col, row, 2, 3)
-kpi_rows = (len(kpis) + 2) // 3  # 3
-y = y + kpi_rows * 3  # 9
-
-# ---- Period filter (applies to detail-backed widgets below) --------------
-flt = {
-    "widget": {
-        "name": "flt_day",
-        "queries": [{"name": "filter_flt_day_day", "query": {
-            "datasetName": "ai_prism_detail",
-            "fields": [field("day", "`day`"),
-                       field("day_associativity", "COUNT_IF(`associative_filter_predicate_group`)")],
+def counter(name, expr, field_name, title, display, fmt):
+    return {
+        "name": name,
+        "queries": [{"name": "main_query", "query": {
+            "datasetName": DATASET,
+            "fields": [{"name": field_name, "expression": expr}],
             "disaggregated": False}}],
-        "spec": {"version": 2, "widgetType": "filter-date-range-picker",
-                 "encodings": {"fields": [{"fieldName": "day", "displayName": "Período",
-                                           "queryName": "filter_flt_day_day"}]},
-                 "frame": {"showTitle": True, "title": "Período (afeta tabelas e gráficos abaixo)"}}},
-}
-add(flt, 0, y, 6, 2)
-y += 2  # 11
-
-# ---- User KPI table (the main analytical table) --------------------------
-user_tbl = {
-    "widget": {
-        "name": "tbl_users",
-        "queries": q("ai_prism_detail", [
-            field("user_email", "`user_email`"),
-            field("turns", "SUM(`turns`)"),
-            field("days_active", "COUNT(DISTINCT `day`)"),
-            field("models", "COUNT(DISTINCT `model`)"),
-            field("prompt_tokens", "SUM(`prompt_tokens`)"),
-            field("completion_tokens", "SUM(`completion_tokens`)"),
-            field("cache_read_tokens", "SUM(`cache_read_tokens`)"),
-            field("dbus", "SUM(`dbus`)"),
-            field("usd", "SUM(`usd`)"),
-            field("usd_per_turn", "SUM(`usd`)/NULLIF(SUM(`turns`),0)"),
-            field("avg_latency", "SUM(`sum_latency`)/NULLIF(SUM(`lat_n`),0)"),
-            field("avg_ttft", "SUM(`sum_ttft`)/NULLIF(SUM(`ttft_n`),0)"),
-        ]),
         "spec": {
-            "version": 1, "widgetType": "table",
-            "encodings": {"columns": [
-                {"fieldName": "user_email", "type": "string", "displayAs": "string", "title": "Usuário"},
-                {"fieldName": "turns", "type": "integer", "displayAs": "number", "title": "Turns", "alignContent": "right"},
-                {"fieldName": "days_active", "type": "integer", "displayAs": "number", "title": "Dias ativos", "alignContent": "right"},
-                {"fieldName": "models", "type": "integer", "displayAs": "number", "title": "Modelos", "alignContent": "right"},
-                {"fieldName": "prompt_tokens", "type": "integer", "displayAs": "number", "title": "Input tok", "alignContent": "right"},
-                {"fieldName": "completion_tokens", "type": "integer", "displayAs": "number", "title": "Output tok", "alignContent": "right"},
-                {"fieldName": "cache_read_tokens", "type": "integer", "displayAs": "number", "title": "Cache read tok", "alignContent": "right"},
-                {"fieldName": "dbus", "type": "float", "displayAs": "number", "numberFormat": "0.000", "title": "DBU", "alignContent": "right"},
-                {"fieldName": "usd", "type": "float", "displayAs": "number", "numberFormat": "$0.0000", "title": "Custo", "alignContent": "right"},
-                {"fieldName": "usd_per_turn", "type": "float", "displayAs": "number", "numberFormat": "$0.0000", "title": "Custo/turn", "alignContent": "right"},
-                {"fieldName": "avg_latency", "type": "float", "displayAs": "number", "numberFormat": "0", "title": "Latência méd (ms)", "alignContent": "right"},
-                {"fieldName": "avg_ttft", "type": "float", "displayAs": "number", "numberFormat": "0", "title": "TTFT méd (ms)", "alignContent": "right"},
-            ]},
-            "frame": {"showTitle": True, "title": "KPIs por usuário"},
+            "frame": {"showTitle": True, "title": title},
+            "version": 2, "widgetType": "counter",
+            "encodings": {"value": {"fieldName": field_name, "format": fmt, "displayName": display}},
+            "data": {"queryName": "main_query"},
         },
     }
-}
-add(user_tbl, 0, y, 6, 7)
-y += 7  # 18
 
-# ---- Charts row: cost by user (bar) | cost per day (line) ----------------
-bar_user = {
-    "widget": {"name": "bar_by_user",
-               "queries": q("ai_prism_detail", [field("user_email", "`user_email`"), field("sum_usd", "SUM(`usd`)")]),
-               "spec": {"version": 3, "widgetType": "bar",
-                        "encodings": {
-                            "x": {"fieldName": "sum_usd", "scale": {"type": "quantitative"}, "displayName": "Custo", "format": USD},
-                            "y": {"fieldName": "user_email", "scale": {"type": "categorical", "sort": {"by": "x-reversed"}}, "displayName": "Usuário"},
-                            "label": {"show": True}},
-                        "frame": {"showTitle": True, "title": "Custo por usuário"},
-                        "mark": {"colors": [ACCENT]}}}}
-add(bar_user, 0, y, 3, 6)
 
-line_day = {
-    "widget": {"name": "line_by_day",
-               "queries": q("ai_prism_detail", [field("day", "`day`"), field("sum_usd", "SUM(`usd`)"), field("sum_turns", "SUM(`turns`)")]),
-               "spec": {"version": 3, "widgetType": "line",
-                        "encodings": {
-                            "x": {"fieldName": "day", "scale": {"type": "temporal"}, "displayName": "Dia"},
-                            "y": {"fieldName": "sum_usd", "scale": {"type": "quantitative"}, "displayName": "Custo", "format": USD}},
-                        "frame": {"showTitle": True, "title": "Custo por dia"},
-                        "mark": {"colors": [ACCENT]}}}}
-add(line_day, 3, y, 3, 6)
-y += 6  # 24
+def bar_metric(name, title, x_expr, x_field, x_display, x_fmt, y_field, y_display, colors):
+    """Horizontal bar: measure on x, category on y (sorted desc)."""
+    x_enc = {"fieldName": x_field, "displayName": x_display, "scale": {"type": "quantitative"}}
+    if x_fmt:
+        x_enc["format"] = x_fmt
+    return {
+        "name": name,
+        "queries": [{"name": "main_query", "query": {
+            "datasetName": DATASET,
+            "fields": [{"name": x_field, "expression": x_expr},
+                       {"name": y_field, "expression": f"`{y_field}`"}],
+            "disaggregated": False}}],
+        "spec": {
+            "frame": {"showTitle": True, "title": title},
+            "version": 3, "mark": {"colors": colors}, "widgetType": "bar",
+            "encodings": {
+                "x": x_enc,
+                "y": {"fieldName": y_field, "displayName": y_display,
+                      "scale": {"type": "categorical", "sort": {"by": "x-reversed"}}},
+                "label": {"show": True},
+            },
+            "data": {"queryName": "main_query"},
+        },
+    }
 
-# ---- Charts row: cost by model (bar) | token composition by model (stacked) --
-bar_model = {
-    "widget": {"name": "bar_by_model",
-               "queries": q("ai_prism_detail", [field("model", "`model`"), field("sum_usd", "SUM(`usd`)")]),
-               "spec": {"version": 3, "widgetType": "bar",
-                        "encodings": {
-                            "x": {"fieldName": "sum_usd", "scale": {"type": "quantitative"}, "displayName": "Custo", "format": USD},
-                            "y": {"fieldName": "model", "scale": {"type": "categorical", "sort": {"by": "x-reversed"}}, "displayName": "Modelo (destination)"},
-                            "label": {"show": True}},
-                        "frame": {"showTitle": True, "title": "Custo por modelo"},
-                        "mark": {"colors": [ACCENT]}}}}
-add(bar_model, 0, y, 3, 6)
 
-# Token composition per model — horizontal stacked bar (color = token type) from
-# the long-format ai_prism_tokens dataset (y.fields multi-measure rendered as a
-# solid bar; color-stacking is the reliable path). Horizontal so model labels are
-# readable instead of vertically clipped.
-tok_stack = {
-    "widget": {"name": "tok_by_model",
-               "queries": [{"name": "main_query", "query": {
-                   "datasetName": "ai_prism_tokens",
-                   "fields": [
-                       field("model", "`model`"),
-                       field("token_type", "`token_type`"),
-                       field("sum_tokens", "SUM(`tokens`)"),
-                   ], "disaggregated": False}}],
-               "spec": {"version": 3, "widgetType": "bar",
-                        "encodings": {
-                            "x": {"fieldName": "sum_tokens", "scale": {"type": "quantitative"}, "displayName": "Tokens", "format": NUM},
-                            "y": {"fieldName": "model", "scale": {"type": "categorical", "sort": {"by": "x-reversed"}}, "displayName": "Modelo"},
-                            "color": {"fieldName": "token_type", "scale": {"type": "categorical",
-                                      "mappings": [
-                                          {"value": "Input", "color": PALETTE[1]},
-                                          {"value": "Output", "color": PALETTE[0]},
-                                          {"value": "Cache read", "color": PALETTE[2]},
-                                          {"value": "Cache creation", "color": PALETTE[3]},
-                                          {"value": "Reasoning", "color": PALETTE[4]},
-                                      ]}, "displayName": "Tipo de token"},
-                            "label": {"show": False}},
-                        "frame": {"showTitle": True, "title": "Composição de tokens por modelo (token_details)"},
-                        "mark": {"colors": PALETTE}}}}
-add(tok_stack, 3, y, 3, 6)
-y += 6
+def bar_day(name, title, y_expr, y_field, y_display, y_fmt, colors):
+    """Time bar: day on x (temporal), measure on y. `y_fmt` optional — when None,
+    the y-encoding carries no explicit format/axis (matches the editor version,
+    where only the USD-per-day chart was formatted)."""
+    y_enc = {"fieldName": y_field, "displayName": y_display, "scale": {"type": "quantitative"}}
+    if y_fmt:
+        y_enc = {"fieldName": y_field, "format": y_fmt,
+                 "axis": {"hideGrid": False, "hideLabels": False},
+                 "displayName": y_display, "scale": {"type": "quantitative"}}
+    return {
+        "name": name,
+        "queries": [{"name": "main_query", "query": {
+            "datasetName": DATASET,
+            "fields": [{"name": "day", "expression": "`day`"},
+                       {"name": y_field, "expression": y_expr}],
+            "disaggregated": False}}],
+        "spec": {
+            "version": 3, "frame": {"title": title, "showTitle": True},
+            "mark": {"colors": colors}, "widgetType": "bar",
+            "encodings": {
+                "x": {"fieldName": "day", "displayName": "Dia", "scale": {"type": "temporal"}},
+                "y": y_enc,
+                "label": {"show": True},
+            },
+            "data": {"queryName": "main_query"},
+        },
+    }
 
-# ---- Detail table (user x model) with performance -------------------------
-tbl_detail = {
-    "widget": {"name": "tbl_detail",
-               "queries": q("ai_prism_detail", [
-                   field("user_email", "`user_email`"), field("model", "`model`"),
-                   field("sum_turns", "SUM(`turns`)"),
-                   field("sum_prompt", "SUM(`prompt_tokens`)"), field("sum_completion", "SUM(`completion_tokens`)"),
-                   field("sum_cache_read", "SUM(`cache_read_tokens`)"),
-                   field("sum_cache_creation", "SUM(`cache_creation_tokens`)"),
-                   field("sum_reasoning", "SUM(`reasoning_tokens`)"),
-                   field("avg_latency", "SUM(`sum_latency`)/NULLIF(SUM(`lat_n`),0)"),
-                   field("avg_ttft", "SUM(`sum_ttft`)/NULLIF(SUM(`ttft_n`),0)"),
-                   field("sum_dbu", "SUM(`dbus`)"), field("sum_usd", "SUM(`usd`)")]),
-               "spec": {"version": 1, "widgetType": "table",
-                        "encodings": {"columns": [
-                            {"fieldName": "user_email", "type": "string", "displayAs": "string", "title": "Usuário"},
-                            {"fieldName": "model", "type": "string", "displayAs": "string", "title": "Modelo"},
-                            {"fieldName": "sum_turns", "type": "integer", "displayAs": "number", "title": "Turns", "alignContent": "right"},
-                            {"fieldName": "sum_prompt", "type": "integer", "displayAs": "number", "title": "Input tok", "alignContent": "right"},
-                            {"fieldName": "sum_completion", "type": "integer", "displayAs": "number", "title": "Output tok", "alignContent": "right"},
-                            {"fieldName": "sum_cache_read", "type": "integer", "displayAs": "number", "title": "Cache read", "alignContent": "right"},
-                            {"fieldName": "sum_cache_creation", "type": "integer", "displayAs": "number", "title": "Cache creation", "alignContent": "right"},
-                            {"fieldName": "sum_reasoning", "type": "integer", "displayAs": "number", "title": "Reasoning", "alignContent": "right"},
-                            {"fieldName": "avg_latency", "type": "float", "displayAs": "number", "numberFormat": "0", "title": "Latência méd (ms)", "alignContent": "right"},
-                            {"fieldName": "avg_ttft", "type": "float", "displayAs": "number", "numberFormat": "0", "title": "TTFT méd (ms)", "alignContent": "right"},
-                            {"fieldName": "sum_dbu", "type": "float", "displayAs": "number", "numberFormat": "0.000", "title": "DBU", "alignContent": "right"},
-                            {"fieldName": "sum_usd", "type": "float", "displayAs": "number", "numberFormat": "$0.0000", "title": "Custo", "alignContent": "right"},
-                        ]},
-                        "frame": {"showTitle": True, "title": "Detalhe (usuário × modelo)"}}}}
-add(tbl_detail, 0, y, 6, 6)
+
+def textbox(name, text):
+    return {"name": name, "multilineTextboxSpec": {"lines": [text]}}
+
+
+def filter_date(name, title):
+    qn = "flt_day_day"
+    return {
+        "name": name,
+        "queries": [{"name": qn, "query": {
+            "datasetName": DATASET,
+            "fields": [{"name": "day", "expression": "`day`"},
+                       {"name": "day_associativity", "expression": "COUNT_IF(`associative_filter_predicate_group`)"}],
+            "disaggregated": False}}],
+        "spec": {
+            "version": 2, "frame": {"showTitle": True, "title": title},
+            "selection": {"defaultSelection": {"range": {"dataType": "DATE",
+                          "min": {"value": "now-30d/d"}, "max": {"value": "now/d"}}}},
+            "widgetType": "filter-date-range-picker",
+            "encodings": {"fields": [{"fieldName": "day", "queryName": qn}]},
+        },
+    }
+
+
+def filter_user(name, title):
+    qn = "flt_user_user_email"
+    return {
+        "name": name,
+        "queries": [{"name": qn, "query": {
+            "datasetName": DATASET,
+            "fields": [{"name": "user_email", "expression": "`user_email`"},
+                       {"name": "user_email_associativity", "expression": "COUNT_IF(`associative_filter_predicate_group`)"}],
+            "disaggregated": False}}],
+        "spec": {
+            "version": 2, "frame": {"showTitle": True, "title": title},
+            "widgetType": "filter-multi-select",
+            "encodings": {"fields": [{"fieldName": "user_email", "queryName": qn}]},
+        },
+    }
+
+
+def users_table(name):
+    cols = [
+        ("user_email", "Email do Usuário", None, True),
+        ("endpoint_name", "Endpoint", None, False),
+        ("day", "Data", {"type": "date", "date": "locale-short-month", "leadingZeros": True}, None),
+        ("total_tokens", "Tokens Totais", None, None),
+        ("prompt_tokens", "Input Tokens", None, None),
+        ("completion_tokens", "Output Tokens", None, None),
+        ("turns", "Turns", None, None),
+    ]
+    out = []
+    for fn, disp, fmt, search in cols:
+        c = {"fieldName": fn}
+        if fmt:
+            c["format"] = fmt
+        if search is not None:
+            c["useForSearch"] = search
+        c["displayName"] = disp
+        out.append(c)
+    return {
+        "name": name,
+        "queries": [{"name": "main_query", "query": {
+            "datasetName": DATASET,
+            "fields": [{"name": fn, "expression": f"`{fn}`"} for fn, _, _, _ in cols],
+            "disaggregated": True}}],
+        "spec": {
+            "version": 2, "frame": {"title": "Detalhe por usuário · endpoint · dia", "showTitle": True},
+            "widgetType": "table", "encodings": {"columns": out},
+            "data": {"queryName": "main_query"},
+        },
+    }
+
+
+# ============================ layout ==========================================
+# Row 0: filters + headline cost KPIs
+add(filter_user("flt_user", "Usuário"), 0, 0, 4, 2)
+add(counter("kpi_dbu", "SUM(`dbus`)", "sum(dbus)", "DBUs consumidos", "DBUs", NUM2E), 4, 0, 4, 2)
+add(counter("kpi_usd", "SUM(`usd`)", "sum(usd)", "Custo estimado (USD)", "USD", USD2E), 8, 0, 4, 2)
+# Row 2: period filter + usage KPIs
+add(filter_date("flt_day", "Período"), 0, 2, 2, 2)
+add(counter("kpi_turns", "SUM(`turns`)", "sum(turns)", "Turns", "Turns", NUM1), 2, 2, 2, 2)
+add(counter("kpi_users", "COUNT(DISTINCT `user_email`)", "countdistinct(user_email)", "Usuários distintos", "Usuários", NUM0), 4, 2, 2, 2)
+add(counter("kpi_inp", "SUM(`prompt_tokens`)", "sum(prompt_tokens)", "Tokens de input", "Input tokens", NUM1), 6, 2, 2, 2)
+add(counter("kpi_completion", "SUM(`completion_tokens`)", "sum(completion_tokens)", "Tokens de output", "Output tokens", NUM1), 8, 2, 2, 2)
+add(counter("kpi_outp", "SUM(`total_tokens`)", "sum(total_tokens)", "Total de tokens", "Total tokens", NUM1), 10, 2, 2, 2)
+# Row 4: detail table
+add(users_table("tbl_users"), 0, 4, 12, 7)
+
+# --- USD section (y11) ---
+add(textbox("2a67b7a2", "# Tokens"), 0, 11, 12, 1)   # (editor label; see build note)
+add(bar_metric("cost_usd_endpoint", "USD por endpoint", "SUM(`usd`)", "sum(usd)", "USD", USD_AXIS, "endpoint_name", "Endpoint", PALETTE_USD), 0, 12, 6, 6)
+add(bar_day("cost_usd_day", "USD por dia", "SUM(`usd`)", "sum(usd)", "USD", USD_AXIS, PALETTE_USD), 6, 12, 6, 6)
+add(bar_metric("cost_usd_user", "USD por usuário", "SUM(`usd`)", "sum(usd)", "USD", USD_AXIS, "user_email", "Usuário", PALETTE_USD), 0, 18, 12, 6)
+
+# --- Tokens section (y24) ---
+add(textbox("6f2f7eeb", "# Tokens"), 0, 24, 12, 1)
+add(bar_metric("bar_by_model", "Tokens por endpoint", "SUM(`total_tokens`)", "sum(total_tokens)", "Tokens", None, "endpoint_name", "Endpoint", PALETTE_DEFAULT), 0, 25, 6, 6)
+add(bar_day("line_by_day", "Tokens por dia", "SUM(`total_tokens`)", "sum(total_tokens)", "Tokens", None, PALETTE_DEFAULT), 6, 25, 6, 6)
+add(bar_metric("bar_by_user", "Tokens por usuário", "SUM(`total_tokens`)", "sum(total_tokens)", "Tokens", None, "user_email", "Usuário", PALETTE_DEFAULT), 0, 31, 12, 6)
+
+# --- DBUs section (y37) ---
+add(textbox("9c5db777", "# DBUs"), 0, 37, 12, 1)
+add(bar_metric("cost_dbu_endpoint", "DBUs por endpoint", "SUM(`dbus`)", "sum(dbus)", "DBUs", None, "endpoint_name", "Endpoint", PALETTE_DBU), 0, 38, 6, 6)
+add(bar_day("cost_dbu_day", "DBUs por dia", "SUM(`dbus`)", "sum(dbus)", "DBUs", None, PALETTE_DBU), 6, 38, 6, 6)
+add(bar_metric("cost_dbu_user", "DBUs por usuário", "SUM(`dbus`)", "sum(dbus)", "DBUs", None, "user_email", "Usuário", PALETTE_DBU), 0, 44, 12, 6)
+
+# --- Turns section (y50) ---
+add(textbox("4485e10a", "# Turns"), 0, 50, 12, 1)
+add(bar_metric("tok_by_model", "Turns por endpoint", "SUM(`turns`)", "sum(turns)", "Turns", None, "endpoint_name", "Endpoint", PALETTE_TURNS), 0, 51, 6, 6)
+add(bar_day("turns_day", "Turns por dia", "SUM(`turns`)", "sum(turns)", "Turns", None, PALETTE_TURNS), 6, 51, 6, 6)
+add(bar_metric("turns_user", "Turns por usuário", "SUM(`turns`)", "sum(turns)", "Turns", None, "user_email", "Usuário", PALETTE_TURNS), 0, 57, 12, 6)
+
 
 dashboard = {
-    "datasets": [
-        {"name": "ai_prism_detail", "displayName": "AI Prism — uso, custo e performance", "queryLines": lines(DETAIL_SQL)},
-        {"name": "ai_prism_kpi", "displayName": "AI Prism — KPIs período atual vs anterior", "queryLines": lines(KPI_SQL)},
-        {"name": "ai_prism_tokens", "displayName": "AI Prism — composição de tokens (long)", "queryLines": lines(TOKENS_SQL)},
-    ],
-    "pages": [{"name": "ai_costs_overview", "displayName": "AI costs", "pageType": "PAGE_TYPE_CANVAS", "layout": layout}],
+    "datasets": [{"name": DATASET, "displayName": "ai_prism_detail", "queryLines": lines(DETAIL_SQL)}],
+    "pages": [{"name": "ai_costs_overview", "displayName": "Overview",
+               "layout": layout, "pageType": "PAGE_TYPE_CANVAS"}],
     "uiSettings": {"theme": {"widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"}},
 }
 
-import os
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-costs.lvdash.json")
 with open(out, "w") as f:
     json.dump(dashboard, f, indent=2, ensure_ascii=False)
