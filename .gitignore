@@ -13,6 +13,10 @@ npm-debug.log*
 scratch-decks/
 
 # Documentos internos de design/roadmap — não versionados no repo público
-docs/
+sandbox/
 
 # Keep client/dist — it is the deployed frontend build
+
+# Python bytecode from bundle helpers
+__pycache__/
+*.pyc

@@ -1,0 +1,132 @@
+# AI Prism — Databricks Asset Bundle.
+#
+# One `databricks bundle deploy` provisions the ENTIRE stack for a fresh
+# workspace, so an operator needs zero manual infra steps:
+#
+#   • Lakebase (serverless Postgres) — autoscaling 0.5–16 CU, auto-stops after
+#     30 min idle. Stores chat sessions/messages, deck templates and pgvector RAG.
+#   • Serverless SQL Warehouse — runs UC Function tools and the built-in Python UDF.
+#   • The Databricks App itself — env wired from the resources above (no hand-edited
+#     app.yaml): the deploying user becomes the bootstrap admin.
+#   • The AI/BI cost dashboard (system-tables auditing).
+#   • A post-deploy auto-config job — provisions the built-in Python UDF and prints
+#     the resolved config (deployer email, warehouse id, Lakebase host/db).
+#
+# Everything is scoped per workspace: each customer deploys their own copy. The
+# app still runs the prebuilt artifacts (client/dist + server-dist), so run
+# `npm run bundle` before deploying.
+bundle:
+  name: ai-prism
+
+variables:
+  tools_catalog:
+    description: Catalog where the built-in Python UDF is provisioned.
+    default: main
+  tools_schema:
+    description: Schema where the built-in Python UDF is provisioned.
+    default: default
+  lakebase_database:
+    description: Lakebase (Postgres) database name.
+    default: databricks_postgres
+
+resources:
+  # --- Lakebase: serverless Postgres, autoscaling 0.5–16 CU, 30-min auto-stop ---
+  postgres_projects:
+    ai_prism_pg:
+      project_id: ai-prism
+      display_name: ai-prism
+      default_endpoint_settings:
+        autoscaling_limit_min_cu: 0.5
+        autoscaling_limit_max_cu: 16
+        suspend_timeout_duration: 1800s
+
+  postgres_endpoints:
+    ai_prism_pg_rw:
+      endpoint_id: ai-prism-rw
+      parent: ${resources.postgres_projects.ai_prism_pg.project_id}
+      endpoint_type: ENDPOINT_TYPE_READ_WRITE
+      autoscaling_limit_min_cu: 0.5
+      autoscaling_limit_max_cu: 16
+      suspend_timeout_duration: 1800s
+
+  # --- Serverless SQL Warehouse: UC Function tools + built-in Python UDF ---
+  sql_warehouses:
+    ai_prism_wh:
+      name: ai-prism
+      cluster_size: 2X-Small
+      enable_serverless_compute: true
+      enable_photon: true
+      auto_stop_mins: 10
+      max_num_clusters: 1
+
+  # --- AI/BI cost dashboard (system-tables auditing) ---
+  dashboards:
+    ai_prism_costs:
+      display_name: "AI Prism — AI costs per user"
+      file_path: ./dashboards/ai-costs.lvdash.json
+      warehouse_id: ${resources.sql_warehouses.ai_prism_wh.id}
+
+  # --- Post-deploy auto-config: provisions the Python UDF, surfaces config ---
+  jobs:
+    ai_prism_auto_config:
+      name: ai-prism-auto-config
+      tasks:
+        - task_key: auto_config
+          notebook_task:
+            notebook_path: ./bundle/auto_config.py
+            base_parameters:
+              catalog: ${var.tools_catalog}
+              schema: ${var.tools_schema}
+              warehouse_id: ${resources.sql_warehouses.ai_prism_wh.id}
+              lakebase_host: ${resources.postgres_endpoints.ai_prism_pg_rw.host}
+              lakebase_db: ${var.lakebase_database}
+              app_name: ai-prism
+
+  # --- The app itself: env wired from the resources above ---
+  apps:
+    ai_prism:
+      name: ai-prism
+      description: "AI Prism — your own multi-model chat on the Databricks AI Gateway."
+      source_code_path: ./
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${resources.sql_warehouses.ai_prism_wh.id}
+            permission: CAN_USE
+      config:
+        command: ["node", "server-dist/index.cjs"]
+        env:
+          - name: NODE_ENV
+            value: production
+          - name: APP_OWNER_EMAIL
+            value: ${workspace.current_user.userName}
+          - name: DATABRICKS_APP_NAME
+            value: ai-prism
+          - name: PORT
+            value: "8000"
+          - name: PGHOST
+            value: ${resources.postgres_endpoints.ai_prism_pg_rw.host}
+          - name: PGDATABASE
+            value: ${var.lakebase_database}
+          - name: PGPORT
+            value: "5432"
+          - name: PGSSLMODE
+            value: require
+          - name: SQL_WAREHOUSE_ID
+            value: ${resources.sql_warehouses.ai_prism_wh.id}
+          - name: TOOLS_CATALOG
+            value: ${var.tools_catalog}
+          - name: TOOLS_SCHEMA
+            value: ${var.tools_schema}
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+
+  prod:
+    mode: production
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com

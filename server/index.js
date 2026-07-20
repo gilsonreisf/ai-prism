@@ -64,6 +64,7 @@ import {
 import { isAdmin, isOwner, ownerEmail, groupCheckStatus, invalidateAdminsCache, appAccessCandidates } from './authz.js'
 import { MODELS, modelById, streamChat, complete, generateTitle, embed, cosineSim, labelDesignAssets } from './llm.js'
 import { extractText, SUPPORTED_EXTENSIONS } from './files.js'
+import { ingestPptx, pptxDeckToBrief } from './pptxIngest.js'
 import { analyzeSpreadsheet, isSpreadsheet } from './analysis.js'
 import {
   buildBlocksInstruction,
@@ -84,7 +85,6 @@ import { searchGenieSpaces } from './genie.js'
 import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
 import { listChatEndpoints, buildAdminCatalog, buildUserModels } from './serving.js'
-import { getUsageFromSystemTables } from './usageSystemTables.js'
 import { renderPptx } from './decks.js'
 import { renderXlsx } from './xlsx-export.js'
 
@@ -207,7 +207,9 @@ const app = express()
 app.use(express.json({ limit: '40mb' }))
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024, files: 10 },
+  // Brand .pptx decks are routinely large (embedded imagery/fonts); the real
+  // "adjust this presentation" use case needs headroom well past 25MB.
+  limits: { fileSize: 80 * 1024 * 1024, files: 10 },
 })
 
 // ---- auth (on-behalf-of the signed-in Databricks user) ----
@@ -721,49 +723,6 @@ app.delete('/api/admins/:principal', auth, requireAdmin, async (req, res) => {
     await removeAppAdmin(req.email, req.token, decodeURIComponent(req.params.principal))
     invalidateAdminsCache()
     res.json({ ok: true })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-// AI cost/usage auditing (admin): aggregates persisted token usage across all
-// users and prices it with the MODELS catalog (list price per 1M tokens). The
-// pricing lives server-side so the client renders a single source of truth; the
-// raw token sums are returned too so the UI can re-slice without another call.
-// Optional ?from=&to= ISO dates window the data. Never user-scoped by design —
-// it's an admin audit surface, hence requireAdmin.
-// Derive a human label for an endpoint id. Known models get their curated
-// label; retired/unknown endpoints (present in the system tables but absent
-// from MODELS) get a title-cased fallback derived from the id — no more
-// "unpriced" holes, because cost now comes from real billing, not a price map.
-function endpointLabel(id) {
-  const m = modelById(id)
-  if (m && m.label) return m.label
-  return String(id || '')
-    .replace(/^databricks-/, '')
-    .replace(/-/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
-app.get('/api/admin/usage', auth, requireAdmin, async (req, res) => {
-  try {
-    const from = req.query.from ? new Date(String(req.query.from)).toISOString() : null
-    const to = req.query.to ? new Date(String(req.query.to)).toISOString() : null
-    // scoped=true (default) → only AI Prism-tagged traffic, with a transition
-    // fallback to all traffic until the tag has propagated (see module).
-    const scoped = req.query.scoped !== '0'
-
-    // Real billed cost from Databricks system tables, read via the SQL Warehouse
-    // — keeps analytical load off the app's Lakebase and prices every model
-    // (including retired endpoints) from actual DBU × list price, not a curated
-    // per-token map. USD is allocated to each user by their token share.
-    const stats = await getUsageFromSystemTables(req.token, { from, to, scoped })
-
-    const byUserModel = stats.byUserModel.map((r) => ({
-      ...r,
-      modelLabel: endpointLabel(r.model),
-    }))
-    res.json({ byUserModel, daily: stats.daily, meta: stats.meta })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -1943,6 +1902,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     const attachNames = []
     const attachBlocks = []
     let fileCandidates = []
+    let pptxDeckBrief = null // structured slides from an attached .pptx, if any
     for (const f of req.files || []) {
       const name = fixFilename(f.originalname)
       const text = await extractText(name, f.buffer)
@@ -1954,6 +1914,17 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
           fileCandidates = fileCandidates.concat(cands)
         } catch (e) {
           console.warn(`análise de planilha falhou (${name}):`, e.message)
+        }
+      }
+      // A .pptx also gets a STRUCTURED read (title/bullets/layout per slide) so
+      // the "adjust presentation" skill can restructure it into the design
+      // system, instead of only seeing the flattened text above.
+      if (/\.pptx$/i.test(name) && !pptxDeckBrief) {
+        try {
+          const ingested = await ingestPptx(f.buffer, name)
+          if (ingested) pptxDeckBrief = pptxDeckToBrief(ingested)
+        } catch (e) {
+          console.warn(`ingestão de pptx falhou (${name}):`, e.message)
         }
       }
     }
@@ -2021,7 +1992,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // Progressive disclosure: only include the heavy deck/spreadsheet policies
     // when the turn is plausibly about them (see detectCapabilities) — a trivial
     // question shouldn't carry ~10k tokens of deck+spreadsheet+design-system.
-    const caps = detectCapabilities(prompt, history)
+    const caps = detectCapabilities(prompt, history, { hasPptxAttachment: !!pptxDeckBrief })
     // Only the deck flow consumes the (heavy) selected template — both to build
     // its instruction and to resolve deck fences afterward. When this turn isn't
     // about a deck, caps.deck is false, DECK_POLICY is omitted, so the model
@@ -2030,6 +2001,23 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     const selectedTemplate = caps.deck ? await getSelectedDeckTemplate(req.email, req.token) : null
     const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate, caps)
     if (blocksInstruction) apiMessages.push({ role: 'system', content: blocksInstruction })
+    // "Adjust presentation" skill: the user attached a .pptx and asked to adapt
+    // it. Hand the model the STRUCTURED slides (not just flattened text) plus a
+    // directive to restructure into the selected design system directly — no
+    // deck-questions detour, since the content already exists.
+    if (caps.pptxAdjust && pptxDeckBrief) {
+      apiMessages.push({
+        role: 'system',
+        content:
+          'O usuário anexou uma apresentação existente e pediu para ajustá-la ao ' +
+          'design system/template selecionado. A estrutura extraída do arquivo ' +
+          'está abaixo (um slide por item, com layout inferido). Reestruture-a ' +
+          'como um bloco `deck` no design system ativo, preservando a mensagem e ' +
+          'a ordem de cada slide e melhorando a composição. NÃO gere o bloco ' +
+          '`deck-questions` nem faça perguntas — ajuste diretamente, pois o ' +
+          'conteúdo já existe.\n\n--- APRESENTAÇÃO ANEXADA ---\n' + pptxDeckBrief,
+      })
+    }
     // authored skills (Fase 2): route the turn to any matching user/global
     // skill, inject its body, and tell the client which fired (ephemeral badge)
     const activeSkills = await routeSkills(req, prompt, { forced: payload.skills })

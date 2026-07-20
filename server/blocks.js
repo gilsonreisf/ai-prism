@@ -645,6 +645,11 @@ const DECK_INTENT_RE =
   /\b(apresenta[çc][ãa]o|apresenta[çc][õo]es|apresentar|slides?|slide\s*deck|deck|decks|pitch|pptx|powerpoint|power\s*point|keynote|present(ation|e)|capa\s+do\s+deck)\b/i
 const SPREADSHEET_INTENT_RE =
   /\b(planilhas?|xlsx?|excel|google\s*sheets?|sheets?|workbook|spreadsheet|or[çc]amento|valuation|dcf|proje[çc][ãa]o\s+financeira|modelo\s+(de\s+)?(c[áa]lculo|financeiro|valuation)|fluxo\s+de\s+caixa|planejamento\s+financeiro)\b/i
+// "adjust this presentation to the template/design system" — captures the
+// re-theming intent even when the word "deck/apresentação" isn't repeated
+// (the .pptx attachment already implies the artifact).
+const ADJUST_INTENT_RE =
+  /\b(ajust\w+|adapt\w+|aplic\w+|reestrutur\w+|padroniz\w+|formatar|reformatar|refazer|converter|transform\w+|adjust|adapt|apply|restructure|reformat|convert|rework)\b/i
 
 function historyHasBlock(history, types) {
   for (const m of history || []) {
@@ -657,18 +662,24 @@ function historyHasBlock(history, types) {
 // Returns { deck, spreadsheet } — whether each heavy capability's policy should
 // be included this turn. `userText` is the current prompt; `history` is the
 // prior thread (each message may carry a `blocks` array).
-export function detectCapabilities(userText, history) {
+export function detectCapabilities(userText, history, opts = {}) {
   const text = String(userText || '')
   // the deck flow's follow-up turn arrives as "Perguntas respondidas: ..." (see
   // DECK_POLICY etapa 2) — keep deck on so generation gets the full policy
   const answeringDeckQuestions = /^\s*perguntas respondidas\s*:/i.test(text)
+  // A .pptx attached WITH an adjust/deck intent → the "adjust presentation" skill.
+  // A bare .pptx with no intent stays plain-text (handled upstream). When it does
+  // fire, deck is implied (same generation/render pipeline, re-themed to the DS).
+  const pptxAdjust =
+    !!opts.hasPptxAttachment && (DECK_INTENT_RE.test(text) || ADJUST_INTENT_RE.test(text))
   const deck =
     DECK_INTENT_RE.test(text) ||
     answeringDeckQuestions ||
+    pptxAdjust ||
     historyHasBlock(history, ['deck', 'deck-questions'])
   const spreadsheet =
     SPREADSHEET_INTENT_RE.test(text) || historyHasBlock(history, ['spreadsheet'])
-  return { deck, spreadsheet }
+  return { deck, spreadsheet, pptxAdjust }
 }
 
 // The product's built-in capabilities, surfaced as read-only "system skills":
@@ -700,6 +711,13 @@ export const SYSTEM_SKILLS = [
       'Insere gráficos e cartões de destaque na resposta a partir de dados reais da conversa.',
     cap: 'chart',
     alwaysOn: true,
+  },
+  {
+    name: 'pptx-adjust',
+    title: 'Ajuste de apresentação',
+    description:
+      'Reestrutura um .pptx anexado no design system selecionado, preservando o conteúdo e a intenção de cada slide.',
+    cap: 'pptxAdjust',
   },
 ]
 

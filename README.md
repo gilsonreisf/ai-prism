@@ -53,8 +53,10 @@ flowchart TB
 
 > O diagrama acima usa [Mermaid](https://mermaid.js.org/) (renderizado nativamente
 > pelo GitHub). A seta pontilhada AI Gateway → SQL Warehouse indica que o consumo de
-> tokens de cada chamada ao gateway é gravado nas *system tables*, de onde o painel
-> de **Custos de IA** lê o custo real faturado (DBU × preço) por usuário.
+> tokens de cada chamada ao gateway é gravado nas *system tables*, de onde o
+> **dashboard AI/BI de custos** (ver [`dashboards/`](dashboards/)) lê o custo real
+> faturado (DBU × preço) por usuário — fora do app, para que nenhuma consulta pesada
+> ao warehouse trave a UI.
 
 ### Autenticação (on-behalf-of)
 
@@ -283,35 +285,19 @@ npm run bundle      # build:client (Vite) + build:server (esbuild -> server-dist
 npm start           # roda o bundle de produção (node server-dist/index.cjs)
 ```
 
-O deploy é feito como uma **Databricks App** (`app.yaml`), que executa
-`node server-dist/index.cjs` diretamente — os artefatos de build (`client/dist` e
-`server-dist`) já vêm pré-compilados no repositório, então a instalação de pacotes em
-produção é dispensada (`npm run build` é um no-op nesse contexto).
+O deploy usa um **Databricks Asset Bundle** (`databricks.yml`): um único
+`databricks bundle deploy` provisiona **toda a stack** — Lakebase serverless
+(autoscaling 0.5–16 CU, auto-stop em 30 min), Serverless SQL Warehouse, a própria
+App (com o env já cabeado a partir desses recursos), o dashboard de custos e um
+job de auto-configuração que provisiona a UDF de Python e descobre o e-mail do
+deployer (vira o admin bootstrap). Nenhum passo manual de infra.
 
-> **Importante:** como o runtime da App roda os artefatos pré-compilados (não o
-> código-fonte), **sempre rode `npm run bundle` antes de deployar** — uma mudança em
-> `server/` ou `client/src/` só chega à App depois de reconstruir `client/dist` e
-> `server-dist/index.cjs`.
+> **Importante:** a App roda os artefatos pré-compilados (`client/dist` +
+> `server-dist/index.cjs`), não o código-fonte — **sempre rode `npm run bundle`
+> antes de `bundle deploy`**.
 
-#### Passo a passo do deploy (CLI)
-
-```bash
-# 0. (uma vez) autentique um profile da CLI para o workspace alvo
-databricks auth login --host https://<seu-workspace>.cloud.databricks.com -p <PROFILE>
-
-# 1. reconstrua os artefatos que a App realmente executa
-npm run bundle
-
-# 2. sincronize o projeto para a pasta de código da App no Workspace
-databricks sync . /Workspace/Users/<voce>/apps/ai-prism -p <PROFILE> --full
-
-# 3. deploy (build + start da App)
-databricks apps deploy ai-prism \
-  --source-code-path /Workspace/Users/<voce>/apps/ai-prism -p <PROFILE>
-
-# 4. confira o estado
-databricks apps get ai-prism -p <PROFILE>   # compute ACTIVE + deployment SUCCEEDED
-```
+O passo a passo completo (pré-requisitos, primeiro acesso, customização, convite
+do time e troubleshooting) está em **[docs/onboarding-deployment.md](docs/onboarding-deployment.md)**.
 
 ### QA
 
@@ -321,18 +307,12 @@ O pipeline de decks/planilhas tem checagens determinísticas (rodam offline, sem
 npm run qa   # deck-elements + deck-composition + mine-pptx + spreadsheet QA
 ```
 
-### Variáveis de ambiente (`app.yaml`)
+## Documentação
 
-| Variável      | Descrição                                    |
-|---------------|-----------------------------------------------|
-| `PORT`        | Porta HTTP do servidor Express (padrão 8000)  |
-| `PGHOST`      | Host do Lakebase (Postgres)                   |
-| `PGDATABASE`  | Nome do banco                                  |
-| `PGPORT`      | Porta do Postgres                              |
-| `PGSSLMODE`   | Modo SSL da conexão (`require`)                |
-| `SQL_WAREHOUSE_ID` | SQL Warehouse usado para executar tools (Unity Catalog Functions) |
-| `TOOLS_CATALOG`    | Catalog onde a function embutida de Python é criada (`main`) |
-| `TOOLS_SCHEMA`     | Schema onde a function embutida de Python é criada (`default`) |
+- [Onboarding e deploy](docs/onboarding-deployment.md) — do "workspace vazio" à App rodando, em um `bundle deploy`.
+- [Custos e posicionamento](docs/custos-e-posicionamento.md) — como o AI Prism consome recursos Databricks e por que o modelo é vantajoso.
+- [Dashboard de custos (AI/BI)](dashboards/README.md) — auditoria de custos de IA fora do app.
 
-O escopo OAuth `all-apis` é requisitado para permitir chamadas on-behalf-of ao AI Gateway e
-ao Lakebase com o token do usuário logado.
+> **Nota.** O AI Prism não é um produto oficial da Databricks e não possui SLA. É um
+> acelerador de solução open-source para você deployar e customizar no seu próprio
+> workspace; seus dados permanecem na sua conta e não são usados para treinar modelos.
