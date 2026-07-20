@@ -45,6 +45,12 @@ function ageLabel(iso, t) {
   return t('costs.ageDay', { n: Math.round(hrs / 24) })
 }
 
+// Module-level cache of the last fetched result per period. Because the tab
+// unmounts on every Settings tab switch, this lets a previously loaded view come
+// back instantly (no warehouse hit) while still requiring an explicit refresh to
+// pull new numbers — the warehouse is only queried on a deliberate click.
+const clientCache = new Map() // preset -> { data, fetchedAt }
+
 function KpiTile({ label, value, sub }) {
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3">
@@ -151,15 +157,28 @@ function FilterCombo({ icon, value, onChange, options, placeholder }) {
 export default function CostsTab({ open }) {
   const t = useT()
   const [data, setData] = useState(null)
+  const [fetchedAt, setFetchedAt] = useState(null) // when the shown data was pulled
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [elapsed, setElapsed] = useState(0) // seconds the current query has run
   const [preset, setPreset] = useState('30d')
   const [userFilter, setUserFilter] = useState('')
   const [modelFilter, setModelFilter] = useState('')
   const [page, setPage] = useState(0)
   const PAGE_SIZE = 15
 
-  const load = async (p) => {
+  // Tick a seconds counter while loading so a multi-minute cold-warehouse query
+  // never looks frozen. Reset on each new load.
+  useEffect(() => {
+    if (!loading) return
+    setElapsed(0)
+    const id = setInterval(() => setElapsed((s) => s + 1), 1000)
+    return () => clearInterval(id)
+  }, [loading])
+
+  // Query the warehouse. Only ever called from an explicit click (or restored
+  // from the client cache) — never on mount/tab-open, to spare the warehouse.
+  const load = async (p, { force = false } = {}) => {
     setLoading(true)
     setError('')
     try {
@@ -167,20 +186,34 @@ export default function CostsTab({ open }) {
       const qs = new URLSearchParams()
       if (from) qs.set('from', from)
       if (to) qs.set('to', to)
+      if (force) qs.set('refresh', '1')
       const r = await getJSON(`/api/admin/usage${qs.toString() ? `?${qs}` : ''}`)
+      const stamp = r.meta?.fetchedAt || new Date().toISOString()
       setData(r)
+      setFetchedAt(stamp)
+      clientCache.set(p, { data: r, fetchedAt: stamp })
       setError('')
     } catch (e) {
       setError(e.message)
-      setData({ byUserModel: [], daily: [], meta: {} })
     } finally {
       setLoading(false)
     }
   }
 
+  // On open / period change: restore from cache if we have it, but never auto-hit
+  // the warehouse — the admin must click to load or refresh.
   useEffect(() => {
-    if (open) load(preset)
-  }, [open, preset]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!open) return
+    const cached = clientCache.get(preset)
+    if (cached) {
+      setData(cached.data)
+      setFetchedAt(cached.fetchedAt)
+    } else {
+      setData(null)
+      setFetchedAt(null)
+    }
+    setError('')
+  }, [open, preset])
 
   // ---- derive the filtered/aggregated views the UI renders ----
   const view = useMemo(() => {
@@ -315,24 +348,54 @@ export default function CostsTab({ open }) {
           options={modelOptions}
           placeholder={t('costs.filterModel')}
         />
+        {/* explicit load/refresh — the ONLY thing that queries the warehouse */}
+        <button
+          onClick={() => load(preset, { force: !!data })}
+          disabled={loading}
+          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-[var(--border)] text-[var(--text)] hover:bg-[var(--surface-3)] disabled:opacity-40"
+        >
+          <Icon.Regenerate size={13} className={loading ? 'animate-spin' : ''} />
+          {data ? t('costs.refresh') : t('costs.loadData')}
+        </button>
       </div>
 
       {/* freshness + scope banner */}
-      {data && (meta.gatewayLatest || meta.scopeFellBack) && (
+      {data && !loading && (fetchedAt || meta.gatewayLatest || meta.scopeFellBack) && (
         <div className="text-[11px] text-[var(--faint)] flex flex-wrap items-center gap-x-3 gap-y-1">
+          {fetchedAt && <span>{t('costs.fetchedAt', { age: ageLabel(fetchedAt, t) })}</span>}
           {meta.gatewayLatest && <span>{t('costs.asOf', { age: ageLabel(meta.gatewayLatest, t) })}</span>}
           {meta.scopeFellBack && <span className="text-[var(--warning,#FF6A00)]">{t('costs.scopeFallback')}</span>}
         </div>
       )}
 
-      {error && <div className="text-xs text-[var(--danger,#ff3621)]">{error}</div>}
+      {error && !loading && (
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <span className="text-[var(--danger,#ff3621)]">{error}</span>
+          <button
+            onClick={() => load(preset, { force: true })}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-[var(--border)] text-[var(--text)] hover:bg-[var(--surface-3)]"
+          >
+            <Icon.Regenerate size={12} /> {t('costs.retry')}
+          </button>
+        </div>
+      )}
 
-      {/* warehouse can be cold on first query — keep a clear spinner */}
+      {/* warehouse can be cold — a multi-minute query must not look frozen, so we
+          show elapsed seconds and warn once it's clearly a cold start */}
       {loading && (
         <div className="flex items-center gap-2 text-xs text-[var(--muted)] py-6">
           <span className="block w-3.5 h-3.5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
-          {t('costs.loadingWarehouse')}
+          <span>
+            {t('costs.loadingWarehouse')}
+            {elapsed >= 3 && <span className="tabular-nums text-[var(--faint)]"> · {elapsed}s</span>}
+            {elapsed >= 20 && <span className="text-[var(--faint)]"> — {t('costs.coldHint')}</span>}
+          </span>
         </div>
+      )}
+
+      {/* nothing loaded yet: invite the click instead of auto-querying */}
+      {!data && !loading && !error && (
+        <div className="text-xs text-[var(--muted)] py-10 text-center">{t('costs.notLoaded')}</div>
       )}
 
       {data && !loading && (

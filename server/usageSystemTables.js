@@ -149,23 +149,15 @@ export async function getUsageFromSystemTables(userToken, { from = null, to = nu
       LEFT JOIN cost c ON c.model = m.model AND c.day = m.day
     )`
 
-  // byUserModel: rolled up across days. daily: per user+day+model for the trend.
-  const byUserModelSql = `${cte}
-    SELECT user_email, model,
+  // The per-user+day+model grain. byUserModel is rolled up from this in JS
+  // (below) rather than as a separate warehouse query — one less heavy scan of
+  // the same CTE. Carries turns + cache_read_tokens so the rollup is complete.
+  const dailySql = `${cte}
+    SELECT user_email, date_format(day, 'yyyy-MM-dd') AS day, model,
            SUM(turns)             AS turns,
            SUM(prompt_tokens)     AS prompt_tokens,
            SUM(completion_tokens) AS completion_tokens,
            SUM(cache_read_tokens) AS cache_read_tokens,
-           SUM(dbus)              AS dbus,
-           SUM(usd)               AS usd
-    FROM alloc
-    GROUP BY user_email, model
-    ORDER BY usd DESC NULLS LAST`
-
-  const dailySql = `${cte}
-    SELECT user_email, date_format(day, 'yyyy-MM-dd') AS day, model,
-           SUM(prompt_tokens)     AS prompt_tokens,
-           SUM(completion_tokens) AS completion_tokens,
            SUM(dbus)              AS dbus,
            SUM(usd)               AS usd
     FROM alloc
@@ -178,23 +170,30 @@ export async function getUsageFromSystemTables(userToken, { from = null, to = nu
       (SELECT MAX(usage_end_time) FROM system.billing.usage WHERE billing_origin_product='MODEL_SERVING') AS billing_latest,
       now() AS now_ts`
 
-  // Run the three statements. The two big ones share the same warm warehouse.
-  const [byUM, daily, meta] = await Promise.all([
-    execStatement(userToken, byUserModelSql, params, { warehouseId: warehouseId(), timeoutMs: 60000 }).then(toObjects),
-    execStatement(userToken, dailySql, params, { warehouseId: warehouseId(), timeoutMs: 60000 }).then(toObjects),
-    execStatement(userToken, metaSql, [], { warehouseId: warehouseId(), timeoutMs: 30000 }).then(toObjects),
+  // Two statements share the same warm warehouse. The heavy one (daily) is given
+  // a generous deadline because a cold warehouse pays its boot on the first query.
+  const [daily, meta] = await Promise.all([
+    execStatement(userToken, dailySql, params, { warehouseId: warehouseId(), timeoutMs: 120000 }).then(toObjects),
+    execStatement(userToken, metaSql, [], { warehouseId: warehouseId(), timeoutMs: 60000 }).then(toObjects),
   ])
 
-  const byUserModel = byUM.map((r) => ({
-    userEmail: r.user_email,
-    model: r.model,
-    turns: num(r.turns),
-    promptTokens: num(r.prompt_tokens),
-    completionTokens: num(r.completion_tokens),
-    cacheReadTokens: num(r.cache_read_tokens),
-    dbus: num(r.dbus),
-    cost: num(r.usd),
-  }))
+  // Roll daily up to per-user+model in JS (was a second warehouse query).
+  const byUMMap = new Map()
+  for (const r of daily) {
+    const key = `${r.user_email} ${r.model}`
+    const agg = byUMMap.get(key) || {
+      userEmail: r.user_email, model: r.model,
+      turns: 0, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, dbus: 0, cost: 0,
+    }
+    agg.turns += num(r.turns)
+    agg.promptTokens += num(r.prompt_tokens)
+    agg.completionTokens += num(r.completion_tokens)
+    agg.cacheReadTokens += num(r.cache_read_tokens)
+    agg.dbus += num(r.dbus)
+    agg.cost += num(r.usd)
+    byUMMap.set(key, agg)
+  }
+  const byUserModel = [...byUMMap.values()].sort((a, b) => b.cost - a.cost)
   const dailyRows = daily.map((r) => ({
     userEmail: r.user_email,
     day: r.day,
