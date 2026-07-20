@@ -9,13 +9,17 @@ tab was removed in favor of this).
 
 Real **billed** cost — `DBU × list price` from `system.billing.usage` ⋈
 `system.billing.list_prices` — allocated to each user by their share of the
-endpoint's daily tokens (`system.ai_gateway.usage`). Scoped to AI Prism via the
-`request_tags['application'] = 'ai-prism'` stamp set on every gateway call
-(see `server/llm.js`). Widgets: total cost / tokens / DBU / turns KPIs, cost by
-user, cost per day, cost by model, and a user × model detail table, all filtered
-by a period picker.
+endpoint's daily tokens (`system.serving.endpoint_usage` ⋈
+`system.serving.served_entities` for the endpoint name). Scoped to AI Prism via
+the `usage_context['application'] = 'ai-prism'` stamp set on every gateway call
+(see `server/llm.js`). **Note:** `usage_context` lands in
+`system.serving.endpoint_usage.usage_context`, *not* in
+`system.ai_gateway.usage.request_tags` — the earlier query read the wrong
+table/column and always returned "No data". Widgets: total cost / tokens / DBU /
+turns KPIs, cost by user, cost per day, cost by model, and a user × model detail
+table, all filtered by a period picker.
 
-> Ingestion lag: gateway ~30–40 min, billing ~1 h — the dashboard is near-real-time,
+> Ingestion lag: serving usage ~1 h, billing ~1 h — the dashboard is near-real-time,
 > not live.
 
 ## Files
