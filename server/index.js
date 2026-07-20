@@ -64,6 +64,7 @@ import {
 import { isAdmin, isOwner, ownerEmail, groupCheckStatus, invalidateAdminsCache, appAccessCandidates } from './authz.js'
 import { MODELS, modelById, streamChat, complete, generateTitle, embed, cosineSim, labelDesignAssets } from './llm.js'
 import { extractText, SUPPORTED_EXTENSIONS } from './files.js'
+import { ingestPptx, pptxDeckToBrief } from './pptxIngest.js'
 import { analyzeSpreadsheet, isSpreadsheet } from './analysis.js'
 import {
   buildBlocksInstruction,
@@ -207,7 +208,9 @@ const app = express()
 app.use(express.json({ limit: '40mb' }))
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024, files: 10 },
+  // Brand .pptx decks are routinely large (embedded imagery/fonts); the real
+  // "adjust this presentation" use case needs headroom well past 25MB.
+  limits: { fileSize: 80 * 1024 * 1024, files: 10 },
 })
 
 // ---- auth (on-behalf-of the signed-in Databricks user) ----
@@ -1943,6 +1946,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     const attachNames = []
     const attachBlocks = []
     let fileCandidates = []
+    let pptxDeckBrief = null // structured slides from an attached .pptx, if any
     for (const f of req.files || []) {
       const name = fixFilename(f.originalname)
       const text = await extractText(name, f.buffer)
@@ -1954,6 +1958,17 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
           fileCandidates = fileCandidates.concat(cands)
         } catch (e) {
           console.warn(`análise de planilha falhou (${name}):`, e.message)
+        }
+      }
+      // A .pptx also gets a STRUCTURED read (title/bullets/layout per slide) so
+      // the "adjust presentation" skill can restructure it into the design
+      // system, instead of only seeing the flattened text above.
+      if (/\.pptx$/i.test(name) && !pptxDeckBrief) {
+        try {
+          const ingested = await ingestPptx(f.buffer, name)
+          if (ingested) pptxDeckBrief = pptxDeckToBrief(ingested)
+        } catch (e) {
+          console.warn(`ingestão de pptx falhou (${name}):`, e.message)
         }
       }
     }
@@ -2021,7 +2036,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // Progressive disclosure: only include the heavy deck/spreadsheet policies
     // when the turn is plausibly about them (see detectCapabilities) — a trivial
     // question shouldn't carry ~10k tokens of deck+spreadsheet+design-system.
-    const caps = detectCapabilities(prompt, history)
+    const caps = detectCapabilities(prompt, history, { hasPptxAttachment: !!pptxDeckBrief })
     // Only the deck flow consumes the (heavy) selected template — both to build
     // its instruction and to resolve deck fences afterward. When this turn isn't
     // about a deck, caps.deck is false, DECK_POLICY is omitted, so the model
@@ -2030,6 +2045,23 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     const selectedTemplate = caps.deck ? await getSelectedDeckTemplate(req.email, req.token) : null
     const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate, caps)
     if (blocksInstruction) apiMessages.push({ role: 'system', content: blocksInstruction })
+    // "Adjust presentation" skill: the user attached a .pptx and asked to adapt
+    // it. Hand the model the STRUCTURED slides (not just flattened text) plus a
+    // directive to restructure into the selected design system directly — no
+    // deck-questions detour, since the content already exists.
+    if (caps.pptxAdjust && pptxDeckBrief) {
+      apiMessages.push({
+        role: 'system',
+        content:
+          'O usuário anexou uma apresentação existente e pediu para ajustá-la ao ' +
+          'design system/template selecionado. A estrutura extraída do arquivo ' +
+          'está abaixo (um slide por item, com layout inferido). Reestruture-a ' +
+          'como um bloco `deck` no design system ativo, preservando a mensagem e ' +
+          'a ordem de cada slide e melhorando a composição. NÃO gere o bloco ' +
+          '`deck-questions` nem faça perguntas — ajuste diretamente, pois o ' +
+          'conteúdo já existe.\n\n--- APRESENTAÇÃO ANEXADA ---\n' + pptxDeckBrief,
+      })
+    }
     // authored skills (Fase 2): route the turn to any matching user/global
     // skill, inject its body, and tell the client which fired (ephemeral badge)
     const activeSkills = await routeSkills(req, prompt, { forced: payload.skills })
