@@ -691,7 +691,7 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
                  }`}
     >
       {/* toolbar */}
-      <header className="shrink-0 h-14 flex items-center gap-3 px-4 border-b border-[var(--border)]">
+      <header className="shrink-0 h-14 flex items-center gap-2 md:gap-3 px-3 md:px-4 border-b border-[var(--border)]">
         <button onClick={onClose} className="p-2 -ml-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]">
           <Icon.Close size={20} />
         </button>
@@ -700,7 +700,7 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
           <input
             value={deck.title}
             onChange={(e) => setDeck((d) => ({ ...d, title: e.target.value }))}
-            className="font-semibold text-sm bg-transparent outline-none border-b border-transparent focus:border-[var(--accent)] max-w-md"
+            className="font-semibold text-sm bg-transparent outline-none border-b border-transparent focus:border-[var(--accent)] min-w-0 flex-1 md:flex-none md:max-w-md"
           />
         ) : (
           <span className="font-semibold text-sm">{t('deckStudio.title')}</span>
@@ -756,9 +756,9 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
           <button
             onClick={exportPptx}
             disabled={!deck || exporting}
-            className="ml-2 flex items-center gap-1.5 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm px-3.5 py-2 transition"
+            className="ml-1 md:ml-2 shrink-0 flex items-center gap-1.5 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm px-3 md:px-3.5 py-2 transition"
           >
-            <Icon.Download size={15} /> {exporting ? t('deckStudio.exporting') : t('deckStudio.exportPptx')}
+            <Icon.Download size={15} /> <span className="hidden sm:inline">{exporting ? t('deckStudio.exporting') : t('deckStudio.exportPptx')}</span>
           </button>
         </div>
       </header>
@@ -778,9 +778,9 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
       ) : loading || !deck ? (
         <div className="flex-1 grid place-items-center text-sm text-[var(--faint)]">{t('deckStudio.loading')}</div>
       ) : (
-        <div className="flex-1 flex min-h-0">
-          {/* thumbnail rail */}
-          <div className="w-56 shrink-0 border-r border-[var(--border)] overflow-y-auto p-3 space-y-2">
+        <div className="flex-1 flex flex-col md:flex-row min-h-0">
+          {/* thumbnail rail: horizontal filmstrip on mobile, vertical rail on md+ */}
+          <div className="flex md:block shrink-0 md:w-56 gap-2 md:gap-0 border-b md:border-b-0 md:border-r border-[var(--border)] overflow-x-auto md:overflow-x-visible md:overflow-y-auto p-3 md:space-y-2">
             {deck.slides.map((s, i) => (
               <div
                 key={i}
@@ -792,7 +792,7 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
                   dragFrom.current = null
                 }}
                 onClick={() => setActiveIndex(i)}
-                className={`relative rounded-lg cursor-pointer ring-2 transition animate-fade-in ${
+                className={`relative rounded-lg cursor-pointer ring-2 transition animate-fade-in shrink-0 w-32 md:w-auto ${
                   i === activeIndex ? 'ring-[var(--accent)]' : 'ring-transparent hover:ring-[var(--border)]'
                 }`}
                 style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
@@ -1217,7 +1217,7 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
 
               {slide.layout === 'comparison' && (
                 <>
-                  <div className="grid grid-cols-2 gap-2 pl-[5.5rem]">
+                  <div className="grid grid-cols-2 gap-2 pl-0 md:pl-[5.5rem]">
                     <input
                       value={slide.leftTitle || ''}
                       onChange={(e) => updateSlide(activeIndex, { leftTitle: e.target.value })}

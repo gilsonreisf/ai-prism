@@ -21,6 +21,11 @@ import {
   addToolCalls,
   setSessionEmbedding,
   listSessionsForSearch,
+  setMessageEmbedding,
+  listMessagesMissingEmbedding,
+  listUserMessagesMissingEmbedding,
+  retrieveRelevantMessages,
+  searchSessionsByVector,
   getSessionChartCandidates,
   saveSessionChartCandidates,
   listDeckTemplates,
@@ -79,6 +84,7 @@ import { searchGenieSpaces } from './genie.js'
 import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
 import { listChatEndpoints, buildAdminCatalog, buildUserModels } from './serving.js'
+import { getUsageFromSystemTables } from './usageSystemTables.js'
 import { renderPptx } from './decks.js'
 import { renderXlsx } from './xlsx-export.js'
 
@@ -102,19 +108,79 @@ const ATTACH_MARKER = '\n\n--- ANEXOS ---\n\n'
 // loaded for capability detection and block resolution — this caps only replay.
 const MAX_HISTORY_MESSAGES = 40
 
+// Semantic history retrieval (Perplexity-style): when a session is longer than
+// the recency window, retrieve the most relevant OLDER messages by pgvector
+// similarity and splice them in — so the model "remembers" a detail from 60
+// turns ago without replaying all 60. Behind a flag (default off) for safe,
+// A/B-able rollout. `RECENCY_KEEP` messages always go verbatim; up to
+// RETRIEVE_TOP_N older ones are added when they clear the similarity floor.
+const HISTORY_RETRIEVAL = process.env.HISTORY_RETRIEVAL === 'on'
+const RECENCY_KEEP = 8
+const RETRIEVE_TOP_N = 6
+const RETRIEVE_MIN_SIMILARITY = 0.4
+
 // Appends the recent conversation to `apiMessages`, capped at the last
 // MAX_HISTORY_MESSAGES turns (see the constant). Starts the window on a user
 // turn so the first replayed message isn't a dangling assistant reply, and
 // strips {{block:N}} placeholders the model doesn't need echoed back. Shared by
 // /api/chat, /continue and /regenerate so all three window identically.
-function pushWindowedHistory(apiMessages, history) {
+//
+// `retrieved` (optional): semantically-relevant OLDER messages fetched by
+// pgvector when HISTORY_RETRIEVAL is on. They're injected as ONE compact system
+// message right before the recency window — NOT interleaved as real turns — so
+// (a) the model clearly sees them as recalled context, not the live thread, and
+// (b) the stable system prefix / recency tail keep their shape for prompt
+// caching. Any retrieved message already inside the recency window is dropped.
+function pushWindowedHistory(apiMessages, history, retrieved = []) {
   let windowed = history.length > MAX_HISTORY_MESSAGES ? history.slice(-MAX_HISTORY_MESSAGES) : history
   if (windowed.length && windowed.length < history.length && windowed[0].role !== 'user') {
     const firstUser = windowed.findIndex((m) => m.role === 'user')
     if (firstUser > 0) windowed = windowed.slice(firstUser)
   }
+  if (retrieved.length) {
+    const inWindow = new Set(windowed.map((m) => String(m.id)))
+    const fresh = retrieved.filter((m) => !inWindow.has(String(m.id)))
+    if (fresh.length) {
+      const recalled = fresh
+        .map((m) => `[${m.role === 'user' ? 'Usuário' : 'Assistente'}]: ${stripBlockPlaceholders(stripAttach(m.content)).slice(0, 800)}`)
+        .join('\n\n')
+      apiMessages.push({
+        role: 'system',
+        content:
+          'Trechos relevantes de mais cedo NESTA conversa (recuperados por similaridade — ' +
+          'use-os como memória do que já foi dito, sem repeti-los literalmente):\n\n' +
+          recalled,
+      })
+    }
+  }
   for (const m of windowed) {
     apiMessages.push({ role: m.role, content: stripBlockPlaceholders(m.content) })
+  }
+}
+
+// Fetches semantically-relevant older messages for this turn when
+// HISTORY_RETRIEVAL is on and the session is longer than the recency window.
+// Best-effort: any failure (embed/DB) returns [] so the turn proceeds on the
+// recency window alone. `queryText` is the current user message (the retrieval
+// query). Returns [] when the feature is off or there's nothing older to find.
+async function retrieveHistoryContext(req, sessionId, history, queryText) {
+  if (!HISTORY_RETRIEVAL) return []
+  if (history.length <= RECENCY_KEEP) return [] // nothing older than the window
+  const q = String(queryText || '').trim()
+  if (q.length < 3) return []
+  try {
+    const [qvec] = await embed(req.token, [
+      `Instruct: Dada a mensagem atual do usuário, recupere trechos relevantes da conversa.\nQuery: ${q}`,
+    ])
+    if (!qvec) return []
+    return await retrieveRelevantMessages(req.email, req.token, sessionId, qvec, {
+      topN: RETRIEVE_TOP_N,
+      excludeRecent: RECENCY_KEEP,
+      minSimilarity: RETRIEVE_MIN_SIMILARITY,
+    })
+  } catch (e) {
+    console.warn('history retrieval failed:', e.message)
+    return []
   }
 }
 
@@ -660,6 +726,49 @@ app.delete('/api/admins/:principal', auth, requireAdmin, async (req, res) => {
   }
 })
 
+// AI cost/usage auditing (admin): aggregates persisted token usage across all
+// users and prices it with the MODELS catalog (list price per 1M tokens). The
+// pricing lives server-side so the client renders a single source of truth; the
+// raw token sums are returned too so the UI can re-slice without another call.
+// Optional ?from=&to= ISO dates window the data. Never user-scoped by design —
+// it's an admin audit surface, hence requireAdmin.
+// Derive a human label for an endpoint id. Known models get their curated
+// label; retired/unknown endpoints (present in the system tables but absent
+// from MODELS) get a title-cased fallback derived from the id — no more
+// "unpriced" holes, because cost now comes from real billing, not a price map.
+function endpointLabel(id) {
+  const m = modelById(id)
+  if (m && m.label) return m.label
+  return String(id || '')
+    .replace(/^databricks-/, '')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+app.get('/api/admin/usage', auth, requireAdmin, async (req, res) => {
+  try {
+    const from = req.query.from ? new Date(String(req.query.from)).toISOString() : null
+    const to = req.query.to ? new Date(String(req.query.to)).toISOString() : null
+    // scoped=true (default) → only AI Prism-tagged traffic, with a transition
+    // fallback to all traffic until the tag has propagated (see module).
+    const scoped = req.query.scoped !== '0'
+
+    // Real billed cost from Databricks system tables, read via the SQL Warehouse
+    // — keeps analytical load off the app's Lakebase and prices every model
+    // (including retired endpoints) from actual DBU × list price, not a curated
+    // per-token map. USD is allocated to each user by their token share.
+    const stats = await getUsageFromSystemTables(req.token, { from, to, scoped })
+
+    const byUserModel = stats.byUserModel.map((r) => ({
+      ...r,
+      modelLabel: endpointLabel(r.model),
+    }))
+    res.json({ byUserModel, daily: stats.daily, meta: stats.meta })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Cache of the user-facing model list (enabled-only, admin-curated). Refreshed
 // from model_catalog_overrides; a short TTL keeps a newly-enabled model showing
 // up quickly without a DB hit on every chat turn. Falls back to static MODELS.
@@ -737,7 +846,10 @@ app.get('/api/sessions', auth, async (req, res) => {
   }
 })
 
-// semantic search over the user's chat history
+// semantic search over the user's chat history — pgvector-backed: the ranking
+// runs IN the database over per-message embeddings (indexed HNSW), instead of
+// pulling every session vector into Node for a JS cosine loop. Each session
+// scores by its best-matching message, so a hit on any turn surfaces it.
 app.get('/api/search', auth, async (req, res) => {
   try {
     await ensureReady(req)
@@ -745,38 +857,17 @@ app.get('/api/search', auth, async (req, res) => {
     if (!q) return res.json({ results: [] })
 
     // qwen3-embedding is instruction-tuned: queries use an Instruct/Query
-    // prefix for asymmetric retrieval; passages (docs) stay plain.
+    // prefix for asymmetric retrieval; passages (messages) stay plain.
     const qtext = `Instruct: Dada uma busca do usuário, recupere conversas de chat relevantes.\nQuery: ${q}`
     const [qvec] = await embed(req.token, [qtext])
-    const rows = await listSessionsForSearch(req.email, req.token)
+    if (!qvec) return res.json({ results: [] })
 
-    // lazily backfill embeddings for sessions that don't have one yet
-    const missing = rows.filter((r) => !r.embedding && r.doc)
-    if (missing.length) {
-      try {
-        const vecs = await embed(
-          req.token,
-          missing.map((r) => r.doc.slice(0, 4000))
-        )
-        await Promise.all(
-          missing.map((r, i) => {
-            r.embedding = vecs[i]
-            return setSessionEmbedding(req.email, req.token, r.id, vecs[i])
-          })
-        )
-      } catch (e) {
-        console.warn('search backfill failed:', e.message)
-      }
-    }
-
-    const results = rows
-      .filter((r) => r.embedding)
-      .map((r) => ({ id: r.id, title: r.title, score: cosineSim(qvec, r.embedding) }))
-      .filter((r) => r.score > 0.3)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 20)
-
+    const results = await searchSessionsByVector(req.email, req.token, qvec, { limit: 20, minSimilarity: 0.3 })
     res.json({ results })
+
+    // fire-and-forget: index any history that predates per-message embeddings so
+    // subsequent searches cover the full backlog (runs once per user/process)
+    backfillUserMessageEmbeddings(req).catch(() => {})
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -1953,7 +2044,9 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // full `history` is still used above for detectCapabilities and below for
     // chart/deck block resolution). Caps latency/cost that would otherwise grow
     // with the conversation length; see pushWindowedHistory / MAX_HISTORY_MESSAGES.
-    pushWindowedHistory(apiMessages, history)
+    // With HISTORY_RETRIEVAL on, also pull semantically-relevant older messages.
+    const retrieved = await retrieveHistoryContext(req, sessionId, history, prompt)
+    pushWindowedHistory(apiMessages, history, retrieved)
 
     // tools: the built-in Python UC function is provisioned lazily once per
     // process; additional tools are whichever UC Functions the user attached
@@ -2021,6 +2114,11 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     const embedTask = updateSessionEmbedding(req, sessionId, history).catch((e) =>
       console.warn('embedding update failed:', e.message)
     )
+    // per-message embeddings (history retrieval + pgvector search). Independent
+    // of the session-level embedding; runs concurrently on the tail, best-effort.
+    const msgIndexTask = indexSessionMessages(req, sessionId).catch((e) =>
+      console.warn('message embedding index failed:', e.message)
+    )
     const titleTask = (async () => {
       if (isNew) {
         const title = await generateTitle(req.token, prompt || attachNames.join(', '), answer)
@@ -2030,7 +2128,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
         await updateSession(req.email, req.token, sessionId, {})
       }
     })().catch((e) => console.warn('title/session update failed:', e.message))
-    await Promise.all([embedTask, titleTask])
+    await Promise.all([embedTask, msgIndexTask, titleTask])
 
     send({ type: 'done' })
     res.end()
@@ -2057,6 +2155,49 @@ async function updateSessionEmbedding(req, sessionId, history) {
     .slice(0, 1500)
   const [vec] = await embed(req.token, [doc])
   if (vec) await setSessionEmbedding(req.email, req.token, sessionId, vec)
+}
+
+// Per-message embeddings for semantic history retrieval (HISTORY_RETRIEVAL) and
+// for the pgvector-backed session search. Embeds every message in the session
+// that doesn't yet have a vector — so it covers this turn's new user+assistant
+// rows AND lazily backfills older messages the first time a session is touched
+// after this feature ships (no migration job). Attachment bodies are stripped
+// so a vector reflects the message's intent, not a pasted document. Best-effort:
+// called on the turn tail, never blocks the answer. One batched embed call.
+async function indexSessionMessages(req, sessionId) {
+  const missing = await listMessagesMissingEmbedding(req.email, req.token, sessionId)
+  if (!missing.length) return
+  const texts = missing.map((m) => stripAttach(m.content).slice(0, 4000))
+  const vecs = await embed(req.token, texts)
+  await Promise.all(
+    missing.map((m, i) => (vecs[i] ? setMessageEmbedding(req.email, req.token, sessionId, m.id, vecs[i]) : null))
+  )
+}
+
+// One-time-per-process migration backfill: index the user's un-embedded history
+// (capped, newest-first) so pgvector search/retrieval work on conversations that
+// predate this feature. Fire-and-forget from /api/search; the latch keeps a
+// second search from re-scanning while the first is still running. Batches to
+// keep any single embed call bounded.
+const historyBackfillDone = new Set()
+async function backfillUserMessageEmbeddings(req) {
+  if (historyBackfillDone.has(req.email)) return
+  historyBackfillDone.add(req.email)
+  try {
+    const missing = await listUserMessagesMissingEmbedding(req.email, req.token, 200)
+    for (let i = 0; i < missing.length; i += 40) {
+      const batch = missing.slice(i, i + 40)
+      const vecs = await embed(req.token, batch.map((m) => stripAttach(m.content).slice(0, 4000)))
+      await Promise.all(
+        batch.map((m, j) => (vecs[j] ? setMessageEmbedding(req.email, req.token, m.sessionId, m.id, vecs[j]) : null))
+      )
+    }
+    if (missing.length) console.log(`history backfill: indexed ${missing.length} messages for ${req.email}`)
+  } catch (e) {
+    // let a later search retry by clearing the latch
+    historyBackfillDone.delete(req.email)
+    console.warn('history backfill failed:', e.message)
+  }
 }
 
 // ---- recovery: answer a trailing UNANSWERED user message ----
@@ -2111,7 +2252,10 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
       apiMessages.push({ role: 'system', content: renderSkillsInstruction(activeSkills) })
     }
     emitActiveSkills(send, [...activeSystemSkills(caps), ...activeSkills])
-    pushWindowedHistory(apiMessages, history)
+    {
+      const retrieved = await retrieveHistoryContext(req, sessionId, history, lastUserText)
+      pushWindowedHistory(apiMessages, history, retrieved)
+    }
 
     const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs)
     if (toolDefs) apiMessages.push({ role: 'system', content: TOOL_NARRATION_POLICY })
@@ -2221,7 +2365,10 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
       apiMessages.push({ role: 'system', content: renderSkillsInstruction(activeSkills) })
     }
     emitActiveSkills(send, [...activeSystemSkills(caps), ...activeSkills])
-    pushWindowedHistory(apiMessages, history)
+    {
+      const retrieved = await retrieveHistoryContext(req, sessionId, history, lastUserText)
+      pushWindowedHistory(apiMessages, history, retrieved)
+    }
 
     const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs)
     if (toolDefs) apiMessages.push({ role: 'system', content: TOOL_NARRATION_POLICY })

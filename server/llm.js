@@ -80,13 +80,23 @@ function chatUrl() {
   return `${host()}/serving-endpoints/chat/completions`
 }
 
+// Stamp every gateway call so its row in system.ai_gateway.usage carries
+// request_tags['application'] = 'ai-prism'. This is what lets the admin cost
+// dashboard scope spend to AI Prism (vs. the same users' other serving traffic
+// in a shared workspace). Propagation of usage_context → request_tags is
+// confirmed live in the gateway; the tag is additive and safe on every endpoint.
+const USAGE_CONTEXT = { application: 'ai-prism' }
+function withUsageContext(body) {
+  return { ...body, usage_context: USAGE_CONTEXT }
+}
+
 /** Embed one or more strings via the AI Gateway embeddings endpoint. */
 export async function embed(token, inputs) {
   const arr = Array.isArray(inputs) ? inputs : [inputs]
   const res = await fetch(`${host()}/serving-endpoints/embeddings`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: EMBED_MODEL, input: arr }),
+    body: JSON.stringify(withUsageContext({ model: EMBED_MODEL, input: arr })),
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -237,7 +247,7 @@ export async function* streamChat(token, model, messages, opts = {}) {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(withUsageContext(body)),
   })
 
   if (!res.ok || !res.body) {
@@ -302,7 +312,7 @@ export async function complete(token, model, messages, opts = {}) {
   const res = await fetch(chatUrl(), {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(completeBody),
+    body: JSON.stringify(withUsageContext(completeBody)),
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')

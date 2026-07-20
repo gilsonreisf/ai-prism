@@ -4,6 +4,7 @@ import { useT } from '../lib/i18n.jsx'
 import DeckTemplatesSettings from './DeckTemplatesSettings.jsx'
 import AdminSettings from './AdminSettings.jsx'
 import ModelsAdminTab from './ModelsAdminTab.jsx'
+import CostsTab from './CostsTab.jsx'
 import McpConnectionsTab from './McpConnectionsTab.jsx'
 import SkillsTab from './SkillsTab.jsx'
 import PersonalTab from './PersonalTab.jsx'
@@ -25,7 +26,7 @@ function ToneTab({ systemPrompt, setSystemPrompt }) {
         <p className="text-xs text-[var(--muted)] mt-0.5">
           {t('settings.tone.hint')}
         </p>
-        <div className="grid grid-cols-3 gap-2 mt-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
           {PERSONAS.map((p) => {
             const active = (systemPrompt || '') === p.prompt
             return (
@@ -91,6 +92,7 @@ export default function SettingsModal({
     ...(isAdmin
       ? [
           { id: 'models', label: t('settings.tab.models'), icon: Icon.Wrench, admin: true },
+          { id: 'costs', label: t('settings.tab.costs'), icon: Icon.Monitor, admin: true },
           { id: 'admins', label: t('settings.tab.admins'), icon: Icon.Users, admin: true },
         ]
       : []),
@@ -112,9 +114,9 @@ export default function SettingsModal({
           </button>
         </div>
 
-        <div className="flex flex-1 min-h-0">
-          {/* vertical tab rail */}
-          <nav className="w-56 shrink-0 border-r border-[var(--border)] p-2 overflow-y-auto bg-[var(--surface-2)]">
+        <div className="flex flex-col md:flex-row flex-1 min-h-0">
+          {/* tab rail: horizontal scroller on mobile, vertical rail on md+ */}
+          <nav className="flex md:block shrink-0 md:w-56 gap-1 md:gap-0 border-b md:border-b-0 md:border-r border-[var(--border)] p-2 overflow-x-auto md:overflow-x-visible md:overflow-y-auto bg-[var(--surface-2)]">
             {tabs.map((tabItem) => {
               const TabIcon = tabItem.icon
               const active = tab === tabItem.id
@@ -122,14 +124,14 @@ export default function SettingsModal({
                 <button
                   key={tabItem.id}
                   onClick={() => setTab(tabItem.id)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition mb-0.5 ${
+                  className={`shrink-0 md:w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition md:mb-0.5 whitespace-nowrap ${
                     active
                       ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold'
                       : 'text-[var(--muted)] hover:bg-[var(--surface-3)]'
                   }`}
                 >
                   <TabIcon size={16} className="shrink-0" />
-                  <span className="flex-1 truncate">{tabItem.label}</span>
+                  <span className="md:flex-1 md:truncate">{tabItem.label}</span>
                   {tabItem.admin && <Icon.Shield size={12} className="shrink-0 opacity-60" />}
                 </button>
               )
@@ -146,6 +148,7 @@ export default function SettingsModal({
             {tab === 'templates' && <DeckTemplatesSettings open={open} isAdmin={isAdmin} />}
             {tab === 'mcp' && <McpConnectionsTab open={open} />}
             {tab === 'models' && isAdmin && <ModelsAdminTab open={open} onModelsChanged={onModelsChanged} />}
+            {tab === 'costs' && isAdmin && <CostsTab open={open} />}
             {tab === 'admins' && isAdmin && <AdminSettings open={open} />}
           </div>
         </div>
