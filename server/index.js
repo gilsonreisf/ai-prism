@@ -26,7 +26,6 @@ import {
   listUserMessagesMissingEmbedding,
   retrieveRelevantMessages,
   searchSessionsByVector,
-  getUsageStats,
   getSessionChartCandidates,
   saveSessionChartCandidates,
   listDeckTemplates,
@@ -85,6 +84,7 @@ import { searchGenieSpaces } from './genie.js'
 import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
 import { listChatEndpoints, buildAdminCatalog, buildUserModels } from './serving.js'
+import { getUsageFromSystemTables } from './usageSystemTables.js'
 import { renderPptx } from './decks.js'
 import { renderXlsx } from './xlsx-export.js'
 
@@ -732,40 +732,38 @@ app.delete('/api/admins/:principal', auth, requireAdmin, async (req, res) => {
 // raw token sums are returned too so the UI can re-slice without another call.
 // Optional ?from=&to= ISO dates window the data. Never user-scoped by design —
 // it's an admin audit surface, hence requireAdmin.
+// Derive a human label for an endpoint id. Known models get their curated
+// label; retired/unknown endpoints (present in the system tables but absent
+// from MODELS) get a title-cased fallback derived from the id — no more
+// "unpriced" holes, because cost now comes from real billing, not a price map.
+function endpointLabel(id) {
+  const m = modelById(id)
+  if (m && m.label) return m.label
+  return String(id || '')
+    .replace(/^databricks-/, '')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
 app.get('/api/admin/usage', auth, requireAdmin, async (req, res) => {
   try {
-    await ensureReady(req)
     const from = req.query.from ? new Date(String(req.query.from)).toISOString() : null
     const to = req.query.to ? new Date(String(req.query.to)).toISOString() : null
-    const stats = await getUsageStats(req.email, req.token, { from, to })
+    // scoped=true (default) → only AI Prism-tagged traffic, with a transition
+    // fallback to all traffic until the tag has propagated (see module).
+    const scoped = req.query.scoped !== '0'
 
-    // price map: id -> { label, in, out } (USD per 1M tokens). A model with no
-    // known list price (e.g. a retired endpoint used in old sessions, absent
-    // from the curated MODELS) is flagged `unpriced` rather than costed at 0 —
-    // showing $0 would read as "free" and understate the audit. The UI surfaces
-    // the flag so the tokens are still visible, just without a dollar figure.
-    const priceOf = (id) => {
-      const m = modelById(id)
-      const inP = m.in || 0
-      const outP = m.out || 0
-      return { label: m.label || id, in: inP, out: outP, unpriced: inP === 0 && outP === 0 }
-    }
-    const cost = (id, pt, ct) => {
-      const p = priceOf(id)
-      return (pt / 1e6) * p.in + (ct / 1e6) * p.out
-    }
+    // Real billed cost from Databricks system tables, read via the SQL Warehouse
+    // — keeps analytical load off the app's Lakebase and prices every model
+    // (including retired endpoints) from actual DBU × list price, not a curated
+    // per-token map. USD is allocated to each user by their token share.
+    const stats = await getUsageFromSystemTables(req.token, { from, to, scoped })
 
     const byUserModel = stats.byUserModel.map((r) => ({
       ...r,
-      modelLabel: priceOf(r.model).label,
-      unpriced: priceOf(r.model).unpriced,
-      cost: cost(r.model, r.promptTokens, r.completionTokens),
+      modelLabel: endpointLabel(r.model),
     }))
-    const daily = stats.daily.map((r) => ({
-      ...r,
-      cost: cost(r.model, r.promptTokens, r.completionTokens),
-    }))
-    res.json({ byUserModel, daily })
+    res.json({ byUserModel, daily: stats.daily, meta: stats.meta })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

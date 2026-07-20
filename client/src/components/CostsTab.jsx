@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ResponsiveContainer,
   BarChart,
@@ -9,7 +9,6 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   Cell,
 } from 'recharts'
 import * as Icon from './Icons.jsx'
@@ -22,7 +21,8 @@ const COLORS = ['#ff3621', '#4285F4', '#10A37F', '#FF6A00', '#7C6FF0', '#98a2b3'
 const fmtUSD = (n) =>
   n >= 1 ? `$${n.toFixed(2)}` : n > 0 ? `$${n.toFixed(4)}` : '$0'
 const fmtTokens = (n) =>
-  n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n)
+  n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n || 0)
+const fmtDBU = (n) => (n >= 1 ? n.toFixed(1) : n > 0 ? n.toFixed(3) : '0')
 
 // Period presets → ISO from/to. "all" sends no window.
 function rangeFor(preset) {
@@ -31,6 +31,18 @@ function rangeFor(preset) {
   const days = preset === '7d' ? 7 : preset === '30d' ? 30 : 90
   const from = new Date(now.getTime() - days * 24 * 3600 * 1000)
   return { from: from.toISOString(), to: now.toISOString() }
+}
+
+// "2h atrás" style relative age for the freshness banner.
+function ageLabel(iso, t) {
+  if (!iso) return ''
+  const then = new Date(iso).getTime()
+  if (Number.isNaN(then)) return ''
+  const mins = Math.max(0, Math.round((Date.now() - then) / 60000))
+  if (mins < 60) return t('costs.ageMin', { n: mins })
+  const hrs = Math.round(mins / 60)
+  if (hrs < 48) return t('costs.ageHour', { n: hrs })
+  return t('costs.ageDay', { n: Math.round(hrs / 24) })
 }
 
 function KpiTile({ label, value, sub }) {
@@ -58,18 +70,89 @@ function CostTooltip({ active, payload, label }) {
   )
 }
 
-// Admin cost/usage dashboard: audit LLM spend by user, model and period. All
-// numbers come from /api/admin/usage (tokens × list price, computed server-side).
+// A lightweight combobox: text input + suggestion list, matching the admins
+// autocomplete pattern. Options are the users/models seen in the data itself.
+function FilterCombo({ icon, value, onChange, options, placeholder }) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const ref = useRef(null)
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [])
+  const ql = q.trim().toLowerCase()
+  const matches = options
+    .filter((o) => !ql || o.label.toLowerCase().includes(ql) || o.value.toLowerCase().includes(ql))
+    .slice(0, 40)
+  const Ic = icon
+  return (
+    <div className="relative min-w-[180px] max-w-xs flex-1" ref={ref}>
+      <Ic size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--faint)] pointer-events-none" />
+      <input
+        value={open ? q : value ? (options.find((o) => o.value === value)?.label ?? value) : q}
+        onChange={(e) => {
+          setQ(e.target.value)
+          if (!open) setOpen(true)
+        }}
+        onFocus={() => {
+          setQ('')
+          setOpen(true)
+        }}
+        placeholder={placeholder}
+        className="w-full pl-8 pr-7 py-1.5 text-xs rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text)] placeholder:text-[var(--faint)]"
+      />
+      {value && (
+        <button
+          onClick={() => {
+            onChange('')
+            setQ('')
+          }}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--faint)] hover:text-[var(--text)]"
+          aria-label="clear"
+        >
+          <Icon.Close size={13} />
+        </button>
+      )}
+      {open && matches.length > 0 && (
+        <div className="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-[var(--border)] bg-[var(--surface-1)] shadow-lg py-1">
+          {matches.map((o) => (
+            <button
+              key={o.value}
+              onClick={() => {
+                onChange(o.value)
+                setOpen(false)
+              }}
+              className="w-full text-left px-3 py-1.5 text-xs text-[var(--text)] hover:bg-[var(--surface-3)] flex items-center justify-between gap-2"
+            >
+              <span className="truncate">{o.label}</span>
+              {o.hint != null && <span className="text-[var(--faint)] tabular-nums shrink-0">{o.hint}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Admin cost/usage dashboard: audit LLM spend by user, model and period. Numbers
+// come from /api/admin/usage, which reads Databricks SYSTEM TABLES via the SQL
+// Warehouse — real billed cost (DBU × list price), allocated per user by token
+// share. Nothing hits the app's Lakebase.
 export default function CostsTab({ open }) {
   const t = useT()
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [preset, setPreset] = useState('30d')
-  const [userQuery, setUserQuery] = useState('')
+  const [userFilter, setUserFilter] = useState('')
+  const [modelFilter, setModelFilter] = useState('')
 
   const load = async (p) => {
     setLoading(true)
+    setError('')
     try {
       const { from, to } = rangeFor(p)
       const qs = new URLSearchParams()
@@ -80,7 +163,7 @@ export default function CostsTab({ open }) {
       setError('')
     } catch (e) {
       setError(e.message)
-      setData({ byUserModel: [], daily: [] })
+      setData({ byUserModel: [], daily: [], meta: {} })
     } finally {
       setLoading(false)
     }
@@ -93,16 +176,22 @@ export default function CostsTab({ open }) {
   // ---- derive the filtered/aggregated views the UI renders ----
   const view = useMemo(() => {
     const rows = data?.byUserModel || []
-    const q = userQuery.trim().toLowerCase()
-    const filtered = q ? rows.filter((r) => r.userEmail.toLowerCase().includes(q)) : rows
+    const filtered = rows.filter(
+      (r) => (!userFilter || r.userEmail === userFilter) && (!modelFilter || r.model === modelFilter)
+    )
 
     // per-user totals (cost desc) — the headline ranking
     const byUser = new Map()
     for (const r of filtered) {
-      const u = byUser.get(r.userEmail) || { userEmail: r.userEmail, cost: 0, promptTokens: 0, completionTokens: 0, turns: 0 }
+      const u = byUser.get(r.userEmail) || {
+        userEmail: r.userEmail, cost: 0, promptTokens: 0, completionTokens: 0,
+        cacheReadTokens: 0, dbus: 0, turns: 0,
+      }
       u.cost += r.cost
       u.promptTokens += r.promptTokens
       u.completionTokens += r.completionTokens
+      u.cacheReadTokens += r.cacheReadTokens || 0
+      u.dbus += r.dbus || 0
       u.turns += r.turns
       byUser.set(r.userEmail, u)
     }
@@ -118,20 +207,40 @@ export default function CostsTab({ open }) {
     }
     const models = [...byModel.values()].sort((a, b) => b.cost - a.cost)
 
-    // daily cost trend (respecting the user filter)
+    // daily cost trend (respecting the filters)
     const dayMap = new Map()
     for (const d of data?.daily || []) {
-      if (q && !d.userEmail.toLowerCase().includes(q)) continue
+      if (userFilter && d.userEmail !== userFilter) continue
+      if (modelFilter && d.model !== modelFilter) continue
       dayMap.set(d.day, (dayMap.get(d.day) || 0) + d.cost)
     }
     const trend = [...dayMap.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, cost]) => ({ day, cost }))
 
     const totalCost = users.reduce((s, u) => s + u.cost, 0)
     const totalTokens = filtered.reduce((s, r) => s + r.promptTokens + r.completionTokens, 0)
+    const totalCacheTokens = filtered.reduce((s, r) => s + (r.cacheReadTokens || 0), 0)
+    const totalDbus = filtered.reduce((s, r) => s + (r.dbus || 0), 0)
     const totalTurns = filtered.reduce((s, r) => s + r.turns, 0)
 
-    return { filtered, users, models, trend, totalCost, totalTokens, totalTurns }
-  }, [data, userQuery])
+    return { filtered, users, models, trend, totalCost, totalTokens, totalCacheTokens, totalDbus, totalTurns }
+  }, [data, userFilter, modelFilter])
+
+  // options for the filter combos, built from the data (all rows, so the user
+  // can always pick anyone/any model regardless of the current filter)
+  const userOptions = useMemo(() => {
+    const m = new Map()
+    for (const r of data?.byUserModel || []) m.set(r.userEmail, (m.get(r.userEmail) || 0) + r.cost)
+    return [...m.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([email, cost]) => ({ value: email, label: email, hint: fmtUSD(cost) }))
+  }, [data])
+  const modelOptions = useMemo(() => {
+    const m = new Map()
+    for (const r of data?.byUserModel || []) {
+      if (!m.has(r.model)) m.set(r.model, r.modelLabel)
+    }
+    return [...m.entries()].map(([value, label]) => ({ value, label }))
+  }, [data])
 
   const presets = [
     { id: '7d', label: t('costs.range.7d') },
@@ -146,6 +255,8 @@ export default function CostsTab({ open }) {
     cost: Number(u.cost.toFixed(4)),
   }))
 
+  const meta = data?.meta || {}
+
   return (
     <div className="space-y-5">
       <div>
@@ -155,7 +266,7 @@ export default function CostsTab({ open }) {
         <p className="text-xs text-[var(--muted)] mt-1">{t('costs.subtitle')}</p>
       </div>
 
-      {/* filters: period presets + user search */}
+      {/* filters: period presets + user/model combos */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex rounded-lg border border-[var(--border)] overflow-hidden">
           {presets.map((p) => (
@@ -170,28 +281,48 @@ export default function CostsTab({ open }) {
             </button>
           ))}
         </div>
-        <div className="relative flex-1 min-w-[180px] max-w-xs">
-          <Icon.Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
-          <input
-            value={userQuery}
-            onChange={(e) => setUserQuery(e.target.value)}
-            placeholder={t('costs.filterUser')}
-            className="w-full pl-8 pr-2 py-1.5 text-xs rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text)] placeholder:text-[var(--faint)]"
-          />
-        </div>
+        <FilterCombo
+          icon={Icon.Search}
+          value={userFilter}
+          onChange={setUserFilter}
+          options={userOptions}
+          placeholder={t('costs.filterUser')}
+        />
+        <FilterCombo
+          icon={Icon.Sparkle}
+          value={modelFilter}
+          onChange={setModelFilter}
+          options={modelOptions}
+          placeholder={t('costs.filterModel')}
+        />
       </div>
 
-      {error && <div className="text-xs text-[var(--danger,#ff3621)]">{error}</div>}
-      {loading && !data && <div className="text-xs text-[var(--muted)]">{t('costs.loading')}</div>}
+      {/* freshness + scope banner */}
+      {data && (meta.gatewayLatest || meta.scopeFellBack) && (
+        <div className="text-[11px] text-[var(--faint)] flex flex-wrap items-center gap-x-3 gap-y-1">
+          {meta.gatewayLatest && <span>{t('costs.asOf', { age: ageLabel(meta.gatewayLatest, t) })}</span>}
+          {meta.scopeFellBack && <span className="text-[var(--warning,#FF6A00)]">{t('costs.scopeFallback')}</span>}
+        </div>
+      )}
 
-      {data && (
+      {error && <div className="text-xs text-[var(--danger,#ff3621)]">{error}</div>}
+
+      {/* warehouse can be cold on first query — keep a clear spinner */}
+      {loading && (
+        <div className="flex items-center gap-2 text-xs text-[var(--muted)] py-6">
+          <span className="block w-3.5 h-3.5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
+          {t('costs.loadingWarehouse')}
+        </div>
+      )}
+
+      {data && !loading && (
         <>
           {/* KPI tiles */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <KpiTile label={t('costs.totalCost')} value={fmtUSD(view.totalCost)} sub={t('costs.listPrice')} />
-            <KpiTile label={t('costs.totalTokens')} value={fmtTokens(view.totalTokens)} />
-            <KpiTile label={t('costs.turns')} value={view.totalTurns.toLocaleString()} />
-            <KpiTile label={t('costs.users')} value={String(view.users.length)} />
+            <KpiTile label={t('costs.totalCost')} value={fmtUSD(view.totalCost)} sub={t('costs.billedPrice')} />
+            <KpiTile label={t('costs.totalTokens')} value={fmtTokens(view.totalTokens)} sub={view.totalCacheTokens > 0 ? t('costs.cacheSub', { n: fmtTokens(view.totalCacheTokens) }) : undefined} />
+            <KpiTile label={t('costs.totalDbu')} value={fmtDBU(view.totalDbus)} sub="DBU" />
+            <KpiTile label={t('costs.turns')} value={view.totalTurns.toLocaleString()} sub={t('costs.usersN', { n: view.users.length })} />
           </div>
 
           {view.users.length === 0 ? (
@@ -265,6 +396,7 @@ export default function CostsTab({ open }) {
                         <th className="px-3 py-2 font-medium text-right">{t('costs.col.turns')}</th>
                         <th className="px-3 py-2 font-medium text-right">{t('costs.col.in')}</th>
                         <th className="px-3 py-2 font-medium text-right">{t('costs.col.out')}</th>
+                        <th className="px-3 py-2 font-medium text-right">{t('costs.col.dbu')}</th>
                         <th className="px-3 py-2 font-medium text-right">{t('costs.col.cost')}</th>
                       </tr>
                     </thead>
@@ -274,20 +406,12 @@ export default function CostsTab({ open }) {
                         .map((r, i) => (
                           <tr key={i} className="border-t border-[var(--border)] text-[var(--text)]">
                             <td className="px-3 py-2">{r.userEmail}</td>
-                            <td className="px-3 py-2 text-[var(--muted)]">
-                              {r.modelLabel}
-                              {r.unpriced && (
-                                <span className="ml-1.5 text-[10px] text-[var(--faint)]" title={t('costs.unpricedHint')}>
-                                  ({t('costs.unpriced')})
-                                </span>
-                              )}
-                            </td>
+                            <td className="px-3 py-2 text-[var(--muted)]">{r.modelLabel}</td>
                             <td className="px-3 py-2 text-right tabular-nums">{r.turns.toLocaleString()}</td>
                             <td className="px-3 py-2 text-right tabular-nums">{fmtTokens(r.promptTokens)}</td>
                             <td className="px-3 py-2 text-right tabular-nums">{fmtTokens(r.completionTokens)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums font-medium">
-                              {r.unpriced ? <span className="text-[var(--faint)]">—</span> : fmtUSD(r.cost)}
-                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-[var(--muted)]">{fmtDBU(r.dbus || 0)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums font-medium">{fmtUSD(r.cost)}</td>
                           </tr>
                         ))}
                     </tbody>

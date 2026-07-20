@@ -22,31 +22,39 @@ ferramentas nativas do workspace (Genie, Python, Vector Search, UC Functions, MC
 
 ## Arquitetura
 
+Toda credencial é *on-behalf-of* do usuário logado (ver abaixo). O servidor Express
+é a única porta de entrada; ele fala com quatro serviços da Databricks, sempre com o
+token OAuth do próprio usuário — nada de credencial estática.
+
+```mermaid
+flowchart TB
+    SPA["🖥️ Navegador (SPA)<br/>React + Vite"]
+
+    subgraph runtime["Databricks App runtime"]
+        APP["Injeta headers OAuth<br/>do usuário logado<br/>(x-forwarded-email / -access-token)"]
+        SRV["server/index.js · Express<br/>• auth on-behalf-of<br/>• rotas /api/*<br/>• SSE streaming"]
+        APP --> SRV
+    end
+
+    SPA <-->|"HTTPS · fetch / SSE"| APP
+
+    SRV -->|"server/llm.js"| GW["🤖 AI Gateway<br/>chat/completions<br/>embeddings"]
+    SRV -->|"server/db.js"| LB[("🗄️ Lakebase · Postgres<br/>chat_sessions · chat_messages<br/>deck_templates · model_catalog<br/>pgvector: RAG do histórico")]
+    SRV -->|"server/warehouse.js"| WH["📊 SQL Warehouse<br/>system tables (custos de IA)<br/>UC Functions (tools)"]
+    SRV -->|"server/genie.js · externalMcp.js"| EXT["🧞 Genie Agents / Genie One<br/>🔌 MCP externo<br/>🔎 Vector Search"]
+
+    GW -.->|"tokens · request_tags"| WH
+
+    classDef store fill:#1c2127,stroke:#3A424C,color:#e8eaed;
+    classDef svc fill:#161a1f,stroke:#272d35,color:#e8eaed;
+    class GW,WH,EXT svc;
+    class LB store;
 ```
-┌─────────────────────┐        HTTPS         ┌──────────────────────────┐
-│  Navegador (SPA)     │ ───────────────────▶ │  Databricks App runtime  │
-│  React + Vite        │ ◀─────────────────── │  (injeta headers OAuth   │
-│                       │   fetch / SSE         │  do usuário logado)      │
-└─────────────────────┘                        └────────────┬─────────────┘
-                                                              │
-                                                              ▼
-                                                 ┌──────────────────────────┐
-                                                 │  server/index.js         │
-                                                 │  (Express)               │
-                                                 │  - auth on-behalf-of     │
-                                                 │  - rotas /api/*          │
-                                                 │  - SSE streaming         │
-                                                 └───────┬─────────┬────────┘
-                                                         │         │
-                                     server/llm.js       │         │   server/db.js
-                                     (AI Gateway)         │         │   (Lakebase)
-                                                         ▼         ▼
-                                     ┌──────────────────────┐  ┌───────────────────────┐
-                                     │ Databricks AI Gateway │  │ Lakebase (Postgres)    │
-                                     │ chat/completions       │  │ chat_sessions          │
-                                     │ embeddings             │  │ chat_messages          │
-                                     └──────────────────────┘  └───────────────────────┘
-```
+
+> O diagrama acima usa [Mermaid](https://mermaid.js.org/) (renderizado nativamente
+> pelo GitHub). A seta pontilhada AI Gateway → SQL Warehouse indica que o consumo de
+> tokens de cada chamada ao gateway é gravado nas *system tables*, de onde o painel
+> de **Custos de IA** lê o custo real faturado (DBU × preço) por usuário.
 
 ### Autenticação (on-behalf-of)
 

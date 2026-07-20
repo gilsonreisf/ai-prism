@@ -275,10 +275,12 @@ export default function App({ uiLang, setUiLang }) {
   useEffect(() => {
     ;(async () => {
       try {
-        const me = await getJSON('/api/me')
+        // /api/me and /api/models are independent — fetch them in parallel so
+        // the model picker isn't gated behind the identity round-trip (the two
+        // latencies used to stack, worsening the picker's "pop-in").
+        const [me, m] = await Promise.all([getJSON('/api/me'), getJSON('/api/models')])
         setEmail(me.email)
         setIsAdmin(!!me.isAdmin)
-        const m = await getJSON('/api/models')
         setModels(m.models)
         setSupportedExt(m.supported_extensions)
         // a saved preference can point at an endpoint that no longer exists in

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import * as Icon from './Icons.jsx'
+import Skeleton from './Skeleton.jsx'
 
 const PROVIDER_DOT = {
   Anthropic: '#D97757',
@@ -24,7 +25,21 @@ export default function ModelPicker({ models, value, onChange, disabled }) {
     return () => document.removeEventListener('mousedown', h)
   }, [])
 
-  if (!current) return null
+  // While /api/models is still loading, `models` is empty and there's no
+  // `current`. Render a shimmer placeholder with the same footprint as the
+  // button instead of nothing — otherwise the picker "pops in" abruptly.
+  if (!current) {
+    return (
+      <div
+        className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5"
+        aria-hidden
+      >
+        <Skeleton className="w-2 h-2 shrink-0" rounded="rounded-full" />
+        <Skeleton className="h-4 w-24" />
+        <Icon.ChevronDown size={15} className="text-[var(--faint)] shrink-0 opacity-40" />
+      </div>
+    )
+  }
 
   return (
     <div className="relative" ref={ref}>

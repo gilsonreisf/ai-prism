@@ -11,6 +11,7 @@ const img = (src, alt) => (p) => (
     alt={alt}
     width={p.size || 18}
     height={p.size || 18}
+    decoding="async"
     className={p.className}
     style={{ objectFit: 'contain', flexShrink: 0 }}
   />
@@ -21,7 +22,7 @@ const img = (src, alt) => (p) => (
 // redrawn as SVG paths, to keep them pixel-faithful to the originals.
 export const ToolsGlyph = img(toolsIconUrl, 'Tools')
 export const GenieOne = img(genieOneIconUrl, 'Genie One')
-export const GenieSpaces = img(genieSpacesIconUrl, 'Genie Spaces')
+export const GenieSpaces = img(genieSpacesIconUrl, 'Genie Agents')
 export const UcFunctions = img(ucFunctionsIconUrl, 'Unity Catalog Functions')
 export const VectorSearch = img(vectorSearchIconUrl, 'Vector Search Indexes')
 export const McpExternal = img(mcpExternalIconUrl, 'MCPs Externos')

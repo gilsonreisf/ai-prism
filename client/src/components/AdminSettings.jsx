@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Icon from './Icons.jsx'
+import Skeleton from './Skeleton.jsx'
 import { useT } from '../lib/i18n.jsx'
 import { getJSON, postJSON, del } from '../api.js'
 
@@ -72,7 +73,17 @@ export default function AdminSettings({ open }) {
       .map(({ c }) => c)
   }, [candidates, principal, data])
 
-  if (!data) return null
+  // First load: show a shimmer skeleton instead of a blank panel while
+  // /api/admins resolves.
+  if (!data)
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-4 w-32" />
+        <Skeleton className="h-3 w-64" />
+        <Skeleton className="h-9 w-full mt-3" rounded="rounded-lg" />
+        <Skeleton className="h-9 w-full" rounded="rounded-lg" />
+      </div>
+    )
 
   const add = async (value) => {
     const p = (value ?? principal).trim()

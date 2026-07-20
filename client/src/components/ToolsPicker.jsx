@@ -188,7 +188,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
       </button>
 
       {open && (
-        <div className="absolute z-40 mt-2 w-[380px] max-w-[calc(100vw-1.5rem)] max-h-[70vh] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/40 p-1.5">
+        <div className="fixed left-3 right-3 top-16 w-auto md:absolute md:left-0 md:right-auto md:top-auto md:mt-2 md:w-[380px] z-40 max-h-[70vh] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/40 p-1.5">
           <div className="px-3 py-2 text-[11px] uppercase tracking-wide font-semibold text-[var(--faint)]">
             {t('tools.enabledHeading')}
           </div>
