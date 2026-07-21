@@ -35,15 +35,24 @@ deployou (que vira o admin bootstrap).
 - Um **workspace Databricks** (AWS, Azure ou GCP) com Unity Catalog habilitado.
 - **AI Gateway / Foundation Model APIs** disponíveis na região (endpoints
   `databricks-claude-*`, `databricks-gpt-*`, etc.).
-- **Databricks CLI ≥ 0.29** autenticada num profile para o workspace:
+- **Databricks CLI recente (≥ 0.240)** autenticada num profile para o workspace.
+  Use uma versão atual: CLIs antigas (ex.: 0.29x) podem falhar ao baixar o
+  Terraform interno com `openpgp: key expired` no `bundle deploy`.
   ```bash
-  databricks auth login --host https://<seu-workspace>.cloud.databricks.com -p <PROFILE>
+  # Azure: use o host do seu workspace (adb-<id>.<n>.azuredatabricks.net)
+  databricks auth login --host https://<seu-workspace> -p <PROFILE>
   ```
 - Permissão para criar **Databricks App**, **SQL Warehouse**, **Lakebase** e
   **Jobs** (o bundle cria todos).
 - **Node.js 18+** e **npm** para o build local.
 
 **Checagem:** `databricks current-user me -p <PROFILE>` retorna seu e-mail.
+
+> **Nota (cloud-agnóstico):** o `databricks.yml` **não** fixa host de workspace —
+> o alvo do deploy vem inteiramente do profile do `-p <PROFILE>`. O mesmo bundle
+> deploya em AWS, Azure ou GCP sem editar arquivo nenhum. Se a sua CLI ≥ 1.8
+> reclamar de credencial em cache de versão antiga, exporte
+> `DATABRICKS_AUTH_STORAGE=plaintext` ou rode `databricks auth login` de novo.
 
 ---
 
@@ -90,7 +99,8 @@ O que o bundle (`databricks.yml`) gerencia:
 
 > **Alvos:** `dev` (padrão, prefixa recursos com seu usuário — bom para testar) e
 > `prod` (nomes limpos, para o deploy oficial). Troque `-t dev` por `-t prod`
-> quando for para valer, e ajuste `targets.prod.workspace.host` no `databricks.yml`.
+> quando for para valer. Nenhum dos alvos fixa host — o workspace vem do
+> `-p <PROFILE>`, então não é preciso editar o `databricks.yml`.
 
 > **Sobre os IDs do Lakebase serverless:** o app lê `PGHOST` do output do endpoint
 > Postgres do bundle. Na primeira vez, confira no `bundle summary` (ou no job de

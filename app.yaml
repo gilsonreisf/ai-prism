@@ -33,6 +33,12 @@ env:
     value: 'ai-prism'
   - name: PORT
     value: '8000'
+  # NOTE: the values below are local-dev / E2_Demo defaults ONLY. A `databricks
+  # bundle deploy` does NOT use this file's env — the deployed app's config comes
+  # from databricks.yml (apps.ai_prism.config.env), which wires PGHOST, catalogs,
+  # warehouse and image volume per-workspace from the bundle's own resources. So
+  # this AWS host is never used on a bundle deploy (Azure/GCP included); it's just
+  # what a bare `npm start` against E2 points at.
   - name: PGHOST
     value: 'ep-rough-smoke-d16ogta3.database.us-west-2.cloud.databricks.com'
   - name: PGDATABASE
