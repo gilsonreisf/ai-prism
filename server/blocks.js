@@ -13,7 +13,7 @@ const FENCE_RE = /```prism-block\s*([\s\S]*?)```/g
 const TRAILING_UNCLOSED_RE = /```prism-block[\s\S]*$/
 const MAX_BLOCKS = 12
 
-const ALLOWED_TYPES = new Set(['chart', 'table', 'insight', 'deck', 'deck-questions', 'spreadsheet'])
+const ALLOWED_TYPES = new Set(['chart', 'table', 'insight', 'deck', 'deck-questions', 'spreadsheet', 'image', 'document'])
 
 const DECK_LAYOUTS = new Set([
   'title', 'section', 'bullets', 'two-column', 'quote', 'closing',
@@ -416,6 +416,57 @@ const NO_CANDIDATES_INSTRUCTION =
   'de uma lista de "novos candidatos de gráfico disponíveis", isso significa que dados reais e ' +
   'seguros para visualizar já existem — use o bloco prism-block normalmente com o ID indicado.'
 
+// Injected only when caps.image is on (an explicit image request, or a
+// follow-up in a thread that already has an image). Teaches the model to (1)
+// call the generate_image tool with a rich ENGLISH prompt, and (2) place the
+// returned image as an `image` prism-block right where it belongs — never to
+// invent an imageRef or emit a raw image/URL/markdown-image itself.
+const IMAGE_POLICY =
+  '\n\nGeração de imagens: quando o usuário pedir EXPLICITAMENTE para criar/gerar/desenhar uma ' +
+  'imagem, ilustração, foto, logo, ícone, banner ou arte, use a tool `generate_image`. Regras:\n' +
+  '- Escreva o "prompt" da tool em INGLÊS e bem descritivo (assunto, estilo, composição, ' +
+  'iluminação, cores, enquadramento, humor) — mesmo que o usuário tenha escrito em português. ' +
+  'Modelos de imagem respondem muito melhor a prompts ricos em inglês. Traduza a INTENÇÃO do ' +
+  'usuário num prompt visual completo; não copie o pedido literal se ele for curto/vago.\n' +
+  '- NÃO use a tool para "buscar" imagens existentes na internet (você não faz isso). Se o usuário ' +
+  'só quer que você DESCREVA/analise uma imagem que ele anexou, responda direto (você a enxerga) — ' +
+  'sem chamar a tool. Use a tool para CRIAR uma imagem nova OU para EDITAR/transformar uma imagem ' +
+  'anexada.\n' +
+  '- EDIÇÃO (img2img): quando o usuário anexa/cola uma imagem e pede para modificá-la ("deixe em ' +
+  'preto e branco", "adicione um chapéu", "outra versão disso"), chame `generate_image` com um ' +
+  'prompt que descreva a TRANSFORMAÇÃO desejada — o servidor já entrega a imagem anexada ao modelo ' +
+  'de imagem automaticamente, você não precisa reanexá-la.\n' +
+  '- Depois que a tool retornar um ref (ex.: "img_42"), insira a imagem na sua resposta com um ' +
+  'bloco ```prism-block``` do tipo "image", logo após o parágrafo que a apresenta:\n' +
+  '```prism-block\n{"type":"image","imageRef":"img_42","caption":"legenda curta opcional"}\n```\n' +
+  '- NUNCA invente um "imageRef" que a tool não devolveu, NUNCA escreva a imagem como markdown ' +
+  '![](...) nem cole um data:URL ou link — a ÚNICA forma de exibir a imagem é o bloco acima com o ' +
+  'ref real. Se o usuário pedir uma variação/ajuste de uma imagem já criada, chame a tool de novo ' +
+  'com um novo prompt refletindo o ajuste e insira o novo bloco.\n'
+
+// Injected only when caps.document is on. Teaches the model to author a proper
+// text DOCUMENT (report/article/letter/…) as a `document` prism-block whose
+// body is MARKDOWN — the Document Studio renders it as rich text and exports to
+// DOCX/Markdown/PDF. This is for real deliverable documents, NOT ordinary chat
+// answers (a short explanation stays plain prose in the reply).
+const DOCUMENT_POLICY =
+  '\n\nCriação de documentos de texto: quando o usuário pedir EXPLICITAMENTE um documento, ' +
+  'relatório, artigo, carta, proposta, memorando, política, manual ou similar como ENTREGÁVEL, ' +
+  'escreva-o como um bloco ```prism-block``` do tipo "document", cujo corpo é MARKDOWN:\n' +
+  '```prism-block\n{"type":"document","title":"Título do documento","markdown":"# Título\\n\\n' +
+  'Parágrafo de abertura...\\n\\n## Seção\\n\\n- item\\n- item\\n\\nTexto **em negrito** e _itálico_, ' +
+  'tabelas, listas, citações (>) e código são suportados."}\n```\n' +
+  'Regras:\n' +
+  '- Use markdown rico e bem estruturado: títulos (#, ##, ###), listas, tabelas, negrito/itálico, ' +
+  'citações, blocos de código quando fizer sentido. A UI renderiza como rich text.\n' +
+  '- O "markdown" deve ser um documento COMPLETO e autossuficiente, não um esqueleto — escreva o ' +
+  'conteúdo de verdade, no idioma e tom pedidos.\n' +
+  '- NÃO use um documento para uma resposta curta de chat, um resumo trivial, um deck ou uma ' +
+  'planilha — só para um texto que o usuário claramente quer como um documento editável/exportável.\n' +
+  '- Se já existe um documento nesta conversa e o usuário pede um ajuste (mais formal, adicionar uma ' +
+  'seção, encurtar), gere um novo bloco `document` completo e atualizado.\n' +
+  '- Escreva uma frase curta antes do bloco apresentando o documento; o bloco em si carrega o texto.\n'
+
 // Asset-kind gates shared by the model-facing hint (below) and sanitizeDeck —
 // the single place that decides what the model may reference. `watermark`
 // assets (recurring page logos/brand marks mined from the template, see
@@ -650,6 +701,20 @@ const SPREADSHEET_INTENT_RE =
 // (the .pptx attachment already implies the artifact).
 const ADJUST_INTENT_RE =
   /\b(ajust\w+|adapt\w+|aplic\w+|reestrutur\w+|padroniz\w+|formatar|reformatar|refazer|converter|transform\w+|adjust|adapt|apply|restructure|reformat|convert|rework)\b/i
+// "generate/create/draw an image/illustration/logo/…" — the trigger for the
+// image-generation tool + policy. Requires BOTH a create-verb AND an image-noun
+// nearby so "crie uma tabela" or "desenhe o fluxo em texto" don't false-fire;
+// the verb and noun can appear in either order (e.g. "uma ilustração de ...").
+const IMAGE_CREATE_VERB = /\b(gere?|gerar|cri[ae]r?|desenh\w+|ilustr\w+|fa[çc]a|fazer|produz\w+|render\w+|generate|create|draw|make|render|design|paint|imagine)\b/i
+const IMAGE_NOUN = /\b(imagem|imagens|ilustra[çc][õo]es|ilustra[çc][ãa]o|figuras?|fotos?|fotografias?|desenhos?|arte|artwork|logotipos?|logos?|[íi]cones?|banner|p[ôo]ster|wallpaper|thumbnail|images?|illustrations?|pictures?|photos?|drawings?|logo|icons?|posters?)\b/i
+const IMAGE_INTENT_RE = { test: (t) => IMAGE_CREATE_VERB.test(t) && IMAGE_NOUN.test(t) }
+// "write/draft a document/report/article/letter/…" — the trigger for the
+// document-writing capability (rich-text Studio + DOCX/MD/PDF export). Needs a
+// write-verb AND a document-noun so "escreva um resumo" (a chat reply) doesn't
+// force a document, but "escreva um DOCUMENTO/relatório/artigo" does.
+const DOC_CREATE_VERB = /\b(escrev\w+|redij\w+|redig\w+|elabor\w+|crie|criar|gere?|gerar|produz\w+|prepar\w+|monte|montar|rascunh\w+|write|draft|compose|create|generate|prepare|author)\b/i
+const DOC_NOUN = /\b(documento|documentos|relat[óo]rios?|artigos?|texto|textos|ensaios?|carta|cartas|ofício|memorando|memorandos|proposta|propostas|contrato|contratos|pol[íi]tica|pol[íi]ticas|manual|manuais|especifica[çc][ãa]o|readme|whitepaper|white\s*paper|briefing|document|documents|reports?|articles?|essays?|letters?|memo|memos|proposals?|contracts?|policy|policies|specs?|specifications?)\b/i
+const DOC_INTENT_RE = { test: (t) => DOC_CREATE_VERB.test(t) && DOC_NOUN.test(t) }
 
 function historyHasBlock(history, types) {
   for (const m of history || []) {
@@ -672,14 +737,35 @@ export function detectCapabilities(userText, history, opts = {}) {
   // fire, deck is implied (same generation/render pipeline, re-themed to the DS).
   const pptxAdjust =
     !!opts.hasPptxAttachment && (DECK_INTENT_RE.test(text) || ADJUST_INTENT_RE.test(text))
-  const deck =
-    DECK_INTENT_RE.test(text) ||
-    answeringDeckQuestions ||
-    pptxAdjust ||
-    historyHasBlock(history, ['deck', 'deck-questions'])
-  const spreadsheet =
-    SPREADSHEET_INTENT_RE.test(text) || historyHasBlock(history, ['spreadsheet'])
-  return { deck, spreadsheet, pptxAdjust }
+  // Per-type EXPLICIT intent in the CURRENT message. These are what the user is
+  // actually asking for this turn.
+  const deckIntent = DECK_INTENT_RE.test(text) || answeringDeckQuestions || pptxAdjust
+  const spreadsheetIntent = SPREADSHEET_INTENT_RE.test(text)
+  // an attached image also warms image (the user likely wants to edit it, and
+  // "deixe em p&b" carries no image-noun the regex would catch)
+  const imageIntent = IMAGE_INTENT_RE.test(text) || !!opts.hasImageAttachment
+  const documentIntent = DOC_INTENT_RE.test(text)
+
+  // Sticky capabilities: a thread that already produced an artifact keeps that
+  // capability warm so a FOLLOW-UP with no explicit noun ("deixe mais escuro",
+  // "outra versão", "mais formal") still resolves against the right artifact.
+  //
+  // BUT stickiness must NOT bleed across artifact types: if the current turn
+  // has an explicit intent for SOME OTHER type (e.g. "gere uma imagem" right
+  // after a document was created), the unrelated sticky capabilities are
+  // dropped — otherwise the model receives the document policy on an image turn
+  // and "helpfully" emits a document nobody asked for (the exact bug). So a
+  // capability turns on when: it's explicitly requested this turn, OR the thread
+  // has that artifact AND the current turn makes no competing explicit request.
+  const anyExplicitIntent = deckIntent || spreadsheetIntent || imageIntent || documentIntent
+  const sticky = (myIntent, types) =>
+    myIntent || (historyHasBlock(history, types) && (!anyExplicitIntent || myIntent))
+
+  const deck = sticky(deckIntent, ['deck', 'deck-questions'])
+  const spreadsheet = sticky(spreadsheetIntent, ['spreadsheet'])
+  const image = sticky(imageIntent, ['image'])
+  const document = sticky(documentIntent, ['document'])
+  return { deck, spreadsheet, pptxAdjust, image, document }
 }
 
 // The product's built-in capabilities, surfaced as read-only "system skills":
@@ -718,6 +804,20 @@ export const SYSTEM_SKILLS = [
     description:
       'Reestrutura um .pptx anexado no design system selecionado, preservando o conteúdo e a intenção de cada slide.',
     cap: 'pptxAdjust',
+  },
+  {
+    name: 'image-generation',
+    title: 'Geração de imagens',
+    description:
+      'Gera imagens a partir de uma descrição (text-to-image) e as exibe inline na conversa.',
+    cap: 'image',
+  },
+  {
+    name: 'document-generation',
+    title: 'Geração de documentos',
+    description:
+      'Escreve documentos de texto (relatórios, artigos, cartas) em markdown, com edição por IA e exportação DOCX/Markdown/PDF.',
+    cap: 'document',
   },
 ]
 
@@ -770,6 +870,8 @@ export function buildBlocksInstruction(candidates, template, caps) {
   // when both are on, which also keeps the prompt-cache prefix stable.
   if (c.deck) out += DECK_POLICY
   if (c.spreadsheet) out += SPREADSHEET_POLICY
+  if (c.image) out += IMAGE_POLICY
+  if (c.document) out += DOCUMENT_POLICY
   if (c.deck) out += templateHint(template)
   return out
 }
@@ -1834,8 +1936,49 @@ export function sanitizeSpreadsheet(raw) {
   return out
 }
 
-function resolveOne(raw, byId, template) {
+// A `document` block: a markdown document the model authors directly (no
+// external data). The Studio renders it as rich text, lets the user tweak it
+// with AI, and exports to DOCX/Markdown/PDF (see server/index.js + db chat_documents).
+export function sanitizeDocument(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const markdown = typeof raw.markdown === 'string' ? raw.markdown : typeof raw.content === 'string' ? raw.content : ''
+  if (!markdown.trim()) return null
+  const title =
+    typeof raw.title === 'string' && raw.title.trim()
+      ? raw.title.trim().slice(0, 200)
+      : // fall back to the first markdown heading, else a generic title
+        (markdown.match(/^#{1,3}\s+(.+)$/m)?.[1] || 'Documento').trim().slice(0, 200)
+  // cap at ~200k chars — a very long report, but bounded so one block can't be
+  // unbounded. Longer content is truncated with a visible marker.
+  const MAX = 200_000
+  const md = markdown.length > MAX ? markdown.slice(0, MAX) + '\n\n<!-- truncado -->' : markdown
+  return { title, markdown: md }
+}
+
+function resolveOne(raw, byId, template, imageById) {
   if (!raw || !ALLOWED_TYPES.has(raw.type)) return null
+  if (raw.type === 'document') {
+    const doc = sanitizeDocument(raw)
+    if (!doc) return null
+    return { type: 'document', title: doc.title, markdown: doc.markdown }
+  }
+  if (raw.type === 'image') {
+    // The image itself was generated by the image tool and persisted to the
+    // Volume (server/tools.js). The model only references it by the `imageRef`
+    // it was handed; we resolve that to the real image id so the client can
+    // fetch GET /api/images/:id. An unknown ref → drop the block (never invent).
+    if (!imageById) return null
+    const ref = typeof raw.imageRef === 'string' ? raw.imageRef.trim() : ''
+    const hit = ref ? imageById.get(ref) : null
+    if (!hit) return null
+    return {
+      type: 'image',
+      imageId: String(hit.imageId),
+      prompt: typeof hit.prompt === 'string' ? hit.prompt.slice(0, 500) : undefined,
+      caption: typeof raw.caption === 'string' ? raw.caption.slice(0, 200) : undefined,
+      alt: typeof raw.alt === 'string' ? raw.alt.slice(0, 200) : undefined,
+    }
+  }
   if (raw.type === 'deck') {
     const deck = sanitizeDeck(raw, byId, template)
     if (!deck) return null
@@ -1914,8 +2057,15 @@ function resolveOne(raw, byId, template) {
  * returning the placeholder-bearing text plus the ordered, resolved blocks.
  * This is the exact shape persisted to the DB and sent to the frontend.
  */
-export function extractPrismBlocks(fullText, chartCandidates = [], template) {
+export function extractPrismBlocks(fullText, chartCandidates = [], template, imageRefs = []) {
   const byId = new Map(chartCandidates.map((c) => [c.id, c]))
+  // image refs the image tool produced this session, keyed by the `img_<id>`
+  // ref the model was told to use (and its bare id, as a lenient alias).
+  const imageById = new Map()
+  for (const r of imageRefs || []) {
+    if (r?.ref) imageById.set(r.ref, r)
+    if (r?.imageId != null) imageById.set(String(r.imageId), r)
+  }
   const blocks = []
 
   let content = fullText.replace(FENCE_RE, (_match, jsonStr) => {
@@ -1926,7 +2076,7 @@ export function extractPrismBlocks(fullText, chartCandidates = [], template) {
     } catch {
       return '' // malformed fence — degrade to plain text, no block
     }
-    const resolved = resolveOne(parsed, byId, template)
+    const resolved = resolveOne(parsed, byId, template, imageById)
     if (!resolved) return ''
     blocks.push(resolved)
     return `\n\n{{block:${blocks.length - 1}}}\n\n`

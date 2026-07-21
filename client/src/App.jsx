@@ -11,6 +11,7 @@ import VoiceOverlay from './components/VoiceOverlay.jsx'
 import HistoryPage from './components/HistoryPage.jsx'
 import DeckStudio from './components/DeckStudio.jsx'
 import SpreadsheetStudio from './components/SpreadsheetStudio.jsx'
+import DocumentStudio from './components/DocumentStudio.jsx'
 import * as Icon from './components/Icons.jsx'
 import { getJSON, patchJSON, postJSON, del, streamChat, streamContinue, streamRegenerate } from './api.js'
 import { speak, plainForSpeech } from './lib/speech.js'
@@ -158,8 +159,16 @@ export default function App({ uiLang, setUiLang }) {
   const [currentId, setCurrentId] = useState(null)
   const [messages, setMessages] = useState([])
   const [model, setModel] = useState(localStorage.getItem('prism-model') || '')
+  // image-generation model: '' means "use the org default" (resolved server-side)
+  const [imageModel, setImageModel] = useState(localStorage.getItem('prism-image-model') || '')
+  const [imageModels, setImageModels] = useState([])
+  // which model the "Padrão" (default) image selection resolves to, so the UI
+  // can name it explicitly instead of an opaque "Default"
+  const [imageModelDefaultId, setImageModelDefaultId] = useState(null)
   const [systemPrompt, setSystemPrompt] = useState('')
-  const [enabledTools, setEnabledTools] = useState([{ kind: 'genie-one' }])
+  const [enabledTools, setEnabledTools] = useState([{ kind: 'genie-one' }, { kind: 'image-gen' }])
+  // org tool policy ({ [toolKey]: boolean }); a missing key means enabled.
+  const [toolPolicy, setToolPolicy] = useState({})
   const [input, setInput] = useState('')
   const [files, setFiles] = useState([])
   const [streaming, setStreaming] = useState(false)
@@ -176,6 +185,7 @@ export default function App({ uiLang, setUiLang }) {
   const [view, setView] = useState('chat') // 'chat' | 'history'
   const [deckStudioId, setDeckStudioId] = useState(null)
   const [spreadsheetStudioId, setSpreadsheetStudioId] = useState(null)
+  const [documentStudioId, setDocumentStudioId] = useState(null)
   // focus mode: while a deck is open the chat shrinks to a narrow side column
   // and the Studio takes the rest of the row (Claude Design-style split);
   // toggleable from the Studio header, remembered across sessions
@@ -264,6 +274,10 @@ export default function App({ uiLang, setUiLang }) {
   }, [model])
 
   useEffect(() => {
+    localStorage.setItem('prism-image-model', imageModel || '')
+  }, [imageModel])
+
+  useEffect(() => {
     localStorage.setItem('prism-sidebar-collapsed', manualSidebarCollapsed ? '1' : '0')
   }, [manualSidebarCollapsed])
 
@@ -288,6 +302,21 @@ export default function App({ uiLang, setUiLang }) {
         // doesn't sit on a phantom id (which would silently fall back to
         // MODELS[0] server-side on every turn)
         setModel((prev) => (prev && m.models.some((x) => x.id === prev) ? prev : m.models[0]?.id))
+        // image-generation models (Settings → image model). Best-effort and
+        // non-blocking — the chat picker must never wait on this.
+        getJSON('/api/image-models')
+          .then((im) => {
+            setImageModels(im.models || [])
+            setImageModelDefaultId(im.defaultId || null)
+            // prefer the server-persisted selection; fall back to the local one
+            if (im.selected) setImageModel(im.selected)
+          })
+          .catch(() => {})
+        // org tool policy (which tool groups the admin left enabled). Best-effort;
+        // absent keys mean enabled, so a failure leaves everything available.
+        getJSON('/api/tool-policy')
+          .then((tp) => setToolPolicy(tp.policy || {}))
+          .catch(() => {})
         const list = await loadSessions()
         // apply a deep-linked hash (#/history or #/chat/<id>) once sessions
         // are known — `list` is passed explicitly since `sessions` state
@@ -369,7 +398,7 @@ export default function App({ uiLang, setUiLang }) {
     setCurrentId(null)
     setMessages([])
     setSystemPrompt('')
-    setEnabledTools([{ kind: 'genie-one' }])
+    setEnabledTools([{ kind: 'genie-one' }, { kind: 'image-gen' }])
     setInput('')
     setFiles([])
     setSidebarOpen(false)
@@ -528,8 +557,10 @@ export default function App({ uiLang, setUiLang }) {
         JSON.stringify({
           sessionId: currentId,
           model,
+          imageModel: imageModel || undefined,
           systemPrompt,
           responseLang,
+          uiLang,
           prompt,
           enabledTools,
         })
@@ -635,7 +666,7 @@ export default function App({ uiLang, setUiLang }) {
         await streamRegenerate(
           currentId,
           messageId,
-          { model, systemPrompt, responseLang, enabledTools },
+          { model, imageModel: imageModel || undefined, systemPrompt, responseLang, uiLang, enabledTools },
           sseHandler,
           ctrl.signal
         )
@@ -682,7 +713,7 @@ export default function App({ uiLang, setUiLang }) {
     try {
       await streamContinue(
         currentId,
-        { model, systemPrompt, responseLang, enabledTools },
+        { model, imageModel: imageModel || undefined, systemPrompt, responseLang, uiLang, enabledTools },
         sseHandler,
         ctrl.signal
       )
@@ -799,6 +830,7 @@ export default function App({ uiLang, setUiLang }) {
   const speakText = useCallback((t) => speak(plainForSpeech(t), { lang: 'pt-BR' }), [])
   const openDeck = useCallback((deckId) => setDeckStudioId(deckId), [])
   const openSpreadsheet = useCallback((id) => setSpreadsheetStudioId(id), [])
+  const openDocument = useCallback((id) => setDocumentStudioId(id), [])
 
   const currentTitle = sessions.find((s) => s.id === currentId)?.title
 
@@ -866,6 +898,7 @@ export default function App({ uiLang, setUiLang }) {
             enabledTools={enabledTools}
             onChange={onChangeTools}
             disabled={streaming}
+            toolPolicy={toolPolicy}
             onOpenMcpSettings={() => {
               setSettingsTab('mcp')
               setSettingsOpen(true)
@@ -914,6 +947,7 @@ export default function App({ uiLang, setUiLang }) {
                   onEditUser={editUserMessage}
                   onOpenDeck={openDeck}
                   onOpenSpreadsheet={openSpreadsheet}
+                  onOpenDocument={openDocument}
                   isLatest={i === messages.length - 1 && !streaming}
                   onSubmitAnswers={submitQuestionAnswers}
                 />
@@ -970,7 +1004,7 @@ export default function App({ uiLang, setUiLang }) {
         isAdmin={isAdmin}
         onModelsChanged={refreshModels}
         onCreateWithClaude={startSkillCreator}
-        personal={{ theme, setTheme, uiLang, setUiLang, responseLang, setResponseLang, notify, setNotify }}
+        personal={{ theme, setTheme, uiLang, setUiLang, responseLang, setResponseLang, notify, setNotify, imageModel, setImageModel, imageModels, imageModelDefaultId }}
       />
 
       <VoiceOverlay
@@ -994,6 +1028,14 @@ export default function App({ uiLang, setUiLang }) {
         onClose={() => setSpreadsheetStudioId(null)}
         pushToast={pushToast}
         models={models}
+        model={model}
+      />
+
+      <DocumentStudio
+        open={!!documentStudioId}
+        documentId={documentStudioId}
+        onClose={() => setDocumentStudioId(null)}
+        pushToast={pushToast}
         model={model}
       />
 

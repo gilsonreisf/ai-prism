@@ -4,6 +4,8 @@ import InsightCard from './InsightCard.jsx'
 import DeckBlock from './DeckBlock.jsx'
 import DeckQuestionsBlock from './DeckQuestionsBlock.jsx'
 import SpreadsheetBlock from './SpreadsheetBlock.jsx'
+import ImageBlock from './ImageBlock.jsx'
+import DocumentBlock from './DocumentBlock.jsx'
 
 const RENDERERS = {
   chart: ChartBlock,
@@ -12,9 +14,11 @@ const RENDERERS = {
   deck: DeckBlock,
   'deck-questions': DeckQuestionsBlock,
   spreadsheet: SpreadsheetBlock,
+  image: ImageBlock,
+  document: DocumentBlock,
 }
 
-export default function BlockRenderer({ blocks, msgId, onOpenDeck, onOpenSpreadsheet, isLatest, onSubmitAnswers }) {
+export default function BlockRenderer({ blocks, msgId, onOpenDeck, onOpenSpreadsheet, onOpenDocument, isLatest, onSubmitAnswers }) {
   if (!blocks?.length) return null
   return (
     <div>
@@ -27,6 +31,7 @@ export default function BlockRenderer({ blocks, msgId, onOpenDeck, onOpenSpreads
             msgId={msgId}
             onOpenDeck={onOpenDeck}
             onOpenSpreadsheet={onOpenSpreadsheet}
+            onOpenDocument={onOpenDocument}
             isLatest={isLatest}
             onSubmitAnswers={onSubmitAnswers}
           />

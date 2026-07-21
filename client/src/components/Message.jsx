@@ -149,6 +149,7 @@ function ToolCallChip({ tc }) {
   const running = tc.status === 'running'
   const error = tc.status === 'error'
   const isPython = tc.name === 'execute_python'
+  const isImageGen = tc.name === 'generate_image'
   const isGenie = tc.name?.startsWith('genie__')
   const isGenieOne = tc.name === 'ask_genie_one'
   const isVectorSearch = tc.name?.startsWith('vs__')
@@ -168,6 +169,8 @@ function ToolCallChip({ tc }) {
         />
         {isPython ? (
           <Icon.Terminal size={14} className="shrink-0" />
+        ) : isImageGen ? (
+          <Icon.Image size={15} className="shrink-0 text-[var(--accent)]" />
         ) : isGenie ? (
           <Icon.GenieSpaces size={16} />
         ) : isGenieOne ? (
@@ -209,6 +212,11 @@ function ToolCallChip({ tc }) {
                 <Markdown remarkPlugins={[remarkGfm]}>{tc.args.question}</Markdown>
               </div>
             </div>
+          ) : isImageGen ? (
+            // the image prompt sent to the model is an internal detail (english,
+            // model-facing) — don't surface it; the rendered image block is the
+            // meaningful output. Args are hidden entirely for this tool.
+            null
           ) : (
             tc.args &&
             Object.keys(tc.args).length > 0 && (
@@ -221,7 +229,9 @@ function ToolCallChip({ tc }) {
               </div>
             )
           )}
-          {tc.result != null && (
+          {/* image-gen: only show the result box on error (the success text is a
+              model-facing instruction, and the image renders as its own block) */}
+          {tc.result != null && !(isImageGen && !error) && (
             <div>
               <div className="text-[10px] uppercase tracking-wide text-[var(--faint)] mb-1">
                 {error ? t('message.error') : t('message.result')}
@@ -335,7 +345,7 @@ function CodeBlock({ children }) {
 // overridden (fenced code blocks). Inline `code` keeps the default rendering.
 const MARKDOWN_COMPONENTS = { pre: CodeBlock }
 
-function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUser, onOpenDeck, onOpenSpreadsheet, canRegenerate, streaming, isLatest, onSubmitAnswers }) {
+function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUser, onOpenDeck, onOpenSpreadsheet, onOpenDocument, canRegenerate, streaming, isLatest, onSubmitAnswers }) {
   const t = useT()
   const isUser = msg.role === 'user'
   const text = stripAttachments(msg.content)
@@ -370,7 +380,9 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
   const pt = msg.prompt_tokens
   const ct = msg.completion_tokens
   let cost = null
-  if (meta && (pt || ct)) {
+  // only estimate when the model actually has list prices — an uncurated,
+  // unpriced endpoint has meta.in/out undefined, which would render "$NaN".
+  if (meta && (pt || ct) && Number.isFinite(meta.in) && Number.isFinite(meta.out)) {
     cost = ((pt || 0) / 1e6) * meta.in + ((ct || 0) / 1e6) * meta.out
   }
 
@@ -428,6 +440,9 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
 
     return (
       <div className="flex justify-end items-center gap-1.5 animate-fade-in group/msg">
+        <span className="shrink-0 opacity-0 group-hover/msg:opacity-100 transition">
+          <CopyBtn text={text} label={t('message.copyPrompt')} />
+        </span>
         {onEditUser && !streaming && (
           <button
             onClick={() => {
@@ -507,7 +522,7 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
                     </Markdown>
                   )
                 }
-                if (seg.kind === 'block') return <BlockRenderer key={i} blocks={[seg.block]} msgId={msg.id} onOpenDeck={onOpenDeck} onOpenSpreadsheet={onOpenSpreadsheet} isLatest={isLatest} onSubmitAnswers={onSubmitAnswers} />
+                if (seg.kind === 'block') return <BlockRenderer key={i} blocks={[seg.block]} msgId={msg.id} onOpenDeck={onOpenDeck} onOpenSpreadsheet={onOpenSpreadsheet} onOpenDocument={onOpenDocument} isLatest={isLatest} onSubmitAnswers={onSubmitAnswers} />
                 if (seg.kind === 'toolcall') return <ToolCallChip key={i} tc={seg.tc} />
                 if (seg.kind === 'loading') return <LoadingChip key={i} blockType={seg.blockType} />
                 return null

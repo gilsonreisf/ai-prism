@@ -9,6 +9,16 @@
 // and only enabled endpoints reach regular users via GET /api/models.
 import { MODELS } from './llm.js'
 
+// Image-generation endpoints are served through the SAME task=llm/v1/chat as
+// chat models (sondado ao vivo), so discovery can't tell them apart by task —
+// only by name. Everything matching this is classified modality:'image' and
+// kept out of the chat picker (and into the image picker). Curated entries in
+// MODELS carry an explicit `modality` that always wins over this heuristic.
+const IMAGE_NAME_RE = /-image\b|imagen|dall-?e|flux|stable-?diffusion|nano-banana/i
+export function deriveModality(id) {
+  return IMAGE_NAME_RE.test(id || '') ? 'image' : 'chat'
+}
+
 function host() {
   let h = process.env.DATABRICKS_HOST || ''
   if (h && !h.startsWith('http')) h = `https://${h}`
@@ -67,6 +77,41 @@ export function deriveProvider(id) {
   return 'Outros'
 }
 
+// Family price book (USD per 1M tokens, [in, out]) — a scalable default so a
+// brand-new endpoint of a KNOWN family inherits a sane list price automatically,
+// with NO admin action. Order matters (first match wins): most specific tier
+// first. These are approximate public list prices used only for the chat's
+// cost-estimate flourish; the authoritative spend comes from the system tables
+// (see the admin cost dashboard). An admin override always wins over this, and
+// an unknown family falls through to null → shown as "não precificado", never
+// NaN. Keep tiers coarse: the goal is "roughly right without manual entry",
+// not per-SKU precision (that's the override's job).
+const FAMILY_PRICE_BOOK = [
+  [/claude.*opus/, [15, 75]],
+  [/claude.*sonnet/, [3, 15]],
+  [/claude.*haiku/, [0.8, 4]],
+  [/claude.*fable/, [1, 5]],
+  [/claude/, [3, 15]], // unknown Claude tier → assume Sonnet-class
+  [/gpt.*mini/, [0.25, 2]],
+  [/gpt.*nano/, [0.1, 0.4]],
+  [/gpt-oss/, [0.3, 1.0]],
+  [/gpt/, [1.25, 10]], // frontier GPT default
+  [/gemini.*flash/, [0.3, 2.5]],
+  [/gemini/, [1.25, 10]], // Gemini Pro-class default
+  [/llama/, [0.5, 1.5]],
+  [/qwen/, [0.4, 1.2]],
+  [/glm/, [0.6, 2]],
+]
+
+// Resolves [priceIn, priceOut] for an endpoint from its name. Returns null when
+// no family matches — the caller then leaves pricing undefined (honest "não
+// precificado") rather than inventing a number.
+export function derivePrice(id) {
+  const s = (id || '').toLowerCase()
+  for (const [re, price] of FAMILY_PRICE_BOOK) if (re.test(s)) return price
+  return null
+}
+
 const FAMILY_LABEL = { gpt: 'GPT', claude: 'Claude', gemini: 'Gemini', llama: 'Llama', qwen: 'Qwen', glm: 'GLM' }
 
 // databricks-gpt-5-6-terra -> "GPT 5.6 Terra". Strips the databricks- prefix,
@@ -115,6 +160,13 @@ export function buildAdminCatalog(discovered, overrides) {
   for (const id of ids) {
     const ov = overrides?.[id]
     const cur = CURATED[id]
+    // Pre-filled prices are for CURATED models ONLY. A non-curated endpoint must
+    // NEVER arrive with a guessed price — the admin is required to enter in/out
+    // costs before enabling it (the "Add model" gate keys off inferredPrice
+    // being null). The family price book is NOT used as a placeholder here, on
+    // purpose: it would silently pre-fill non-curated endpoints.
+    const inferredIn = cur?.in ?? null
+    const inferredOut = cur?.out ?? null
     list.push({
       id,
       discovered: discoveredIds.has(id),
@@ -123,6 +175,23 @@ export function buildAdminCatalog(discovered, overrides) {
       displayName: (ov?.displayName || cur?.label || deriveLabel(id)),
       blurb: ov?.blurb ?? cur?.blurb ?? '',
       provider: cur?.provider || deriveProvider(id),
+      // curated modality wins; otherwise infer from the endpoint name so a
+      // newly-discovered image endpoint lands in the right bucket automatically.
+      modality: cur?.modality || deriveModality(id),
+      // pricing: the admin's explicit override (or null if unset) + the inferred
+      // default the UI shows as a placeholder (CURATED only) + whether the
+      // effective price came from an override / the curated list / nothing.
+      // Non-curated endpoints have no inferred price on purpose (admin must set).
+      priceIn: ov?.priceIn ?? null,
+      priceOut: ov?.priceOut ?? null,
+      inferredPriceIn: inferredIn ?? null,
+      inferredPriceOut: inferredOut ?? null,
+      priceSource:
+        ov?.priceIn != null || ov?.priceOut != null
+          ? 'override'
+          : cur?.in != null
+            ? 'curated'
+            : 'none',
       sortOrder: ov?.sortOrder ?? null,
     })
   }
@@ -142,29 +211,57 @@ export function buildAdminCatalog(discovered, overrides) {
 // with the admin's display name + blurb. If NO overrides exist yet (fresh
 // install, admin never opened the tab), falls back to the full curated MODELS
 // so the picker is never empty.
-export function buildUserModels(overrides) {
+function mapOverrideToModel(o) {
+  const cur = CURATED[o.endpointId] || {}
+  const fam = derivePrice(o.endpointId) || [undefined, undefined]
+  // price resolution: admin override > curated list > family price book > undefined
+  const priceIn = o.priceIn ?? cur.in ?? fam[0]
+  const priceOut = o.priceOut ?? cur.out ?? fam[1]
+  return {
+    // curated flags first (safe defaults for uncurated endpoints), then the
+    // admin's display fields on top
+    id: o.endpointId,
+    provider: cur.provider || deriveProvider(o.endpointId),
+    in: priceIn,
+    out: priceOut,
+    vision: cur.vision ?? false,
+    streamUsage: cur.streamUsage ?? false,
+    noTemperature: cur.noTemperature ?? true, // conservative: never causes a 400
+    tools: cur.tools ?? true,
+    maxOut: cur.maxOut ?? 8192,
+    promptCache: cur.promptCache ?? false,
+    modality: cur.modality || deriveModality(o.endpointId),
+    label: o.displayName || cur.label || deriveLabel(o.endpointId),
+    blurb: o.blurb || cur.blurb || '',
+  }
+}
+
+// Enabled models of a given modality, in override sort order. Falls back to the
+// curated MODELS of that modality when the admin never opened the tab (fresh
+// install) so neither picker is ever empty. Chat and image are strictly
+// separated: an image endpoint never surfaces in the chat picker and vice-versa.
+function buildEnabledByModality(overrides, modality) {
+  const curatedOfModality = MODELS.filter((m) => (m.modality || 'chat') === modality)
   const hasAny = overrides && Object.keys(overrides).length > 0
-  if (!hasAny) return MODELS
-  const enabled = Object.values(overrides).filter((o) => o.enabled)
-  if (!enabled.length) return MODELS // never strand the org with zero models
-  enabled.sort((a, b) => (a.sortOrder ?? 1e9) - (b.sortOrder ?? 1e9))
-  return enabled.map((o) => {
-    const cur = CURATED[o.endpointId] || {}
-    return {
-      // curated flags first (safe defaults for uncurated endpoints), then the
-      // admin's display fields on top
-      id: o.endpointId,
-      provider: cur.provider || deriveProvider(o.endpointId),
-      in: cur.in,
-      out: cur.out,
-      vision: cur.vision ?? false,
-      streamUsage: cur.streamUsage ?? false,
-      noTemperature: cur.noTemperature ?? true, // conservative: never causes a 400
-      tools: cur.tools ?? true,
-      maxOut: cur.maxOut ?? 8192,
-      promptCache: cur.promptCache ?? false,
-      label: o.displayName || cur.label || deriveLabel(o.endpointId),
-      blurb: o.blurb || cur.blurb || '',
-    }
+  if (!hasAny) return curatedOfModality
+  const enabled = Object.values(overrides)
+    .filter((o) => o.enabled)
+    .map(mapOverrideToModel)
+    .filter((m) => (m.modality || 'chat') === modality)
+  if (!enabled.length) return curatedOfModality // never strand the org with zero
+  enabled.sort((a, b) => {
+    const ao = overrides[a.id]?.sortOrder ?? 1e9
+    const bo = overrides[b.id]?.sortOrder ?? 1e9
+    return ao - bo
   })
+  return enabled
+}
+
+export function buildUserModels(overrides) {
+  return buildEnabledByModality(overrides, 'chat')
+}
+
+// The image-generation models the user can pick from (Settings → image model).
+export function buildUserImageModels(overrides) {
+  return buildEnabledByModality(overrides, 'image')
 }

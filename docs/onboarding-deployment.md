@@ -86,7 +86,7 @@ O que o bundle (`databricks.yml`) gerencia:
 | **SQL Warehouse** (`sql_warehouses`) | Serverless, 2X-Small, Photon, auto-stop 10 min |
 | **App** (`apps`) | env cabeado a partir dos recursos acima; `APP_OWNER_EMAIL` = quem deployou |
 | **Dashboard de custos** (`dashboards`) | Lakeview de auditoria de custos (system tables) |
-| **Job de auto-config** (`jobs`) | provisiona a UDF `ai_prism_python_exec`; imprime a config |
+| **Job de auto-config** (`jobs`) | provisiona a UDF `ai_prism_python_exec` **e o Volume de imagens** (catálogo/schema/volume dedicados + grant ao SP do app); imprime a config |
 
 > **Alvos:** `dev` (padrão, prefixa recursos com seu usuário — bom para testar) e
 > `prod` (nomes limpos, para o deploy oficial). Troque `-t dev` por `-t prod`
@@ -115,6 +115,18 @@ limitam quais UC Functions o usuário pode anexar como tool. A descoberta de UC
 Functions varre todos os catálogos/schemas que o usuário enxerga (via
 `system.information_schema.routines`, exceto `system`), sempre escopada pelas
 permissões reais dele no Unity Catalog.
+
+### Sobre o Volume de imagens geradas
+
+As imagens geradas/editadas no chat têm bytes reais, então vão para um **UC Volume
+dedicado** — mantido separado do catálogo de tools para não misturar com outros
+assets. O caminho é configurável por `IMAGE_VOLUME_CATALOG` / `IMAGE_VOLUME_SCHEMA`
+/ `IMAGE_VOLUME_NAME` (default `ai_prism.default.ai_prism_images`). O job de
+auto-config cria o catálogo/schema/volume e concede `READ/WRITE VOLUME` ao
+**service principal do app** — o app escreve/lê as imagens como o SP (não pelo
+token OAuth do usuário), evitando depender do escopo `files` reconsentido no
+browser. O isolamento por usuário continua **app-level** (`WHERE user_email` em
+`chat_images`), como todo artefato. O **modelo de imagem padrão é o Nano Banana 2**.
 
 ---
 

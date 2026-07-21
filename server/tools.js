@@ -18,6 +18,10 @@ import { listMcpTools, callMcpTool } from './mcpClient.js'
 import { externalMcpUrl } from './externalMcp.js'
 import { describeVectorIndexColumns, queryVectorIndex } from './vectorSearch.js'
 import { pythonUdfDDL } from '../shared/pythonUdf.js'
+import { randomUUID } from 'node:crypto'
+import { generateImage, DEFAULT_IMAGE_MODEL } from './llm.js'
+import { putImageDataUrl } from './imageStore.js'
+import { createImage } from './db.js'
 
 function host() {
   let h = process.env.DATABRICKS_HOST || ''
@@ -42,6 +46,52 @@ function pythonFqName() {
 }
 
 export const PYTHON_TOOL_FN_NAME = 'execute_python'
+export const IMAGE_TOOL_FN_NAME = 'generate_image'
+
+// Localized strings for the image tool's success/error result text — this text
+// is shown in the tool chip AND fed back to the model, so it should match the
+// user's chosen response language. 'auto'/unknown → pt (the app's default).
+function imageErrMsgs(lang) {
+  const C = {
+    pt: {
+      okOne: 'Imagem gerada com sucesso',
+      okMany: (n) => `Foram geradas ${n} imagens`,
+      insertOne: 'Insira-a na resposta com um bloco ```prism-block``` do tipo "image", ex.:',
+      insertMany: 'Insira cada uma com um bloco ```prism-block``` do tipo "image" usando o "imageRef" correspondente.',
+      missingScope:
+        'ERRO: o app não tem permissão para gravar imagens (falta o escopo OAuth "files"). ' +
+        'Peça a um administrador para reimplantar o app com esse escopo; depois faça login novamente. Avise isso ao usuário.',
+      writeFailed: 'ERRO: falha ao gravar a imagem no Volume. Avise o usuário e sugira tentar de novo.',
+      noImage: 'ERRO: o modelo não retornou nenhuma imagem. Avise o usuário e sugira reformular o pedido.',
+      generic: 'ERRO ao gerar a imagem',
+    },
+    en: {
+      okOne: 'Image generated successfully',
+      okMany: (n) => `${n} images were generated`,
+      insertOne: 'Insert it into the reply with an "image" ```prism-block```, e.g.:',
+      insertMany: 'Insert each one with an "image" ```prism-block``` using the matching "imageRef".',
+      missingScope:
+        'ERROR: the app is not allowed to write images (missing the "files" OAuth scope). ' +
+        'Ask an administrator to redeploy the app with that scope, then sign in again. Tell the user this.',
+      writeFailed: 'ERROR: failed to write the image to the Volume. Tell the user and suggest retrying.',
+      noImage: 'ERROR: the model returned no image. Tell the user and suggest rephrasing the request.',
+      generic: 'ERROR generating the image',
+    },
+    es: {
+      okOne: 'Imagen generada con éxito',
+      okMany: (n) => `Se generaron ${n} imágenes`,
+      insertOne: 'Insértala en la respuesta con un bloque ```prism-block``` de tipo "image", p. ej.:',
+      insertMany: 'Inserta cada una con un bloque ```prism-block``` de tipo "image" usando el "imageRef" correspondiente.',
+      missingScope:
+        'ERROR: la app no tiene permiso para escribir imágenes (falta el scope OAuth "files"). ' +
+        'Pide a un administrador que vuelva a desplegar la app con ese scope y vuelve a iniciar sesión. Avísale esto al usuario.',
+      writeFailed: 'ERROR: no se pudo escribir la imagen en el Volume. Avisa al usuario y sugiere reintentar.',
+      noImage: 'ERROR: el modelo no devolvió ninguna imagen. Avisa al usuario y sugiere reformular la solicitud.',
+      generic: 'ERROR al generar la imagen',
+    },
+  }
+  return C[lang] || C.pt
+}
 
 let builtinReady = false
 export async function ensureBuiltinPythonTool(token) {
@@ -75,6 +125,36 @@ function pythonToolDef() {
           },
         },
         required: ['code'],
+      },
+    },
+  }
+}
+
+function imageToolDef() {
+  return {
+    type: 'function',
+    function: {
+      name: IMAGE_TOOL_FN_NAME,
+      description:
+        'Gera uma imagem a partir de uma descrição textual (text-to-image). Use quando o usuário ' +
+        'pedir EXPLICITAMENTE para criar/gerar/desenhar uma imagem, ilustração, foto, logo, ícone ou ' +
+        'arte. NÃO use para buscar imagens existentes nem para editar um arquivo anexado. Escreva o ' +
+        'prompt em INGLÊS e o mais descritivo possível (assunto, estilo, composição, iluminação, ' +
+        'cores, enquadramento) — modelos de imagem respondem muito melhor a prompts ricos em inglês, ' +
+        'independentemente do idioma do usuário. Após a tool retornar, insira a imagem na resposta ' +
+        'com um bloco ```prism-block``` do tipo "image" (o servidor te dará o id).',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: {
+            type: 'string',
+            description:
+              'Descrição detalhada da imagem, em inglês. Ex.: "A futuristic data center at night, ' +
+              'rows of glowing server racks, cool blue and teal lighting, cinematic wide shot, ' +
+              'volumetric fog, photorealistic".',
+          },
+        },
+        required: ['prompt'],
       },
     },
   }
@@ -176,14 +256,27 @@ function genieOneToolDef() {
     function: {
       name: GENIE_ONE_TOOL_FN_NAME,
       description:
-        'Faz uma pergunta em linguagem natural para o Genie One, que enxerga todos os assets do ' +
-        'workspace (Genie Spaces e Unity Catalog) aos quais o usuário tem acesso — prefira esta tool ' +
-        'a uma Genie Space específica quando a pergunta puder cruzar dados de mais de uma fonte, ou ' +
-        'quando nenhuma sala específica cobrir o assunto.',
+        'Consulta os DADOS DE NEGÓCIO do workspace do usuário (tabelas do Unity Catalog e Genie ' +
+        'Spaces) em linguagem natural — Genie traduz para SQL, executa e responde. Use SOMENTE ' +
+        'quando responder exigir dados PRÓPRIOS do usuário/empresa que só existem nessas tabelas: ' +
+        'métricas de vendas, receita, clientes, estoque, pipeline, uso de produto, números ' +
+        'internos, etc.\n' +
+        'NÃO USE (responda você mesmo, direto, SEM chamar esta tool) para: conhecimento geral, ' +
+        'história, geografia, ciência, definições, cultura, atualidades, perguntas sobre pessoas ' +
+        'públicas, tradução, redação, programação, matemática/cálculos, ou qualquer coisa que um ' +
+        'assistente competente já sabe responder sem acessar um banco de dados. Ex.: "Quem ' +
+        'descobriu o Brasil?", "Quanto é 2+2?", "O que é um data lakehouse?" → responda direto, ' +
+        'JAMAIS chame o Genie One. Chamar esta tool para esse tipo de pergunta é um ERRO caro e ' +
+        'lento. Na dúvida sobre se a pergunta é sobre os dados internos do usuário, responda ' +
+        'direto; só recorra ao Genie One quando estiver claro que a resposta vive nas tabelas dele.',
       parameters: {
         type: 'object',
         properties: {
-          question: { type: 'string', description: 'Pergunta em linguagem natural.' },
+          question: {
+            type: 'string',
+            description:
+              'Pergunta sobre os DADOS do workspace do usuário (não use para conhecimento geral).',
+          },
         },
         required: ['question'],
       },
@@ -214,15 +307,37 @@ async function listMcpToolsCached(url, token, email) {
  * tools/list call to know what they expose — everything else is built from
  * data the ref already carries (resolved at search time) or is hardcoded.
  */
-export async function buildToolDefs(enabledRefs, token, email, { includePython = true } = {}) {
+// Canonical tool GROUP keys the org policy toggles (see app_tool_policy). Each
+// built-in/attachable tool maps to one of these; a policy value of false hides
+// the whole group from users and blocks it server-side.
+export const TOOL_GROUP_KEYS = ['python', 'genie-one', 'image-gen', 'genie', 'vector-search', 'uc', 'mcp-external']
+
+export async function buildToolDefs(
+  enabledRefs,
+  token,
+  email,
+  { includePython = true, includeImage = false, toolPolicy = {} } = {}
+) {
   const tools = []
   const resolvers = new Map()
-  if (includePython) {
+  // org policy: a key absent from the map is enabled (default-on); only an
+  // explicit `false` disables a group. Enforced here so a disabled group can
+  // never reach the model even if a stale session ref or client still requests it.
+  const allowed = (key) => toolPolicy[key] !== false
+  if (includePython && allowed('python')) {
     tools.push(pythonToolDef())
     resolvers.set(PYTHON_TOOL_FN_NAME, { kind: 'python' })
   }
+  // Image generation is gated per-turn (caps.image): only offered when the user
+  // plausibly asked for an image, so a plain question never carries the tool.
+  if (includeImage && allowed('image-gen')) {
+    tools.push(imageToolDef())
+    resolvers.set(IMAGE_TOOL_FN_NAME, { kind: 'image-gen' })
+  }
 
   for (const ref of enabledRefs || []) {
+    // skip any ref whose group the admin disabled for the org
+    if (ref?.kind && !allowed(ref.kind)) continue
     if (ref?.kind === 'genie' && ref.spaceId) {
       const toolName = genieToolName(ref.spaceId)
       tools.push({
@@ -358,6 +473,58 @@ export async function invokeTool(token, resolver, args, ctx = {}) {
       { name: 'code', type: 'STRING', value: args.code || '' },
     ])
     return { resultText: rows[0]?.[0] ?? '', chartCandidates: [] }
+  }
+
+  if (resolver.kind === 'image-gen') {
+    const { sessionId, email, imageModel, baseImages, onProgress } = ctx
+    const model = imageModel || DEFAULT_IMAGE_MODEL
+    const m = imageErrMsgs(ctx.lang)
+    // image endpoints run ~10–30s; tick the chip so it's not a silent spinner
+    const startedAt = Date.now()
+    const timer = onProgress
+      ? setInterval(() => onProgress({ elapsedMs: Date.now() - startedAt }), 1000)
+      : null
+    try {
+      // baseImages (data-URLs of images the user attached/pasted this turn) turn
+      // this into an EDIT/img2img call — the model transforms the given image(s)
+      // per the prompt instead of generating from scratch.
+      const { dataUrls } = await generateImage(token, model, {
+        prompt: args.prompt || '',
+        baseImages: Array.isArray(baseImages) ? baseImages.map((b) => b.dataUrl || b).filter(Boolean) : [],
+      })
+      const imageRefs = []
+      for (const dataUrl of dataUrls) {
+        // write bytes to the Volume under a per-user folder (governed by the
+        // user's own grants), then record the path in chat_images.
+        const relPath = `${encodeURIComponent(email || 'anon')}/${randomUUID()}.png`
+        const { volumePath, contentType } = await putImageDataUrl(token, relPath, dataUrl)
+        const id = await createImage(email, token, sessionId, {
+          prompt: args.prompt || '',
+          model,
+          volumePath,
+          contentType,
+        })
+        imageRefs.push({ ref: `img_${id}`, imageId: id, prompt: args.prompt || '' })
+      }
+      const resultText =
+        imageRefs.length === 1
+          ? `${m.okOne} (ref: ${imageRefs[0].ref}). ${m.insertOne} {"type":"image","imageRef":"${imageRefs[0].ref}","caption":"..."}.`
+          : `${m.okMany(imageRefs.length)} (refs: ${imageRefs.map((r) => r.ref).join(', ')}). ${m.insertMany}`
+      return { resultText, chartCandidates: [], imageRefs }
+    } catch (e) {
+      // Localize the known failure modes so the chip + the model's relay speak
+      // the user's language. The missing-scope 403 is the actionable one.
+      const raw = String(e?.message || e)
+      let msg
+      if (/scopes?:\s*files|required scopes/i.test(raw)) msg = m.missingScope
+      else if (/Volume (write|read) failed/i.test(raw)) msg = m.writeFailed
+      else if (/returned no image/i.test(raw)) msg = m.noImage
+      else msg = `${m.generic}: ${raw.slice(0, 200)}`
+      // thrown so runAssistantTurn marks the tool call as errored (red chip)
+      throw new Error(msg)
+    } finally {
+      if (timer) clearInterval(timer)
+    }
   }
 
   if (resolver.kind === 'genie') {

@@ -16,6 +16,9 @@ user_authorization:
     - vector-search
     - catalog.connections
     - mcp.external
+    # files: read/write the UC Volume that stores generated images (Files API,
+    # on-behalf-of the user) — see server/imageStore.js
+    - files
 
 env:
   - name: NODE_ENV
@@ -44,3 +47,13 @@ env:
     value: 'main'
   - name: TOOLS_SCHEMA
     value: 'default'
+  # Where generated images are stored (own catalog, kept separate from other
+  # assets). On E2_Demo we use the pedro_ramos catalog; a fresh bundle deploy
+  # defaults to a dedicated `ai_prism` catalog. The app service principal is
+  # granted READ/WRITE VOLUME here; per-user isolation is app-level (user_email).
+  - name: IMAGE_VOLUME_CATALOG
+    value: 'pedro_ramos'
+  - name: IMAGE_VOLUME_SCHEMA
+    value: 'default'
+  - name: IMAGE_VOLUME_NAME
+    value: 'ai_prism_images'

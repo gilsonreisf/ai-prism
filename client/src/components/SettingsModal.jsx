@@ -4,6 +4,7 @@ import { useT } from '../lib/i18n.jsx'
 import DeckTemplatesSettings from './DeckTemplatesSettings.jsx'
 import AdminSettings from './AdminSettings.jsx'
 import ModelsAdminTab from './ModelsAdminTab.jsx'
+import ToolsAdminTab from './ToolsAdminTab.jsx'
 import McpConnectionsTab from './McpConnectionsTab.jsx'
 import SkillsTab from './SkillsTab.jsx'
 import PersonalTab from './PersonalTab.jsx'
@@ -91,6 +92,7 @@ export default function SettingsModal({
     ...(isAdmin
       ? [
           { id: 'models', label: t('settings.tab.models'), icon: Icon.Wrench, admin: true },
+          { id: 'tools', label: t('settings.tab.tools'), icon: Icon.Toolbox, admin: true },
           { id: 'admins', label: t('settings.tab.admins'), icon: Icon.Users, admin: true },
         ]
       : []),
@@ -146,6 +148,7 @@ export default function SettingsModal({
             {tab === 'templates' && <DeckTemplatesSettings open={open} isAdmin={isAdmin} />}
             {tab === 'mcp' && <McpConnectionsTab open={open} />}
             {tab === 'models' && isAdmin && <ModelsAdminTab open={open} onModelsChanged={onModelsChanged} />}
+            {tab === 'tools' && isAdmin && <ToolsAdminTab open={open} />}
             {tab === 'admins' && isAdmin && <AdminSettings open={open} />}
           </div>
         </div>
