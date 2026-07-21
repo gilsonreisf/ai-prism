@@ -56,7 +56,6 @@ export const MODELS = [
   // `modality:'image'` os mantém FORA do picker de chat (ver buildUserModels).
   // noTemperature: conservador (nunca causa 400); vision: aceitam image_url no input.
   { id: 'databricks-gemini-3-1-flash-image', label: 'Nano Banana 2', provider: 'Google', blurb: 'Gemini 3.1 Flash — geração de imagem rápida', modality: 'image', vision: true, noTemperature: true, tools: false, maxOut: 8192 },
-  { id: 'databricks-gemini-3-pro-image', label: 'Gemini 3 Pro Image', provider: 'Google', blurb: 'Gemini 3 Pro — geração de imagem de alta qualidade', modality: 'image', vision: true, noTemperature: true, tools: false, maxOut: 8192 },
 ]
 
 // Modality helpers: an endpoint without `modality` is a chat model (the
