@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import * as Icon from './Icons.jsx'
 import { useT } from '../lib/i18n.jsx'
+import { putJSON } from '../api.js'
 
 // Personal preferences: appearance, UI/response language, and desktop
 // notifications. All persisted in localStorage by App (this tab is a pure
@@ -103,9 +104,25 @@ export default function PersonalTab({
   setResponseLang,
   notify,
   setNotify,
+  imageModel,
+  setImageModel,
+  imageModels = [],
+  imageModelDefaultId = null,
 }) {
   const t = useT()
   const [notifHint, setNotifHint] = useState('')
+
+  // Persist the choice server-side so it follows the user across devices
+  // (mirrors the deck template selection), while setImageModel keeps
+  // localStorage + the live turn payload in sync.
+  const onChangeImageModel = (id) => {
+    setImageModel(id)
+    if (id) putJSON('/api/image-models/selected', { modelId: id }).catch(() => {})
+  }
+  // No opaque "Default" entry: the picker lists the real models, and when the
+  // user hasn't chosen one, the org default (Nano Banana 2) is pre-selected.
+  const IMAGE_MODEL_OPTIONS = imageModels.map((m) => ({ id: m.id, label: m.label }))
+  const selectedImageModel = imageModel || imageModelDefaultId || ''
 
   const THEMES = [
     { id: 'light', label: t('personal.theme.light') },
@@ -210,6 +227,15 @@ export default function PersonalTab({
         >
           <Select value={responseLang} onChange={setResponseLang} options={RESPONSE_LANGS} />
         </Row>
+        {imageModels.length > 0 && (
+          <Row
+            icon={Icon.Image}
+            title={t('personal.imageModelRow.title')}
+            hint={t('personal.imageModelRow.hint')}
+          >
+            <Select value={selectedImageModel} onChange={onChangeImageModel} options={IMAGE_MODEL_OPTIONS} />
+          </Row>
+        )}
         <Row
           icon={Icon.Bell}
           title={t('personal.notifyRow.title')}

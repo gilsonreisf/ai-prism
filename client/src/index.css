@@ -307,3 +307,53 @@ textarea {
   border-radius: 2px;
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent);
 }
+
+/* ---- Document Studio: slightly larger, document-like prose ---- */
+.prose-doc {
+  font-size: 0.975rem;
+  line-height: 1.7;
+}
+.prose-doc h1 { font-size: 1.9rem; }
+.prose-doc h2 { font-size: 1.45rem; }
+.prose-doc h3 { font-size: 1.2rem; }
+.prose-doc table { width: 100%; }
+
+/* ---- Print (PDF export from the Document Studio) ---- */
+@media print {
+  /* hide everything, then reveal only the rendered document area */
+  body * { visibility: hidden !important; }
+  .doc-print-area, .doc-print-area * { visibility: visible !important; }
+
+  /* The document is rendered deep inside a fixed, flex, overflow-y:auto modal.
+     Making .doc-print-area absolute (the old approach) positioned it against
+     that clipped scroll parent, so anything past the viewport was cut from the
+     PDF. Instead, neutralize the constraining ancestors so the full document
+     flows naturally across pages: any positioned/overflow/height-capped
+     ancestor between <body> and the print area is reset while printing. The
+     .doc-print-ancestor class is added to those ancestors in DocumentStudio. */
+  html, body,
+  .doc-print-ancestor {
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    display: block !important;
+  }
+  .doc-print-area {
+    position: static !important;
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+  /* let long content break across pages without slicing a line in half */
+  .doc-print-area h1, .doc-print-area h2, .doc-print-area h3 { break-after: avoid; }
+  .doc-print-area p, .doc-print-area li, .doc-print-area tr,
+  .doc-print-area pre, .doc-print-area blockquote { break-inside: avoid; }
+  .no-print { display: none !important; }
+}

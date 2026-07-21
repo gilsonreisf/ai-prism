@@ -3,6 +3,47 @@ import * as Icon from './Icons.jsx'
 import { createRecognizer, dictationSupported } from '../lib/speech.js'
 import { useT } from '../lib/i18n.jsx'
 
+// One attachment chip. Image attachments show a live thumbnail (from an object
+// URL, revoked on unmount) so a pasted/attached image is recognizable at a
+// glance; other files show the generic file icon + name.
+function AttachmentChip({ file, isImage, onRemove }) {
+  const [thumb, setThumb] = useState(null)
+  useEffect(() => {
+    if (!isImage) return
+    const url = URL.createObjectURL(file)
+    setThumb(url)
+    return () => URL.revokeObjectURL(url)
+  }, [file, isImage])
+
+  if (isImage) {
+    return (
+      <span className="relative group inline-flex">
+        <img
+          src={thumb || undefined}
+          alt={file.name}
+          className="w-14 h-14 rounded-lg object-cover border border-[var(--border)]"
+        />
+        <button
+          onClick={onRemove}
+          className="absolute -top-1.5 -right-1.5 p-0.5 rounded-full bg-[var(--surface-3)] border border-[var(--border)] text-[var(--faint)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition"
+          title="Remover"
+        >
+          <Icon.Close size={12} />
+        </button>
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs bg-[var(--surface-3)] rounded-lg pl-2 pr-1 py-1">
+      <Icon.File size={13} className="text-[var(--muted)]" />
+      <span className="max-w-[160px] truncate">{file.name}</span>
+      <button onClick={onRemove} className="p-0.5 rounded hover:bg-[var(--surface)] text-[var(--faint)]">
+        <Icon.Close size={12} />
+      </button>
+    </span>
+  )
+}
+
 export default function Composer({
   value,
   onChange,
@@ -22,7 +63,11 @@ export default function Composer({
   const [listening, setListening] = useState(false)
   const [dragOver, setDragOver] = useState(false)
 
-  const accept = (supportedExt || []).map((e) => '.' + e).join(',')
+  // images are always acceptable (pasted or attached) — they go to the model as
+  // vision input, a separate path from the text-extracted document types.
+  const accept = [...(supportedExt || []).map((e) => '.' + e), 'image/*'].join(',')
+
+  const isImageFile = (f) => (f.type || '').startsWith('image/')
 
   // auto-grow the textarea with its content (up to max-h-48) — a fixed
   // one-line box feels cramped, especially in the narrow focus-mode column
@@ -39,6 +84,34 @@ export default function Composer({
       const names = new Set(prev.map((f) => f.name + f.size))
       return [...prev, ...incoming.filter((f) => !names.has(f.name + f.size))].slice(0, 10)
     })
+  }
+
+  // Paste-to-attach: the clipboard carries images as file items (e.g. a
+  // screenshot, or "copy image" from a browser). Pull them out and attach them
+  // like any other file — they reach the model as vision input. A pasted image
+  // often has a generic name ("image.png"), which would collide with the
+  // name+size dedup key, so give each a unique name. Non-image clipboard
+  // content (plain text) is left to the textarea's default paste behavior.
+  const onPaste = (e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const imgs = []
+    for (const it of items) {
+      if (it.kind === 'file' && (it.type || '').startsWith('image/')) {
+        const blob = it.getAsFile()
+        if (!blob) continue
+        const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
+        // stable-ish unique name; index keeps multiple pastes in one event distinct
+        const name = blob.name && blob.name !== 'image.png'
+          ? blob.name
+          : `colado-${imgs.length + 1}-${blob.size}.${ext}`
+        imgs.push(new File([blob], name, { type: blob.type }))
+      }
+    }
+    if (imgs.length) {
+      e.preventDefault() // don't also drop the image's binary as text into the box
+      addFiles(imgs)
+    }
   }
 
   const doSend = () => {
@@ -85,19 +158,12 @@ export default function Composer({
         {files.length > 0 && (
           <div className="flex flex-wrap gap-2 px-4 pt-3">
             {files.map((f, i) => (
-              <span
+              <AttachmentChip
                 key={i}
-                className="inline-flex items-center gap-1.5 text-xs bg-[var(--surface-3)] rounded-lg pl-2 pr-1 py-1"
-              >
-                <Icon.File size={13} className="text-[var(--muted)]" />
-                <span className="max-w-[160px] truncate">{f.name}</span>
-                <button
-                  onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
-                  className="p-0.5 rounded hover:bg-[var(--surface)] text-[var(--faint)]"
-                >
-                  <Icon.Close size={12} />
-                </button>
-              </span>
+                file={f}
+                isImage={isImageFile(f)}
+                onRemove={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+              />
             ))}
           </div>
         )}
@@ -117,6 +183,7 @@ export default function Composer({
                 doSend()
               }
             }}
+            onPaste={onPaste}
             placeholder={listening ? t('composer.listening') : t('composer.placeholder')}
             className="w-full max-h-48 resize-none bg-transparent outline-none text-[0.95rem] leading-relaxed placeholder:text-[var(--faint)]"
           />

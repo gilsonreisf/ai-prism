@@ -121,7 +121,7 @@ function ToolCategorySection({ icon, title, comingSoon, searchFn, isEnabled, onT
  * the session (see App.jsx), so reopening a past conversation re-enables the
  * same tools automatically.
  */
-export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange, disabled, onOpenMcpSettings }) {
+export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange, disabled, onOpenMcpSettings, toolPolicy }) {
   const t = useT()
   const [open, setOpen] = useState(false)
   const [adoptedMcp, setAdoptedMcp] = useState(null) // connections the user has connected
@@ -164,9 +164,16 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
     else onChange([...enabledTools, t])
   }
   const genieOneEnabled = isEnabled({ kind: 'genie-one' })
-  // MCP connections render in their own adopted-toggle section, not the generic
-  // chip list — keep them out of "removableTools" so they aren't shown twice.
-  const removableTools = enabledTools.filter((t) => t.kind !== 'genie-one' && t.kind !== 'mcp-external')
+  const imageGenEnabled = isEnabled({ kind: 'image-gen' })
+  // org policy: a tool group set to false by an admin is hidden entirely.
+  const allowed = (key) => toolPolicy?.[key] !== false
+  // MCP connections render in their own adopted-toggle section, and genie-one /
+  // image-gen are pinned toggles at the top — keep all of them out of
+  // "removableTools" so none is shown twice (image-gen was leaking a duplicate
+  // wrench chip with an X below its pinned toggle).
+  const removableTools = enabledTools.filter(
+    (t) => t.kind !== 'genie-one' && t.kind !== 'image-gen' && t.kind !== 'mcp-external'
+  )
 
   return (
     <div className="relative" ref={ref}>
@@ -194,39 +201,68 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
           </div>
           {modelSupportsTools ? (
             <>
-              <div className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
-                <Icon.Terminal size={16} className="text-[var(--accent)] shrink-0" />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold">Python</span>
-                  <span className="block text-xs text-[var(--faint)]">
-                    {t('tools.pythonDesc')}
+              {allowed('python') && (
+                <div className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
+                  <Icon.Terminal size={16} className="text-[var(--accent)] shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold">Python</span>
+                    <span className="block text-xs text-[var(--faint)]">
+                      {t('tools.pythonDesc')}
+                    </span>
                   </span>
-                </span>
-                <Icon.Check size={15} className="text-[var(--accent)] shrink-0" />
-              </div>
+                  <Icon.Check size={15} className="text-[var(--accent)] shrink-0" />
+                </div>
+              )}
 
-              <div className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
-                <Icon.GenieOne size={20} />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold">Genie One</span>
-                  <span className="block text-xs text-[var(--faint)]">
-                    {t('tools.genieOneDesc')}
+              {allowed('genie-one') && (
+                <div className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
+                  <Icon.GenieOne size={20} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold">Genie One</span>
+                    <span className="block text-xs text-[var(--faint)]">
+                      {t('tools.genieOneDesc')}
+                    </span>
                   </span>
-                </span>
-                <button
-                  onClick={() => toggle({ kind: 'genie-one' })}
-                  className={`shrink-0 w-9 h-5 rounded-full transition relative ${
-                    genieOneEnabled ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
-                  }`}
-                  title={genieOneEnabled ? t('tools.genieOneDisable') : t('tools.genieOneEnable')}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                      genieOneEnabled ? 'translate-x-4' : ''
+                  <button
+                    onClick={() => toggle({ kind: 'genie-one' })}
+                    className={`shrink-0 w-9 h-5 rounded-full transition relative ${
+                      genieOneEnabled ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
                     }`}
-                  />
-                </button>
-              </div>
+                    title={genieOneEnabled ? t('tools.genieOneDisable') : t('tools.genieOneEnable')}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                        genieOneEnabled ? 'translate-x-4' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              )}
+
+              {allowed('image-gen') && (
+                <div className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] mb-1">
+                  <Icon.Image size={17} className="text-[var(--accent)] shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold">{t('tools.imageGen')}</span>
+                    <span className="block text-xs text-[var(--faint)]">
+                      {t('tools.imageGenDesc')}
+                    </span>
+                  </span>
+                  <button
+                    onClick={() => toggle({ kind: 'image-gen' })}
+                    className={`shrink-0 w-9 h-5 rounded-full transition relative ${
+                      imageGenEnabled ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
+                    }`}
+                    title={imageGenEnabled ? t('tools.imageGenDisable') : t('tools.imageGenEnable')}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                        imageGenEnabled ? 'translate-x-4' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              )}
             </>
           ) : (
             <div className="flex items-start gap-2.5 rounded-xl px-3 py-2.5 bg-[var(--surface-2)] text-[var(--faint)] mb-1">
@@ -284,6 +320,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
             {t('tools.addHeading')}
           </div>
 
+          {allowed('genie') && (
           <ToolCategorySection
             icon={<Icon.GenieSpaces size={15} />}
             title={t('tools.catGenieSpaces')}
@@ -299,7 +336,9 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
               </>
             )}
           />
+          )}
 
+          {allowed('uc') && (
           <ToolCategorySection
             icon={<Icon.UcFunctions size={15} />}
             title={t('tools.catUcFunctions')}
@@ -320,7 +359,9 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
               </>
             )}
           />
+          )}
 
+          {allowed('vector-search') && (
           <ToolCategorySection
             icon={<Icon.VectorSearch size={15} />}
             title={t('tools.catVectorSearch')}
@@ -340,10 +381,12 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
               </>
             )}
           />
+          )}
 
           {/* External MCPs: only connections the user has connected (in
               Settings) appear here, as on/off toggles — default on. Connecting
               a new one is a one-time flow in Settings, not a per-session search. */}
+          {allowed('mcp-external') && (
           <div className="rounded-xl border border-[var(--border)] overflow-hidden mb-1.5">
             <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--surface-2)]">
               <Icon.McpExternal size={15} />
@@ -412,6 +455,7 @@ export default function ToolsPicker({ modelSupportsTools, enabledTools, onChange
               )}
             </div>
           </div>
+          )}
         </div>
       )}
     </div>

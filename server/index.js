@@ -42,6 +42,7 @@ import {
   removeAppAdmin,
   listModelOverrides,
   upsertModelOverride,
+  reorderModelOverrides,
   seedModelOverridesIfEmpty,
   listUserMcpConnections,
   adoptUserMcpConnection,
@@ -53,6 +54,9 @@ import {
   createSpreadsheet,
   getSpreadsheet,
   updateSpreadsheet,
+  createDocument,
+  getDocument,
+  updateDocument,
   getMessageBlocks,
   setDeckQuestionsAnswers,
   listSkills,
@@ -60,9 +64,15 @@ import {
   upsertSkill,
   deleteSkill,
   setSkillEmbedding,
+  getImage,
+  listSessionImagePaths,
+  getSelectedImageModel,
+  setSelectedImageModel,
+  getToolPolicy,
+  setToolPolicy,
 } from './db.js'
 import { isAdmin, isOwner, ownerEmail, groupCheckStatus, invalidateAdminsCache, appAccessCandidates } from './authz.js'
-import { MODELS, modelById, streamChat, complete, generateTitle, embed, cosineSim, labelDesignAssets } from './llm.js'
+import { MODELS, modelById, streamChat, complete, generateTitle, embed, cosineSim, labelDesignAssets, DEFAULT_IMAGE_MODEL } from './llm.js'
 import { extractText, SUPPORTED_EXTENSIONS } from './files.js'
 import { ingestPptx, pptxDeckToBrief } from './pptxIngest.js'
 import { analyzeSpreadsheet, isSpreadsheet } from './analysis.js'
@@ -76,17 +86,20 @@ import {
   buildNewCandidatesHint,
   sanitizeDeck,
   sanitizeSpreadsheet,
+  sanitizeDocument,
   sanitizeQuestionAnswers,
   usableIconAssets,
 } from './blocks.js'
-import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool } from './tools.js'
+import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool, TOOL_GROUP_KEYS } from './tools.js'
 import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
 import { searchGenieSpaces } from './genie.js'
 import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
-import { listChatEndpoints, buildAdminCatalog, buildUserModels } from './serving.js'
+import { listChatEndpoints, buildAdminCatalog, buildUserModels, buildUserImageModels } from './serving.js'
+import { getImageBytes, deleteImageFile } from './imageStore.js'
 import { renderPptx } from './decks.js'
 import { renderXlsx } from './xlsx-export.js'
+import { renderDocx } from './docx-export.js'
 
 // Resolve the app root for serving the built frontend. In the bundled CJS
 // build, Node's native __dirname is the bundle's folder (server-dist/); in ESM
@@ -155,6 +168,29 @@ function pushWindowedHistory(apiMessages, history, retrieved = []) {
   }
   for (const m of windowed) {
     apiMessages.push({ role: m.role, content: stripBlockPlaceholders(m.content) })
+  }
+}
+
+// Attaches image data-URLs to the CURRENT user turn as vision input, so a
+// vision-capable model actually sees a pasted/attached image (the AI Gateway
+// accepts the OpenAI multimodal shape: content = [{type:'text'}, {type:
+// 'image_url', image_url:{url:'data:...'}}]). Rewrites the LAST user message in
+// apiMessages (the turn being answered) from a plain string into that array.
+// No-op when there are no images. Kept out of persisted content — the DB row
+// stores only text + the attachment names (bytes aren't re-sent on reload).
+function attachImagesToLastUserTurn(apiMessages, images) {
+  if (!images?.length) return
+  for (let i = apiMessages.length - 1; i >= 0; i--) {
+    if (apiMessages[i].role !== 'user') continue
+    const text = typeof apiMessages[i].content === 'string' ? apiMessages[i].content : ''
+    apiMessages[i] = {
+      role: 'user',
+      content: [
+        ...(text ? [{ type: 'text', text }] : []),
+        ...images.map((im) => ({ type: 'image_url', image_url: { url: im.dataUrl } })),
+      ],
+    }
+    return
   }
 }
 
@@ -288,7 +324,18 @@ const TOOL_NARRATION_POLICY =
   'repetir a mesma frase), e ao terminar de usar as ferramentas, entregue a resposta/artefato ' +
   'final normalmente. IMPORTANTE: essa frase de narração E qualquer comentário inicial de código ' +
   '(que vira o rótulo do passo na interface) devem estar SEMPRE no mesmo idioma do usuário — nunca ' +
-  'em inglês quando o usuário está em português/espanhol.'
+  'em inglês quando o usuário está em português/espanhol.\n' +
+  'NÃO chame ferramenta alguma para o que você já sabe responder: conhecimento geral, história, ' +
+  'definições, tradução, redação, matemática simples e afins são respondidos DIRETAMENTE, sem tool. ' +
+  'Ferramentas de dados (Genie/Genie One) são só para os DADOS internos do workspace do usuário; ' +
+  'usá-las para uma pergunta de conhecimento geral (ex.: "Quem descobriu o Brasil?") é um erro.\n' +
+  'Faça APENAS o que o usuário pediu, com a ferramenta CERTA para o pedido — uma vez. NÃO produza ' +
+  'artefatos que o usuário não pediu: se ele pediu uma imagem, gere só a imagem; NÃO crie também ' +
+  'um documento, um deck ou uma planilha "de brinde". E se uma ferramenta FALHAR (ex.: a geração de ' +
+  'imagem retornar erro), NÃO tente compensar produzindo um artefato de OUTRO tipo (ex.: um ' +
+  'documento descrevendo a imagem que não saiu) — isso não é o que o usuário quer. Em caso de falha, ' +
+  'explique em uma frase o que deu errado e pare; não substitua o pedido por outra coisa nem repita ' +
+  'a mesma ferramenta na esperança de um resultado diferente.'
 
 // Forced response-language directive (from the user's Preferences). Injected as
 // the LAST system message of the turn — closest to the user's message, so it
@@ -314,15 +361,104 @@ function responseLangDirective(lang) {
   return RESPONSE_LANG_DIRECTIVE[lang] || null
 }
 
+// User-facing notices/errors composed by the SERVER, localized to the user's
+// chosen response language. 'auto' (or any unknown value) falls back to pt —
+// the app's authored default — so behavior is unchanged unless the user picked
+// a specific language. Keep keys in sync across the three locales.
+const SERVER_MESSAGES = {
+  pt: {
+    truncation:
+      '⚠️ A resposta atingiu o limite de tokens de saída do modelo e chegou incompleta. ' +
+      'Tente gerar novamente ou peça um conteúdo mais curto (ex.: um deck com menos slides).',
+    stoppedLoop:
+      'ℹ️ Encerrei as consultas porque o modelo estava repetindo a mesma chamada sem avançar. A ' +
+      'resposta acima foi montada com os dados obtidos até então.',
+    stoppedCeiling:
+      'ℹ️ Esta tarefa exigiu muitos passos e atingi o limite de rodadas de ferramentas. A resposta ' +
+      'acima usa os dados reunidos até aqui — se faltou algo, peça a continuação.',
+    imageWriteFailed: 'Falha ao gravar a imagem no Volume',
+    imageReadFailed: 'Falha ao ler a imagem do Volume',
+    imageEndpointFailed: 'O modelo de imagem retornou um erro',
+    imageNoImage: 'O modelo não retornou nenhuma imagem.',
+    imageBadDataUrl: 'data URL de imagem inválida',
+    imageMissingScope:
+      'O app não tem permissão para gravar imagens (falta o escopo OAuth "files"). ' +
+      'Peça a um administrador para reimplantar o app com esse escopo e faça login novamente.',
+  },
+  en: {
+    truncation:
+      "⚠️ The reply hit the model's output token limit and came back incomplete. " +
+      'Try again or ask for something shorter (e.g. a deck with fewer slides).',
+    stoppedLoop:
+      'ℹ️ I stopped querying because the model kept repeating the same call without progressing. ' +
+      'The reply above was assembled from the data gathered so far.',
+    stoppedCeiling:
+      'ℹ️ This task needed many steps and hit the tool-round limit. The reply above uses the data ' +
+      'gathered so far — if something is missing, ask me to continue.',
+    imageWriteFailed: 'Failed to write the image to the Volume',
+    imageReadFailed: 'Failed to read the image from the Volume',
+    imageEndpointFailed: 'The image model returned an error',
+    imageNoImage: 'The model returned no image.',
+    imageBadDataUrl: 'invalid image data URL',
+    imageMissingScope:
+      'The app is not allowed to write images (missing the "files" OAuth scope). ' +
+      'Ask an administrator to redeploy the app with that scope, then sign in again.',
+  },
+  es: {
+    truncation:
+      '⚠️ La respuesta alcanzó el límite de tokens de salida del modelo y llegó incompleta. ' +
+      'Intenta de nuevo o pide algo más corto (p. ej. una presentación con menos diapositivas).',
+    stoppedLoop:
+      'ℹ️ Detuve las consultas porque el modelo repetía la misma llamada sin avanzar. La respuesta ' +
+      'de arriba se armó con los datos obtenidos hasta entonces.',
+    stoppedCeiling:
+      'ℹ️ Esta tarea requirió muchos pasos y alcancé el límite de rondas de herramientas. La ' +
+      'respuesta de arriba usa los datos reunidos — si falta algo, pídeme que continúe.',
+    imageWriteFailed: 'No se pudo escribir la imagen en el Volume',
+    imageReadFailed: 'No se pudo leer la imagen del Volume',
+    imageEndpointFailed: 'El modelo de imagen devolvió un error',
+    imageNoImage: 'El modelo no devolvió ninguna imagen.',
+    imageBadDataUrl: 'URL de datos de imagen inválida',
+    imageMissingScope:
+      'La app no tiene permiso para escribir imágenes (falta el scope OAuth "files"). ' +
+      'Pide a un administrador que vuelva a desplegar la app con ese scope e inicia sesión de nuevo.',
+  },
+}
+function serverMsg(lang, key) {
+  const cat = SERVER_MESSAGES[lang] || SERVER_MESSAGES.pt
+  return cat[key] || SERVER_MESSAGES.pt[key] || ''
+}
+// Resolves the effective language for SERVER-composed messages/errors. Priority:
+// (1) an explicit response-language preference, else (2) the UI language (so an
+// English UI on "auto" reply-language still gets English errors), else pt (the
+// app's authored default). `uiLang` arrives as 'auto' | 'pt-BR' | 'en' | 'es';
+// normalize to the 2-letter base and only accept languages we actually have.
+function msgLang(responseLang, uiLang) {
+  if (SERVER_MESSAGES[responseLang]) return responseLang
+  const base = String(uiLang || '').toLowerCase().split('-')[0]
+  const mapped = base === 'pt' ? 'pt' : base === 'es' ? 'es' : base === 'en' ? 'en' : null
+  return mapped || 'pt'
+}
+
 // Resolves the tool defs for one turn: the built-in Python tool (if the model
 // supports tools and provisioning succeeded) plus whichever Genie/UC refs the
 // session has enabled. Shared by /api/chat and the regenerate endpoint so
 // both attach tools identically.
-async function resolveToolDefs(req, model, enabledToolRefs) {
+async function resolveToolDefs(req, model, enabledToolRefs, { includeImage = false } = {}) {
   const modelInfo = modelById(model)
   if (!modelInfo.tools) return { toolDefs: null, toolResolvers: null }
   const ts = await ensureTools(req)
-  const built = await buildToolDefs(enabledToolRefs, req.token, req.email, { includePython: ts.ready })
+  // org tool policy: an admin can disable a whole tool group for everyone.
+  // Best-effort — a lookup failure degrades to "all enabled" (never blocks chat).
+  const toolPolicy = await getToolPolicy(req.email, req.token).catch(() => ({}))
+  // the image tool is offered only when the turn is plausibly about an image
+  // (caps.image, passed as includeImage) AND the org hasn't disabled the group;
+  // buildToolDefs re-checks the policy, this just avoids the work when off.
+  const built = await buildToolDefs(enabledToolRefs, req.token, req.email, {
+    includePython: ts.ready,
+    includeImage: includeImage && toolPolicy['image-gen'] !== false,
+    toolPolicy,
+  })
   if (!built.tools.length) return { toolDefs: null, toolResolvers: null }
   return { toolDefs: built.tools, toolResolvers: built.resolvers }
 }
@@ -395,6 +531,10 @@ function toolCallLabel(resolver, args, fallbackName) {
   switch (resolver?.kind) {
     case 'python':
       return withParts('Python', intent)
+    case 'image-gen':
+      // the tool's own prompt (english) is long; show a short, localizable-ish
+      // subject only when it's brief, else just the tool name.
+      return 'Image Generator'
     case 'genie':
       return withParts('Genie', intent || resolver.ref?.title, intent ? resolver.ref?.title : '')
     case 'genie-one':
@@ -435,11 +575,17 @@ async function runAssistantTurn({
   toolResolvers,
   sessionId,
   chartState,
+  imageModel,
+  baseImages,
+  lang = 'pt',
 }) {
   let answer = ''
   const usage = { prompt_tokens: 0, completion_tokens: 0 }
   let hadUsage = false
   const toolTrace = []
+  // image refs produced by the generate_image tool this turn — returned so the
+  // caller can resolve `image` prism-block fences against real image ids.
+  const imageRefs = []
   let finishReason = null
   // null = ran to a natural finish; 'loop' = cut off spinning on identical
   // calls; 'ceiling' = hit MAX_ROUNDS. Surfaced to the user as an honest notice.
@@ -571,9 +717,10 @@ async function runAssistantTurn({
           // so the chip shows "8s" ticking instead of a silent spinner
           const onProgress = ({ elapsedMs }) =>
             send({ type: 'tool_progress', id: tc.id, elapsedMs })
-          const invoked = await invokeTool(req.token, resolver, args, { sessionId, email: req.email, onProgress })
+          const invoked = await invokeTool(req.token, resolver, args, { sessionId, email: req.email, imageModel, baseImages, lang, onProgress })
           resultText = invoked.resultText
           newCandidates = invoked.chartCandidates || []
+          if (invoked.imageRefs?.length) imageRefs.push(...invoked.imageRefs)
         } catch (e) {
           status = 'error'
           resultText = `ERROR: ${e.message}`
@@ -595,7 +742,7 @@ async function runAssistantTurn({
     send({ type: 'error', error: e.message })
   }
 
-  return { answer, usage, hadUsage, toolTrace, truncated: finishReason === 'length', stoppedEarly }
+  return { answer, usage, hadUsage, toolTrace, imageRefs, truncated: finishReason === 'length', stoppedEarly }
 }
 
 // A `finish_reason: "length"` turn hit the model's max_tokens mid-answer. For
@@ -604,14 +751,11 @@ async function runAssistantTurn({
 // nenhum feedback (bug real: sessão presa em "gerando" deck e nada renderiza).
 // Anexa um aviso visível ao conteúdo persistido e emite o evento `error`, que o
 // frontend já mostra como toast + linha inline.
-const TRUNCATION_NOTICE =
-  '⚠️ A resposta atingiu o limite de tokens de saída do modelo e chegou incompleta. ' +
-  'Tente gerar novamente ou peça um conteúdo mais curto (ex.: um deck com menos slides).'
-
-function applyTruncationNotice(truncated, content, send) {
+function applyTruncationNotice(truncated, content, send, lang = 'pt') {
   if (!truncated) return content
-  send({ type: 'error', error: TRUNCATION_NOTICE })
-  return content ? `${content}\n\n${TRUNCATION_NOTICE}` : TRUNCATION_NOTICE
+  const notice = serverMsg(lang, 'truncation')
+  send({ type: 'error', error: notice })
+  return content ? `${content}\n\n${notice}` : notice
 }
 
 // Injected once, right before the guaranteed synthesis round (tools already
@@ -628,18 +772,10 @@ const SYNTHESIS_NUDGE =
 // The synthesis round still produced a real answer with the data gathered, so
 // this is an informational note, not an error — the answer is usable, just
 // flagged as "best with what I had" so the user knows it wasn't a clean finish.
-const STOPPED_EARLY_NOTICE = {
-  loop:
-    'ℹ️ Encerrei as consultas porque o modelo estava repetindo a mesma chamada sem avançar. A ' +
-    'resposta acima foi montada com os dados obtidos até então.',
-  ceiling:
-    'ℹ️ Esta tarefa exigiu muitos passos e atingi o limite de rodadas de ferramentas. A resposta ' +
-    'acima usa os dados reunidos até aqui — se faltou algo, peça a continuação.',
-}
-
-function applyStoppedEarlyNotice(stoppedEarly, content, send) {
-  const notice = stoppedEarly && STOPPED_EARLY_NOTICE[stoppedEarly]
-  if (!notice) return content
+function applyStoppedEarlyNotice(stoppedEarly, content, send, lang = 'pt') {
+  const key = stoppedEarly === 'loop' ? 'stoppedLoop' : stoppedEarly === 'ceiling' ? 'stoppedCeiling' : null
+  if (!key) return content
+  const notice = serverMsg(lang, key)
   send({ type: 'error', error: notice })
   return content ? `${content}\n\n${notice}` : notice
 }
@@ -659,6 +795,9 @@ async function persistDeckBlocks(req, sessionId, blocks) {
       // reload and render it into .xlsx independent of the message content
       const spec = { title: b.title, sheets: b.sheets }
       b.spreadsheetId = await createSpreadsheet(req.email, req.token, sessionId, b.title, spec)
+    } else if (b.type === 'document') {
+      // persist the markdown so the Document Studio can reload/edit/export it
+      b.documentId = await createDocument(req.email, req.token, sessionId, b.title, b.markdown)
     }
   }
 }
@@ -762,6 +901,63 @@ app.get('/api/models', auth, async (req, res) => {
   res.json({ models, supported_extensions: SUPPORTED_EXTENSIONS })
 })
 
+// Image-generation models the user can choose from (Settings → image model),
+// plus their current selection (null → the org default is used). Separate from
+// /api/models: image endpoints never appear in the chat picker and vice-versa.
+app.get('/api/image-models', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const overrides = await listModelOverrides(req.email, req.token).catch(() => ({}))
+    const models = buildUserImageModels(overrides)
+    const selected = await getSelectedImageModel(req.email, req.token).catch(() => null)
+    // Which model "Padrão" actually resolves to, so the UI can name it
+    // explicitly instead of an opaque "Default". Matches the tool's fallback
+    // (DEFAULT_IMAGE_MODEL) when it's among the enabled models, else the first
+    // enabled image model — exactly what a turn with no explicit choice uses.
+    const defaultId = models.some((m) => m.id === DEFAULT_IMAGE_MODEL)
+      ? DEFAULT_IMAGE_MODEL
+      : models[0]?.id || null
+    res.json({ models, selected, defaultId })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/image-models/selected', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const modelId = typeof req.body?.modelId === 'string' ? req.body.modelId : ''
+    if (!modelId) return res.status(400).json({ error: 'modelId obrigatório' })
+    await setSelectedImageModel(req.email, req.token, modelId)
+    res.json({ ok: true, selected: modelId })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Org tool policy: which built-in tool GROUPS are available. The user-facing
+// read (picker hides disabled groups); a missing key means enabled (default-on).
+app.get('/api/tool-policy', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const policy = await getToolPolicy(req.email, req.token).catch(() => ({}))
+    res.json({ policy, keys: TOOL_GROUP_KEYS })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.put('/api/admin/tool-policy/:key', auth, requireAdmin, async (req, res) => {
+  try {
+    const key = req.params.key
+    if (!TOOL_GROUP_KEYS.includes(key)) return res.status(400).json({ error: 'tool inválida' })
+    await setToolPolicy(req.email, req.token, key, !!req.body?.enabled)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ---- admin: AI Gateway model catalog -----------------------------------
 // list live endpoints ∪ curated ∪ overrides; seeds overrides from the static
 // MODELS the first time so switching /api/models to enabled-only never strands
@@ -783,13 +979,33 @@ app.put('/api/admin/model-endpoints/:id', auth, requireAdmin, async (req, res) =
   try {
     const endpointId = decodeURIComponent(req.params.id)
     const b = req.body || {}
+    // prices: accept a non-negative number, else null (→ fall back to the
+    // curated/family-inferred default). Guards against NaN/negatives from the UI.
+    const price = (v) => (typeof v === 'number' && isFinite(v) && v >= 0 ? v : null)
     await upsertModelOverride(req.email, req.token, endpointId, {
       enabled: !!b.enabled,
       displayName: typeof b.displayName === 'string' ? b.displayName.slice(0, 120) : '',
       blurb: typeof b.blurb === 'string' ? b.blurb.slice(0, 300) : '',
       sortOrder: Number.isInteger(b.sortOrder) ? b.sortOrder : null,
+      priceIn: price(b.priceIn),
+      priceOut: price(b.priceOut),
     })
     userModelsCache.ts = 0 // force refresh so users see the change quickly
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Reorder the enabled models. Body: { order: [endpointId, ...] } — index 0 is
+// first in the picker AND the default model for new chats (see getUserModels /
+// the client's models[0]). Admin-only, like the other catalog mutations.
+app.put('/api/admin/model-endpoints-order', auth, requireAdmin, async (req, res) => {
+  try {
+    const order = Array.isArray(req.body?.order) ? req.body.order.filter((x) => typeof x === 'string') : null
+    if (!order || !order.length) return res.status(400).json({ error: 'order (array de ids) obrigatório' })
+    await reorderModelOverrides(req.email, req.token, order)
+    userModelsCache.ts = 0 // force refresh so the new default/order shows quickly
     res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -1226,6 +1442,15 @@ app.delete('/api/skills/:id', auth, async (req, res) => {
 app.delete('/api/sessions/:id', auth, async (req, res) => {
   try {
     await ensureReady(req)
+    // purge generated-image Volume files before the DB rows cascade away — the
+    // chat_images rows go with the session, but the Volume bytes would orphan.
+    // Best-effort: a failed file delete never blocks the session delete.
+    try {
+      const paths = await listSessionImagePaths(req.email, req.token, req.params.id)
+      await Promise.all(paths.map((p) => deleteImageFile(req.token, p)))
+    } catch (e) {
+      console.warn('limpeza de imagens da sessão falhou:', e.message)
+    }
     await deleteSession(req.email, req.token, req.params.id)
     res.json({ ok: true })
   } catch (e) {
@@ -1753,6 +1978,24 @@ app.get('/api/decks/:id/export', auth, async (req, res) => {
   }
 })
 
+// ---- generated images (bytes live on a UC Volume) ----
+// Streams the PNG back, scoped by user_email (the DB read enforces ownership;
+// the Volume read uses the user's own token). Cacheable — image bytes for a
+// given id never change.
+app.get('/api/images/:id', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const img = await getImage(req.email, req.token, req.params.id)
+    if (!img) return res.status(404).json({ error: 'imagem não encontrada' })
+    const bytes = await getImageBytes(req.token, img.volumePath)
+    res.setHeader('Content-Type', img.contentType || 'image/png')
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable')
+    res.send(bytes)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ---- spreadsheets (tabular sibling of decks) ----
 app.get('/api/spreadsheets/:id', auth, async (req, res) => {
   try {
@@ -1861,6 +2104,97 @@ app.post('/api/spreadsheets/:id/tweak', auth, async (req, res) => {
   }
 })
 
+// ---- documents (prose sibling of decks/spreadsheets) ----
+app.get('/api/documents/:id', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const document = await getDocument(req.email, req.token, req.params.id)
+    if (!document) return res.status(404).json({ error: 'documento não encontrado' })
+    res.json({ document })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Studio: persist an edited document (title + markdown), revalidated by the same
+// sanitizer as generation so a hand-edit can't write an empty/oversized doc.
+app.patch('/api/documents/:id', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const existing = await getDocument(req.email, req.token, req.params.id)
+    if (!existing) return res.status(404).json({ error: 'documento não encontrado' })
+    const sanitized = sanitizeDocument({ type: 'document', title: req.body?.title, markdown: req.body?.markdown })
+    if (!sanitized) return res.status(400).json({ error: 'documento inválido' })
+    await updateDocument(req.email, req.token, req.params.id, sanitized.title, sanitized.markdown)
+    res.json({ document: { id: String(req.params.id), title: sanitized.title, markdown: sanitized.markdown } })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Natural-language "tweak" (mirrors decks/spreadsheets): the Studio sends an
+// instruction (content OR style); the model returns the full revised markdown,
+// revalidated and persisted. Synchronous, non-streaming.
+const DOC_TWEAK_MAX_TOKENS = 32768
+app.post('/api/documents/:id/tweak', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const doc = await getDocument(req.email, req.token, req.params.id)
+    if (!doc) return res.status(404).json({ error: 'documento não encontrado' })
+    const instruction = String(req.body?.instruction || '').trim().slice(0, 2000)
+    if (!instruction) return res.status(400).json({ error: 'instrução vazia' })
+    if ((doc.markdown || '').length > 120_000) {
+      return res.status(422).json({ error: 'o documento é grande demais para editar de uma vez' })
+    }
+    const system =
+      'Você edita um DOCUMENTO de texto do AI Prism, escrito em Markdown. Aplique a alteração pedida ' +
+      '(de CONTEÚDO e/ou de ESTILO/tom/formatação), preservando o resto do documento e a estrutura ' +
+      'markdown (títulos #, listas, tabelas, negrito/itálico, citações). Mantenha (ou melhore) a ' +
+      'qualidade e o idioma do texto. Responda APENAS com um objeto JSON ' +
+      '{"title":"...","markdown":"..."} — sem cercas de markdown ao redor do JSON e sem comentários.'
+    const user = `Documento atual (JSON):\n${JSON.stringify({ title: doc.title, markdown: doc.markdown })}\n\nInstrução: ${instruction}`
+
+    await getUserModels(req)
+    const model = resolveModelId(req.body?.model)
+    const out = await complete(req.token, model, [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ], { maxTokens: DOC_TWEAK_MAX_TOKENS, temperature: 0.3 })
+
+    const parsed = extractJson(out)
+    if (parsed == null) return res.status(422).json({ error: 'o modelo não devolveu um JSON válido — tente reformular a instrução' })
+    const sanitized = sanitizeDocument({ type: 'document', title: parsed.title || doc.title, markdown: parsed.markdown })
+    if (!sanitized) return res.status(422).json({ error: 'a edição resultou em um documento inválido' })
+    await updateDocument(req.email, req.token, req.params.id, sanitized.title, sanitized.markdown)
+    res.json({ document: { id: String(req.params.id), title: sanitized.title, markdown: sanitized.markdown } })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Export: DOCX (rendered OOXML) or Markdown (raw). PDF is done client-side
+// (print), so no server route is needed for it.
+app.get('/api/documents/:id/export', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const document = await getDocument(req.email, req.token, req.params.id)
+    if (!document) return res.status(404).json({ error: 'documento não encontrado' })
+    const fmt = String(req.query.format || 'docx').toLowerCase()
+    const safeName = (document.title || 'documento').replace(/[^\w-]+/g, '_').slice(0, 60) || 'documento'
+    if (fmt === 'md' || fmt === 'markdown') {
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8')
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}.md"`)
+      return res.send(document.markdown || '')
+    }
+    const buf = await renderDocx(document)
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.docx"`)
+    res.send(buf)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ---- streaming chat ----
 app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
   const send = (obj) => {
@@ -1881,6 +2215,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     const temperature = typeof payload.temperature === 'number' ? payload.temperature : 0.7
     const systemPrompt = (payload.systemPrompt || '').trim()
     const responseLang = payload.responseLang
+    const uiLang = payload.uiLang
     const enabledToolRefs = Array.isArray(payload.enabledTools) ? payload.enabledTools : []
     let sessionId = payload.sessionId || null
 
@@ -1901,10 +2236,24 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // computed deterministically (never by the model, to avoid hallucinated numbers)
     const attachNames = []
     const attachBlocks = []
+    const imageAttachments = [] // { name, dataUrl } — sent to the model as vision input
     let fileCandidates = []
     let pptxDeckBrief = null // structured slides from an attached .pptx, if any
     for (const f of req.files || []) {
       const name = fixFilename(f.originalname)
+      // Image attachments (pasted screenshots, "attach image") are VISION input,
+      // not text-extractable documents: hold the bytes as a data-URL to attach
+      // to the model turn, and skip the text-extraction path (which would just
+      // yield an "unsupported file" note). The name is still recorded so the
+      // user's message shows the attachment.
+      if ((f.mimetype || '').startsWith('image/')) {
+        attachNames.push(name)
+        imageAttachments.push({
+          name,
+          dataUrl: `data:${f.mimetype};base64,${f.buffer.toString('base64')}`,
+        })
+        continue
+      }
       const text = await extractText(name, f.buffer)
       attachNames.push(name)
       attachBlocks.push(`### Arquivo: ${name}\n${text}`)
@@ -1992,7 +2341,10 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // Progressive disclosure: only include the heavy deck/spreadsheet policies
     // when the turn is plausibly about them (see detectCapabilities) — a trivial
     // question shouldn't carry ~10k tokens of deck+spreadsheet+design-system.
-    const caps = detectCapabilities(prompt, history, { hasPptxAttachment: !!pptxDeckBrief })
+    const caps = detectCapabilities(prompt, history, {
+      hasPptxAttachment: !!pptxDeckBrief,
+      hasImageAttachment: imageAttachments.length > 0,
+    })
     // Only the deck flow consumes the (heavy) selected template — both to build
     // its instruction and to resolve deck fences afterward. When this turn isn't
     // about a deck, caps.deck is false, DECK_POLICY is omitted, so the model
@@ -2035,12 +2387,16 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // With HISTORY_RETRIEVAL on, also pull semantically-relevant older messages.
     const retrieved = await retrieveHistoryContext(req, sessionId, history, prompt)
     pushWindowedHistory(apiMessages, history, retrieved)
+    // pasted/attached images → vision input on the turn being answered
+    attachImagesToLastUserTurn(apiMessages, imageAttachments)
 
     // tools: the built-in Python UC function is provisioned lazily once per
     // process; additional tools are whichever UC Functions the user attached
     // to this session. Skip entirely for models flagged tools:false or if
     // provisioning failed (e.g. no SQL_WAREHOUSE_ID / no CREATE FUNCTION grant).
-    const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs)
+    const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs, {
+      includeImage: caps.image,
+    })
     // narration guidance only when tools are actually in play — appended after
     // the history so it's the freshest instruction when the model decides
     // whether/how to call a tool
@@ -2053,7 +2409,14 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
       if (langDir) apiMessages.push({ role: 'system', content: langDir })
     }
 
-    const { answer, usage, hadUsage, toolTrace, truncated, stoppedEarly } = await runAssistantTurn({
+    // Which image model the generate_image tool should use, if this turn calls
+    // it: the client's per-turn choice, else the user's saved preference, else
+    // the org default (resolved inside the tool). Only fetched when relevant.
+    const imageModel = caps.image
+      ? (payload.imageModel || (await getSelectedImageModel(req.email, req.token).catch(() => null)) || undefined)
+      : undefined
+
+    const { answer, usage, hadUsage, toolTrace, imageRefs, truncated, stoppedEarly } = await runAssistantTurn({
       req,
       res,
       send,
@@ -2064,15 +2427,19 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
       toolResolvers,
       sessionId,
       chartState,
+      imageModel,
+      baseImages: imageAttachments,
+      lang: msgLang(responseLang, uiLang),
     })
 
     // resolve any model-placed chart/insight blocks against the real,
     // deterministic candidates (from attachments and/or Genie tool calls made
     // this turn or earlier in the session) — each fence becomes a {{block:N}}
-    // placeholder right where the model put it, so the frontend renders it inline
-    let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate)
-    finalContent = applyTruncationNotice(truncated, finalContent, send)
-    finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send)
+    // placeholder right where the model put it, so the frontend renders it inline.
+    // imageRefs resolve `image` fences against images the tool generated this turn.
+    let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
+    finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
+    finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)
     await persistDeckBlocks(req, sessionId, blocks)
 
@@ -2207,6 +2574,7 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
     const temperature = typeof req.body.temperature === 'number' ? req.body.temperature : 0.7
     const systemPrompt = (req.body.systemPrompt || '').trim()
     const responseLang = req.body.responseLang
+    const uiLang = req.body.uiLang
     const enabledToolRefs = Array.isArray(req.body.enabledTools) ? req.body.enabledTools : []
 
     const history = await listMessages(req.email, req.token, sessionId)
@@ -2245,7 +2613,9 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
       pushWindowedHistory(apiMessages, history, retrieved)
     }
 
-    const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs)
+    const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs, {
+      includeImage: caps.image,
+    })
     if (toolDefs) apiMessages.push({ role: 'system', content: TOOL_NARRATION_POLICY })
     // forced response language (Preferences) — LAST system message, so it's the
     // freshest/highest-salience instruction and overrides the PT-authored
@@ -2255,7 +2625,11 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
       if (langDir) apiMessages.push({ role: 'system', content: langDir })
     }
 
-    const { answer, usage, hadUsage, toolTrace, truncated, stoppedEarly } = await runAssistantTurn({
+    const imageModel = caps.image
+      ? (req.body.imageModel || (await getSelectedImageModel(req.email, req.token).catch(() => null)) || undefined)
+      : undefined
+
+    const { answer, usage, hadUsage, toolTrace, imageRefs, truncated, stoppedEarly } = await runAssistantTurn({
       req,
       res,
       send,
@@ -2266,11 +2640,13 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
       toolResolvers,
       sessionId,
       chartState,
+      imageModel,
+      lang: msgLang(responseLang, uiLang),
     })
 
-    let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate)
-    finalContent = applyTruncationNotice(truncated, finalContent, send)
-    finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send)
+    let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
+    finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
+    finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)
     await persistDeckBlocks(req, sessionId, blocks)
 
@@ -2318,6 +2694,7 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
     const temperature = typeof req.body.temperature === 'number' ? req.body.temperature : 0.7
     const systemPrompt = (req.body.systemPrompt || '').trim()
     const responseLang = req.body.responseLang
+    const uiLang = req.body.uiLang
     const enabledToolRefs = Array.isArray(req.body.enabledTools) ? req.body.enabledTools : []
 
     const { variantGroup, messages: history } = await listMessagesBeforeMessage(
@@ -2358,7 +2735,9 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
       pushWindowedHistory(apiMessages, history, retrieved)
     }
 
-    const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs)
+    const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs, {
+      includeImage: caps.image,
+    })
     if (toolDefs) apiMessages.push({ role: 'system', content: TOOL_NARRATION_POLICY })
     // forced response language (Preferences) — LAST system message, so it's the
     // freshest/highest-salience instruction and overrides the PT-authored
@@ -2368,7 +2747,11 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
       if (langDir) apiMessages.push({ role: 'system', content: langDir })
     }
 
-    const { answer, usage, hadUsage, toolTrace, truncated, stoppedEarly } = await runAssistantTurn({
+    const imageModel = caps.image
+      ? (req.body.imageModel || (await getSelectedImageModel(req.email, req.token).catch(() => null)) || undefined)
+      : undefined
+
+    const { answer, usage, hadUsage, toolTrace, imageRefs, truncated, stoppedEarly } = await runAssistantTurn({
       req,
       res,
       send,
@@ -2379,11 +2762,13 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
       toolResolvers,
       sessionId,
       chartState,
+      imageModel,
+      lang: msgLang(responseLang, uiLang),
     })
 
-    let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate)
-    finalContent = applyTruncationNotice(truncated, finalContent, send)
-    finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send)
+    let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
+    finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
+    finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)
     await persistDeckBlocks(req, sessionId, blocks)
 

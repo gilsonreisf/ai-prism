@@ -1,0 +1,191 @@
+// Markdown → .docx, built by hand as an OOXML package zipped with JSZip (same
+// no-heavy-dep approach as xlsx-export.js). We don't need a full markdown/OOXML
+// bridge — the model writes reasonably plain markdown (headings, paragraphs,
+// lists, bold/italic/code, blockquotes, simple tables), and this covers those.
+// The output opens cleanly in Word/Google Docs. Anything exotic degrades to
+// plain paragraphs rather than failing.
+import JSZip from 'jszip'
+
+const esc = (s) =>
+  String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+// Inline markdown → an array of <w:r> runs. Handles **bold**, *italic*/_italic_,
+// `code`, and [text](url) (rendered as the text). Order matters: code first so
+// its contents aren't re-parsed for emphasis.
+function inlineRuns(text) {
+  const runs = []
+  // tokenizer: split on the inline markers, keeping delimiters
+  const re = /(\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|`[^`]+`|\[[^\]]+\]\([^)]+\))/g
+  let last = 0
+  let m
+  const push = (t, opts = {}) => {
+    if (!t) return
+    const props = []
+    if (opts.b) props.push('<w:b/>')
+    if (opts.i) props.push('<w:i/>')
+    if (opts.code) props.push('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/>')
+    const rPr = props.length ? `<w:rPr>${props.join('')}</w:rPr>` : ''
+    runs.push(`<w:r>${rPr}<w:t xml:space="preserve">${esc(t)}</w:t></w:r>`)
+  }
+  while ((m = re.exec(text))) {
+    push(text.slice(last, m.index))
+    const tok = m[0]
+    if (tok.startsWith('**') || tok.startsWith('__')) push(tok.slice(2, -2), { b: true })
+    else if (tok.startsWith('`')) push(tok.slice(1, -1), { code: true })
+    else if (tok.startsWith('[')) push(tok.slice(1, tok.indexOf(']')))
+    else push(tok.slice(1, -1), { i: true })
+    last = re.lastIndex
+  }
+  push(text.slice(last))
+  return runs.length ? runs.join('') : '<w:r><w:t/></w:r>'
+}
+
+const para = (runsXml, { style, bullet } = {}) => {
+  const pPr = []
+  if (style) pPr.push(`<w:pStyle w:val="${style}"/>`)
+  if (bullet) pPr.push('<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>')
+  const pPrXml = pPr.length ? `<w:pPr>${pPr.join('')}</w:pPr>` : ''
+  return `<w:p>${pPrXml}${runsXml}</w:p>`
+}
+
+// A markdown table block → a Word table. `rows` is an array of cell-arrays.
+function tableXml(rows) {
+  if (!rows.length) return ''
+  const rowXml = (cells, header) =>
+    `<w:tr>${cells
+      .map(
+        (c) =>
+          `<w:tc><w:tcPr><w:tcBorders><w:top w:val="single" w:sz="4"/><w:bottom w:val="single" w:sz="4"/><w:left w:val="single" w:sz="4"/><w:right w:val="single" w:sz="4"/></w:tcBorders></w:tcPr>${para(
+            inlineRuns(header ? c : c),
+            {}
+          )}</w:tc>`
+      )
+      .join('')}</w:tr>`
+  const body = rows.map((r, i) => rowXml(r, i === 0)).join('')
+  return `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>${body}</w:tbl>`
+}
+
+// Parse markdown into a flat list of block descriptors, then emit OOXML.
+function markdownToBody(md) {
+  const lines = String(md || '').replace(/\r\n/g, '\n').split('\n')
+  const out = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    // fenced code block
+    if (/^```/.test(line)) {
+      i++
+      const code = []
+      while (i < lines.length && !/^```/.test(lines[i])) code.push(lines[i++])
+      i++ // closing fence
+      for (const cl of code) out.push(para(`<w:r><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/></w:rPr><w:t xml:space="preserve">${esc(cl)}</w:t></w:r>`))
+      continue
+    }
+    // table: a line with | and a following |---| separator
+    if (/\|/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) && /-/.test(lines[i + 1])) {
+      const rows = []
+      const parseRow = (l) =>
+        l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim())
+      rows.push(parseRow(line))
+      i += 2 // header + separator
+      while (i < lines.length && /\|/.test(lines[i]) && lines[i].trim()) rows.push(parseRow(lines[i++]))
+      out.push(tableXml(rows))
+      continue
+    }
+    const heading = line.match(/^(#{1,6})\s+(.*)$/)
+    if (heading) {
+      const lvl = Math.min(heading[1].length, 6)
+      out.push(para(inlineRuns(heading[2]), { style: `Heading${lvl}` }))
+      i++
+      continue
+    }
+    const bullet = line.match(/^\s*[-*+]\s+(.*)$/)
+    if (bullet) {
+      out.push(para(inlineRuns(bullet[1]), { bullet: true }))
+      i++
+      continue
+    }
+    const ordered = line.match(/^\s*\d+\.\s+(.*)$/)
+    if (ordered) {
+      out.push(para(inlineRuns(ordered[1]), { bullet: true }))
+      i++
+      continue
+    }
+    const quote = line.match(/^>\s?(.*)$/)
+    if (quote) {
+      out.push(para(inlineRuns(quote[1]), { style: 'Quote' }))
+      i++
+      continue
+    }
+    if (!line.trim()) {
+      i++
+      continue
+    }
+    out.push(para(inlineRuns(line)))
+    i++
+  }
+  return out.join('')
+}
+
+const CONTENT_TYPES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+</Types>`
+
+const ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`
+
+const DOC_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+</Relationships>`
+
+// minimal styles: heading levels + Quote + a base body font.
+const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:b/><w:sz w:val="40"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:pPr><w:spacing w:before="200" w:after="100"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:pPr><w:spacing w:before="160" w:after="80"/></w:pPr><w:rPr><w:b/><w:sz w:val="26"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/><w:rPr><w:b/><w:sz w:val="24"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading5"><w:name w:val="heading 5"/><w:rPr><w:b/><w:i/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading6"><w:name w:val="heading 6"/><w:rPr><w:i/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/><w:pPr><w:ind w:left="480"/></w:pPr><w:rPr><w:i/><w:color w:val="555555"/></w:rPr></w:style>
+</w:styles>`
+
+// one bullet list definition (numId=1)
+const NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>`
+
+/** Render a { title, markdown } document to a .docx Buffer. */
+export async function renderDocx(doc) {
+  const title = doc?.title || 'Documento'
+  // prepend the title as an H1 only if the markdown doesn't already open with one
+  const md = String(doc?.markdown || '')
+  const body = markdownToBody(md.trimStart().startsWith('#') ? md : `# ${title}\n\n${md}`)
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`
+
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', CONTENT_TYPES)
+  zip.folder('_rels').file('.rels', ROOT_RELS)
+  const word = zip.folder('word')
+  word.file('document.xml', documentXml)
+  word.file('styles.xml', STYLES)
+  word.file('numbering.xml', NUMBERING)
+  word.folder('_rels').file('document.xml.rels', DOC_RELS)
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+}

@@ -26,6 +26,10 @@ dbutils.widgets.text("lakebase_host", "", "Lakebase read/write host")
 dbutils.widgets.text("lakebase_db", "databricks_postgres", "Lakebase database")
 dbutils.widgets.text("app_name", "ai-prism", "Databricks App name")
 dbutils.widgets.text("dashboard_id", "", "AI/BI cost dashboard id")
+dbutils.widgets.text("image_volume_catalog", "ai_prism", "Image store catalog")
+dbutils.widgets.text("image_volume_schema", "default", "Image store schema")
+dbutils.widgets.text("image_volume_name", "ai_prism_images", "Image store volume")
+dbutils.widgets.text("app_sp_client_id", "", "App service principal client id")
 
 catalog = dbutils.widgets.get("catalog").strip() or "main"
 schema = dbutils.widgets.get("schema").strip() or "default"
@@ -34,6 +38,10 @@ lakebase_host = dbutils.widgets.get("lakebase_host").strip()
 lakebase_db = dbutils.widgets.get("lakebase_db").strip() or "databricks_postgres"
 app_name = dbutils.widgets.get("app_name").strip() or "ai-prism"
 dashboard_id = dbutils.widgets.get("dashboard_id").strip()
+image_catalog = dbutils.widgets.get("image_volume_catalog").strip() or "ai_prism"
+image_schema = dbutils.widgets.get("image_volume_schema").strip() or "default"
+image_volume = dbutils.widgets.get("image_volume_name").strip() or "ai_prism_images"
+app_sp_client_id = dbutils.widgets.get("app_sp_client_id").strip()
 
 # COMMAND ----------
 
@@ -76,6 +84,29 @@ print(f"UDF smoke test OK (6*7 = {check.strip()})")
 
 # COMMAND ----------
 
+# Provision the DEDICATED image store (own catalog, kept separate from the tools
+# catalog so AI Prism's generated images never mix with other workspace assets)
+# and grant the app service principal the volume privileges it needs. The app
+# writes/reads image bytes as its SP (not per-user OBO), so it must hold
+# READ/WRITE VOLUME here; per-user isolation stays app-level (user_email).
+# Idempotent — safe on every deploy.
+spark.sql(f"CREATE CATALOG IF NOT EXISTS `{image_catalog}` "
+          f"COMMENT 'AI Prism app-owned storage (generated images, etc.)'")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{image_catalog}`.`{image_schema}`")
+spark.sql(f"CREATE VOLUME IF NOT EXISTS `{image_catalog}`.`{image_schema}`.`{image_volume}`")
+print(f"Provisioned image volume: {image_catalog}.{image_schema}.{image_volume}")
+
+if app_sp_client_id:
+    spark.sql(f"GRANT USE CATALOG ON CATALOG `{image_catalog}` TO `{app_sp_client_id}`")
+    spark.sql(f"GRANT USE SCHEMA, CREATE VOLUME, READ VOLUME, WRITE VOLUME "
+              f"ON SCHEMA `{image_catalog}`.`{image_schema}` TO `{app_sp_client_id}`")
+    print(f"Granted image-store privileges to app SP {app_sp_client_id}")
+else:
+    print("WARNING: no app_sp_client_id provided — grant READ/WRITE VOLUME on "
+          f"{image_catalog}.{image_schema} to the app service principal manually.")
+
+# COMMAND ----------
+
 # Publish the AI/BI cost dashboard. `bundle deploy` creates/updates it as a DRAFT;
 # publishing makes it viewable by other admins right after deploy (no manual step).
 # Idempotent — re-publishing on every deploy just refreshes the published version.
@@ -114,6 +145,7 @@ print(f"DATABRICKS_APP_NAME = {app_name}")
 print(f"SQL_WAREHOUSE_ID  = {warehouse_id}")
 print(f"TOOLS_CATALOG     = {catalog}")
 print(f"TOOLS_SCHEMA      = {schema}")
+print(f"IMAGE_VOLUME      = {image_catalog}.{image_schema}.{image_volume}")
 print(f"PGHOST            = {lakebase_host}")
 print(f"PGDATABASE        = {lakebase_db}")
 print(f"COST_DASHBOARD_ID = {dashboard_id or '(not provided)'}")

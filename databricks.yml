@@ -28,6 +28,18 @@ variables:
   lakebase_database:
     description: Lakebase (Postgres) database name.
     default: databricks_postgres
+  image_volume_catalog:
+    description: >-
+      Catalog for AI Prism's generated-image storage. Kept separate from the
+      tools catalog so image bytes never mix with other assets. Defaults to a
+      dedicated `ai_prism` catalog; the app owner can point it anywhere.
+    default: ai_prism
+  image_volume_schema:
+    description: Schema (inside image_volume_catalog) for the images volume.
+    default: default
+  image_volume_name:
+    description: UC Volume name that holds the generated-image bytes.
+    default: ai_prism_images
 
 resources:
   # --- Lakebase: serverless Postgres, autoscaling 0.5–16 CU, 30-min auto-stop ---
@@ -84,6 +96,12 @@ resources:
               # The bundle deploys the cost dashboard as a draft; the job publishes
               # it so admins see it live right after deploy.
               dashboard_id: ${resources.dashboards.ai_prism_costs.id}
+              # Dedicated image store — the job creates the catalog/schema/volume
+              # and grants the app service principal READ/WRITE VOLUME on it.
+              image_volume_catalog: ${var.image_volume_catalog}
+              image_volume_schema: ${var.image_volume_schema}
+              image_volume_name: ${var.image_volume_name}
+              app_sp_client_id: ${resources.apps.ai_prism.service_principal_client_id}
 
   # --- The app itself: env wired from the resources above ---
   apps:
@@ -121,6 +139,12 @@ resources:
             value: ${var.tools_catalog}
           - name: TOOLS_SCHEMA
             value: ${var.tools_schema}
+          - name: IMAGE_VOLUME_CATALOG
+            value: ${var.image_volume_catalog}
+          - name: IMAGE_VOLUME_SCHEMA
+            value: ${var.image_volume_schema}
+          - name: IMAGE_VOLUME_NAME
+            value: ${var.image_volume_name}
 
 targets:
   dev:

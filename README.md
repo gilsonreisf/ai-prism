@@ -4,8 +4,9 @@ Ambiente de chat multimodelo construído como **Databricks App**, que expõe uma
 única para conversar com diversos LLMs (Anthropic, OpenAI, Google, Meta, Alibaba, Zhipu)
 servidos pelo **Databricks AI Gateway**, com histórico persistido em **Lakebase (Postgres)**
 e autenticação on-behalf-of do usuário logado no workspace. Além do chat, gera artefatos
-reais editáveis — apresentações `.pptx`, planilhas `.xlsx` e gráficos interativos — e chama
-ferramentas nativas do workspace (Genie, Python, Vector Search, UC Functions, MCP externo).
+reais editáveis — apresentações `.pptx`, planilhas `.xlsx`, documentos de texto (DOCX/MD/PDF),
+imagens e gráficos interativos —, aceita imagens como entrada (colar/anexar → visão e edição)
+e chama ferramentas nativas do workspace (Genie, Python, Vector Search, UC Functions, MCP externo).
 
 ## Visão geral
 
@@ -165,12 +166,15 @@ ai-prism/
 - Embeddings calculados e persistidos de forma incremental (backfill preguiçoso) conforme
   as sessões são usadas/buscadas.
 
-### Anexos de documentos
+### Anexos de documentos e imagens
 - Upload múltiplo (até 10 arquivos, 25MB cada) com extração de texto para o contexto do
   modelo: PDF, DOCX, PPTX, XLSX/XLS e formatos de texto simples (txt, md, csv, json, log,
   tsv, xml, html, yaml).
-- Suporte a arrastar-e-soltar (drag & drop) no composer.
-- Conteúdo truncado em 50k caracteres por arquivo para não estourar o contexto.
+- **Imagens** (PNG/JPG/…) são anexadas como **visão** (não extração de texto): o modelo as
+  enxerga para descrever/analisar e pode editá-las (img2img) — ver "Geração e edição de imagens".
+- Suporte a **arrastar-e-soltar** e **colar (Ctrl/Cmd+V)** no composer; imagens mostram
+  thumbnail no chip de anexo.
+- Conteúdo de documento truncado em 50k caracteres por arquivo para não estourar o contexto.
 
 ### Mensagens estruturadas e gráficos interativos
 Além de markdown, uma resposta do assistente pode carregar **blocos estruturados**
@@ -246,6 +250,32 @@ Além de markdown, uma resposta do assistente pode carregar **blocos estruturado
 - QA determinístico do pipeline: `scripts/mine-pptx-qa.mjs` (minera um .pptx sintético e
   valida marca d'água/diagramas/render) e `scripts/render-deck-preview.mjs` +
   `scripts/pptx-to-png.sh` (QA visual das fixtures em `scripts/fixtures/`).
+
+### Documentos de texto (Estúdio de Documentos)
+- Pedidos explícitos de um documento/relatório/artigo/carta geram um bloco `document` cujo
+  corpo é **Markdown**; o Estúdio de Documentos renderiza como rich text (react-markdown),
+  permite editar o Markdown à mão, **ajustar por IA** (conteúdo e estilo) e exportar para
+  **DOCX** (OOXML montado à mão + JSZip, sem lib nova), **Markdown** e **PDF** (impressão do
+  navegador com CSS de impressão dedicado). Terceiro estúdio de artefato, mesmo padrão de
+  deck/planilha (`chat_documents`, `DocumentStudio`).
+
+### Geração e edição de imagens
+- Pedidos explícitos de imagem ("gere/desenhe uma imagem/ilustração/logo…") chamam a tool
+  built-in `generate_image`, servida pelo mesmo `chat/completions` do AI Gateway (endpoints
+  de imagem, ex.: **Nano Banana 2** = Gemini 3.1 Flash Image). A imagem gerada aparece inline
+  no chat (bloco `image`) com ações sempre visíveis: **baixar**, **copiar** (clipboard) e
+  **abrir** em tamanho real.
+- **Imagem como entrada**: o usuário pode **colar** (Ctrl/Cmd+V) ou anexar imagens no composer
+  — elas vão ao modelo como **visão** (o modelo enxerga e descreve) e, com um pedido de
+  transformação ("deixe em preto e branco", "adicione um chapéu"), viram **edição img2img**
+  (a imagem anexada é reentregue ao modelo de imagem automaticamente).
+- Os bytes das imagens ficam num **UC Volume dedicado** (não misturado com outros assets),
+  escrito/lido pelo **service principal do app** — sem depender do escopo OAuth `files` de
+  cada usuário. O isolamento por usuário é app-level (`WHERE user_email`), como todo artefato.
+  O caminho é configurável por `IMAGE_VOLUME_CATALOG`/`_SCHEMA`/`_NAME` (default
+  `ai_prism.default.ai_prism_images`), provisionado no deploy e concedido ao SP.
+- O **modelo padrão de imagem é o Nano Banana 2**, já pré-selecionado em *Configurações →
+  Pessoal → Modelo de geração de imagem*; o usuário pode escolher outro modelo habilitado.
 
 ### Voz
 - **Ditado** (fala → texto) no campo de mensagem via Web Speech API.

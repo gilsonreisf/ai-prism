@@ -96,6 +96,10 @@ export const File = (p) => (
 export const Sparkle = (p) => (
   <svg {...s(p)}><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" /></svg>
 )
+// picture frame + sun + mountain — the generic "image" glyph
+export const Image = (p) => (
+  <svg {...s(p)}><rect x="3" y="3" width="18" height="18" rx="2.5" /><circle cx="8.5" cy="8.5" r="1.6" /><path d="m21 15-4.5-4.5L6 21" /></svg>
+)
 export const ChevronDown = (p) => (
   <svg {...s(p)}><path d="m6 9 6 6 6-6" /></svg>
 )
@@ -107,6 +111,11 @@ export const Edit = (p) => (
 )
 export const Wrench = (p) => (
   <svg {...s(p)}><path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 1 5.4-5.4l-2.3 2.3-2-2z" /></svg>
+)
+// monochrome toolbox (stroke) — for the admin Tools tab, matching the other
+// rail icons (ToolsGlyph is a colored PNG used only for the chat tools trigger)
+export const Toolbox = (p) => (
+  <svg {...s(p)}><path d="M4 8h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" /><path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18M10 12h4" /></svg>
 )
 export const Terminal = (p) => (
   <svg {...s(p)}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3M13 15h4" /></svg>

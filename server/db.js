@@ -43,6 +43,22 @@ async function spAccessToken() {
   return spToken.value
 }
 
+// The APP's own OAuth token (service principal, all-apis scope). Used for
+// app-owned storage that must not depend on a per-user OAuth scope/consent —
+// notably the generated-image UC Volume (see imageStore.js). Returns null when
+// the app isn't running with SP credentials (local dev without them), so the
+// caller can fall back to the user's OBO token. Per-user ISOLATION is NOT the
+// storage identity's job here: it's enforced app-level by the user_email WHERE
+// clauses (same trust model as every other artifact — see the module header).
+export async function appServiceToken() {
+  if (!process.env.DATABRICKS_CLIENT_ID || !process.env.DATABRICKS_CLIENT_SECRET) return null
+  try {
+    return await spAccessToken()
+  } catch {
+    return null
+  }
+}
+
 function connInfo(user, password) {
   return {
     host: process.env.PGHOST,
@@ -173,9 +189,13 @@ export async function ensureSchema(userEmail, userToken) {
         await c.query(`SELECT endpoint_id FROM model_catalog_overrides LIMIT 0`)
         await c.query(`SELECT connection_name FROM user_mcp_connections LIMIT 0`)
         await c.query(`SELECT triggers FROM skills LIMIT 0`)
-        // newest artifact — must be the LAST thing runSchemaDdl creates, or the
-        // probe short-circuits before this migration runs on existing deploys
         await c.query(`SELECT message_id FROM chat_message_embeddings LIMIT 0`)
+        await c.query(`SELECT volume_path FROM chat_images LIMIT 0`)
+        await c.query(`SELECT tool_key FROM app_tool_policy LIMIT 0`)
+        // newest artifacts — the probe must name the LATEST migrations (any one
+        // still missing → false → the whole idempotent DDL re-runs). All DDL is
+        // CREATE/ALTER IF NOT EXISTS, so re-running is safe regardless of order.
+        await c.query(`SELECT markdown FROM chat_documents LIMIT 0`)
         return true
       } catch {
         return false
@@ -425,6 +445,12 @@ async function runSchemaDdl(c) {
         updated_by TEXT,
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );`)
+    // admin-set list prices (USD per 1M tokens) — an EXPLICIT override of the
+    // curated/family-inferred defaults, so an uncurated endpoint stops showing
+    // NaN in the chat's cost estimate. NULL = "use the inferred default" (never
+    // NaN — the family price book / curated list fills it, else it's unpriced).
+    await c.query(`ALTER TABLE model_catalog_overrides ADD COLUMN IF NOT EXISTS price_in DOUBLE PRECISION;`)
+    await c.query(`ALTER TABLE model_catalog_overrides ADD COLUMN IF NOT EXISTS price_out DOUBLE PRECISION;`)
     // ---- per-user adopted external MCP connections -----------------------
     // records that a user has "connected" a UC HTTP MCP connection (chose to
     // use it) plus the last probed auth status. Holds NO credential — the
@@ -498,6 +524,66 @@ async function runSchemaDdl(c) {
     await c.query(
       `CREATE INDEX IF NOT EXISTS idx_msg_emb_hnsw ON chat_message_embeddings USING hnsw (embedding vector_cosine_ops);`
     )
+    // ---- per-user image-generation model selection -----------------------
+    // mirrors user_template_selection: one row per user naming the image model
+    // their turns use (NULL/no row → the org default). Not on chat_sessions
+    // because the choice is a stable user preference, not per-conversation.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS user_image_model_selection (
+        user_email TEXT PRIMARY KEY,
+        model_id TEXT NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );`)
+    // ---- generated images (bytes live on a UC Volume; row keeps the path) --
+    // The binary sibling of chat_decks/chat_spreadsheets: those persist a JSON
+    // spec and render bytes on demand, but a generated image has no cheaper
+    // form, so the PNG goes to a governed UC Volume (see server/imageStore.js)
+    // and this row holds the volume_path + metadata. Isolation is app-level:
+    // every read is scoped WHERE user_email. Must be the LAST table created
+    // (the ensureSchema probe checks it as the newest artifact).
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS chat_images (
+        id BIGSERIAL PRIMARY KEY,
+        session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        user_email TEXT NOT NULL,
+        prompt TEXT,
+        model TEXT,
+        volume_path TEXT NOT NULL,
+        content_type TEXT NOT NULL DEFAULT 'image/png',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );`)
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_chat_images_session ON chat_images(session_id);`)
+    // ---- documents the model writes as a `document` prism-block (markdown) ---
+    // The prose sibling of chat_decks/chat_spreadsheets: the model authors a
+    // markdown document, persisted here so the Document Studio can reload/edit/
+    // export it (DOCX/Markdown/PDF) independent of the chat message's content.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS chat_documents (
+        id BIGSERIAL PRIMARY KEY,
+        session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        user_email TEXT NOT NULL,
+        title TEXT NOT NULL,
+        markdown TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );`)
+    await c.query(`CREATE INDEX IF NOT EXISTS idx_chat_documents_session ON chat_documents(session_id);`)
+
+    // ---- org-wide tool policy: which built-in tool GROUPS are available -----
+    // One row per tool kind an admin has toggled (python / genie-one / image-gen
+    // / genie / vector-search / uc / mcp-external). A MISSING row means enabled
+    // (default-on), so a fresh install has every tool available and the admin
+    // only records exceptions. Global (no user_email); writes gated to admins at
+    // the route layer. Enforced server-side in resolveToolDefs AND hidden in the
+    // client picker. NOTE: not part of the ensureSchema probe (chat_images stays
+    // the newest artifact); this CREATE runs on any deploy where the probe fails.
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS app_tool_policy (
+        tool_key TEXT PRIMARY KEY,
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        updated_by TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );`)
 }
 
 // grants: the app service principal gets DML on the app tables — row
@@ -1534,7 +1620,7 @@ export async function getUsageStats(userEmail, userToken, { from = null, to = nu
 export async function listModelOverrides(userEmail, userToken) {
   return withClient(userEmail, userToken, async (c) => {
     const r = await c.query(
-      `SELECT endpoint_id, enabled, display_name, blurb, sort_order, updated_by, updated_at
+      `SELECT endpoint_id, enabled, display_name, blurb, sort_order, price_in, price_out, updated_by, updated_at
          FROM model_catalog_overrides`
     )
     const map = {}
@@ -1545,6 +1631,8 @@ export async function listModelOverrides(userEmail, userToken) {
         displayName: x.display_name || '',
         blurb: x.blurb || '',
         sortOrder: x.sort_order,
+        priceIn: x.price_in,
+        priceOut: x.price_out,
         updatedBy: x.updated_by || '',
         updatedAt: x.updated_at,
       }
@@ -1553,20 +1641,55 @@ export async function listModelOverrides(userEmail, userToken) {
   })
 }
 
-export async function upsertModelOverride(userEmail, userToken, endpointId, { enabled, displayName, blurb, sortOrder }) {
+export async function upsertModelOverride(
+  userEmail,
+  userToken,
+  endpointId,
+  { enabled, displayName, blurb, sortOrder, priceIn, priceOut }
+) {
   await withClient(userEmail, userToken, async (c) => {
     await c.query(
-      `INSERT INTO model_catalog_overrides (endpoint_id, enabled, display_name, blurb, sort_order, updated_by, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      `INSERT INTO model_catalog_overrides (endpoint_id, enabled, display_name, blurb, sort_order, price_in, price_out, updated_by, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
        ON CONFLICT (endpoint_id) DO UPDATE SET
          enabled = EXCLUDED.enabled,
          display_name = EXCLUDED.display_name,
          blurb = EXCLUDED.blurb,
          sort_order = EXCLUDED.sort_order,
+         price_in = EXCLUDED.price_in,
+         price_out = EXCLUDED.price_out,
          updated_by = EXCLUDED.updated_by,
          updated_at = NOW()`,
-      [endpointId, !!enabled, displayName || null, blurb || null, sortOrder ?? null, userEmail]
+      [endpointId, !!enabled, displayName || null, blurb || null, sortOrder ?? null, priceIn ?? null, priceOut ?? null, userEmail]
     )
+  })
+}
+
+// Reorders enabled models: assigns sequential sort_order from the given ordered
+// list of endpoint ids (index 0 → lowest sort_order → first in the picker → the
+// default model for new chats). Only touches sort_order — enabled/prices/names
+// are untouched. Rows are UPSERTed so an id without a prior override still gets
+// ordered. Runs in a single transaction so the ordering is atomic.
+export async function reorderModelOverrides(userEmail, userToken, orderedIds) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query('BEGIN')
+    try {
+      for (let i = 0; i < orderedIds.length; i++) {
+        await c.query(
+          `INSERT INTO model_catalog_overrides (endpoint_id, enabled, sort_order, updated_by, updated_at)
+             VALUES ($1, TRUE, $2, $3, NOW())
+           ON CONFLICT (endpoint_id) DO UPDATE SET
+             sort_order = EXCLUDED.sort_order,
+             updated_by = EXCLUDED.updated_by,
+             updated_at = NOW()`,
+          [orderedIds[i], i, userEmail]
+        )
+      }
+      await c.query('COMMIT')
+    } catch (e) {
+      await c.query('ROLLBACK')
+      throw e
+    }
   })
 }
 
@@ -1580,11 +1703,17 @@ export async function seedModelOverridesIfEmpty(userEmail, userToken, seedRows) 
     if (existing.rows[0].n > 0) return false
     for (let i = 0; i < seedRows.length; i++) {
       const s = seedRows[i]
+      // the default catalog enables the curated chat families (Claude, the
+      // GPT-5.6 trio, Gemini Flash, Llama 4, GLM, Qwen) with their known list
+      // prices pre-filled; a curated model flagged defaultOn:false (e.g. GPT-5
+      // mini, GPT-OSS) is NOT enabled here but stays one click away in "Add
+      // model" (prices already known → no cost prompt).
+      const enabled = s.defaultOn !== false
       await c.query(
-        `INSERT INTO model_catalog_overrides (endpoint_id, enabled, display_name, blurb, sort_order, updated_by)
-           VALUES ($1, true, $2, $3, $4, $5)
+        `INSERT INTO model_catalog_overrides (endpoint_id, enabled, display_name, blurb, sort_order, price_in, price_out, updated_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (endpoint_id) DO NOTHING`,
-        [s.id, s.label || null, s.blurb || null, i, userEmail]
+        [s.id, enabled, s.label || null, s.blurb || null, i, s.in ?? null, s.out ?? null, userEmail]
       )
     }
     return true
@@ -1802,6 +1931,127 @@ export async function updateSpreadsheet(userEmail, userToken, sheetId, title, sp
     await c.query(
       `UPDATE chat_spreadsheets SET title = $1, spec = $2, updated_at = NOW() WHERE id = $3 AND user_email = $4`,
       [title, JSON.stringify(spec || {}), sheetId, userEmail]
+    )
+  })
+}
+
+// ---- documents (the model writes a `document` prism-block as markdown) —
+// mirrors the deck/spreadsheet helpers: persisted so the Document Studio can
+// reload/edit/export (DOCX/Markdown/PDF) independent of the chat message.
+export async function createDocument(userEmail, userToken, sessionId, title, markdown) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `INSERT INTO chat_documents (session_id, user_email, title, markdown) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [sessionId, userEmail, title, markdown || '']
+    )
+    return String(r.rows[0].id)
+  })
+}
+
+export async function getDocument(userEmail, userToken, docId) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(`SELECT id, title, markdown FROM chat_documents WHERE id = $1 AND user_email = $2`, [
+      docId,
+      userEmail,
+    ])
+    if (!r.rows.length) return null
+    const x = r.rows[0]
+    return { id: String(x.id), title: x.title, markdown: x.markdown || '' }
+  })
+}
+
+export async function updateDocument(userEmail, userToken, docId, title, markdown) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query(
+      `UPDATE chat_documents SET title = $1, markdown = $2, updated_at = NOW() WHERE id = $3 AND user_email = $4`,
+      [title, markdown || '', docId, userEmail]
+    )
+  })
+}
+
+// ---- generated images (bytes on a UC Volume; row keeps the path) — the binary
+// sibling of decks/spreadsheets. createImage stores the volume_path that the
+// image tool just wrote (see server/imageStore.js); getImage returns the row
+// (incl. volume_path) so GET /api/images/:id can stream the bytes back, scoped
+// by user_email like every other artifact read.
+export async function createImage(userEmail, userToken, sessionId, { prompt, model, volumePath, contentType }) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `INSERT INTO chat_images (session_id, user_email, prompt, model, volume_path, content_type)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [sessionId, userEmail, prompt || null, model || null, volumePath, contentType || 'image/png']
+    )
+    return String(r.rows[0].id)
+  })
+}
+
+export async function getImage(userEmail, userToken, imageId) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `SELECT id, prompt, model, volume_path, content_type FROM chat_images WHERE id = $1 AND user_email = $2`,
+      [imageId, userEmail]
+    )
+    if (!r.rows.length) return null
+    const x = r.rows[0]
+    return {
+      id: String(x.id),
+      prompt: x.prompt || '',
+      model: x.model || '',
+      volumePath: x.volume_path,
+      contentType: x.content_type || 'image/png',
+    }
+  })
+}
+
+// Volume paths for every image in a session — used to purge the Volume files
+// before the session (and its cascading chat_images rows) is deleted.
+export async function listSessionImagePaths(userEmail, userToken, sessionId) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(
+      `SELECT volume_path FROM chat_images WHERE session_id = $1 AND user_email = $2`,
+      [sessionId, userEmail]
+    )
+    return r.rows.map((x) => x.volume_path).filter(Boolean)
+  })
+}
+
+// ---- per-user image-generation model selection (mirrors template selection) --
+export async function getSelectedImageModel(userEmail, userToken) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(`SELECT model_id FROM user_image_model_selection WHERE user_email = $1`, [userEmail])
+    return r.rows.length ? r.rows[0].model_id : null
+  })
+}
+
+export async function setSelectedImageModel(userEmail, userToken, modelId) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query(
+      `INSERT INTO user_image_model_selection (user_email, model_id) VALUES ($1, $2)
+       ON CONFLICT (user_email) DO UPDATE SET model_id = EXCLUDED.model_id, updated_at = NOW()`,
+      [userEmail, modelId]
+    )
+  })
+}
+
+// ---- org-wide tool policy (which built-in tool groups are available) --------
+// Returns a { [toolKey]: boolean } map of EXPLICIT admin decisions. A key absent
+// from the map means "default" (enabled) — callers treat missing as true. Any DB
+// error degrades to {} (everything enabled), never blocking the app.
+export async function getToolPolicy(userEmail, userToken) {
+  return withClient(userEmail, userToken, async (c) => {
+    const r = await c.query(`SELECT tool_key, enabled FROM app_tool_policy`)
+    const map = {}
+    for (const x of r.rows) map[x.tool_key] = !!x.enabled
+    return map
+  })
+}
+
+export async function setToolPolicy(userEmail, userToken, toolKey, enabled) {
+  await withClient(userEmail, userToken, async (c) => {
+    await c.query(
+      `INSERT INTO app_tool_policy (tool_key, enabled, updated_by, updated_at) VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (tool_key) DO UPDATE SET enabled = EXCLUDED.enabled, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+      [toolKey, !!enabled, userEmail]
     )
   })
 }

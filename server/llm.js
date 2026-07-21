@@ -32,19 +32,42 @@
 // (auto-discovery via GET /serving-endpoints, filtrando task=llm/v1/chat e
 // aplicando estes overrides por padrão de nome) torna esta lista automática.
 export const MODELS = [
-  { id: 'databricks-claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'Anthropic', blurb: 'Equilibrado e rápido — ótimo padrão para agentes', in: 3, out: 15, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
-  { id: 'databricks-claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'Anthropic', blurb: 'Máxima capacidade de raciocínio e análise', in: 15, out: 75, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
-  { id: 'databricks-claude-fable-5', label: 'Claude Fable 5', provider: 'Anthropic', blurb: 'Família Claude 5, geração criativa e ágil', in: 1, out: 5, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
-  { id: 'databricks-claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'Anthropic', blurb: 'Rápido e econômico', in: 0.8, out: 4, vision: true, streamUsage: true, tools: true, maxOut: 32768, promptCache: true },
-  { id: 'databricks-gpt-5-6-terra', label: 'GPT-5.6', provider: 'OpenAI', blurb: 'Multimodal de fronteira e agentes complexos', in: 1.25, out: 10, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
-  { id: 'databricks-gpt-5-mini', label: 'GPT-5 mini', provider: 'OpenAI', blurb: 'Rápido e de baixo custo', in: 0.25, out: 2, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
-  { id: 'databricks-gemini-3-pro', label: 'Gemini 3 Pro', provider: 'Google', blurb: 'Fronteira multimodal, contexto muito longo', in: 1.25, out: 10, vision: true, streamUsage: false, tools: true, maxOut: 32768 },
-  { id: 'databricks-gemini-3-5-flash', label: 'Gemini 3.5 Flash', provider: 'Google', blurb: 'Muito rápido, contexto longo', in: 0.3, out: 2.5, vision: true, streamUsage: false, tools: true, maxOut: 32768 },
+  { id: 'databricks-claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'Anthropic', blurb: 'Equilibrado e rápido — ótimo padrão para agentes', in: 2, out: 10, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
+  { id: 'databricks-claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'Anthropic', blurb: 'Máxima capacidade de raciocínio e análise', in: 5, out: 25, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
+  { id: 'databricks-claude-fable-5', label: 'Claude Fable 5', provider: 'Anthropic', blurb: 'Família Claude 5, geração criativa e ágil', in: 10, out: 50, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
+  { id: 'databricks-claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'Anthropic', blurb: 'Rápido e econômico', in: 1, out: 5, vision: true, streamUsage: true, tools: true, maxOut: 32768, promptCache: true },
+  // GPT-5.6 family — three tiers of the same generation (sondado ao vivo: os três
+  // rejeitam temperature custom → noTemperature; aceitam max_tokens ≥32768).
+  // Preços aproximados por tier (flourish de estimativa; gasto real vem das
+  // system tables). Blurbs intencionais para diferenciar os três na UI.
+  { id: 'databricks-gpt-5-6-luna', label: 'GPT-5.6 Luna', provider: 'OpenAI', blurb: 'O mais rápido e econômico da família 5.6', in: 1, out: 6, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
+  { id: 'databricks-gpt-5-6-terra', label: 'GPT-5.6 Terra', provider: 'OpenAI', blurb: 'Equilíbrio de custo e capacidade para o dia a dia', in: 2.5, out: 15, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
+  { id: 'databricks-gpt-5-6-sol', label: 'GPT-5.6 Sol', provider: 'OpenAI', blurb: 'O topo da família: agentes, código e raciocínio longo', in: 5, out: 30, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
+  { id: 'databricks-gemini-3-5-flash', label: 'Gemini 3.5 Flash', provider: 'Google', blurb: 'Muito rápido, contexto longo', in: 1.875, out: 11.25, vision: true, streamUsage: false, tools: true, maxOut: 32768 },
   { id: 'databricks-llama-4-maverick', label: 'Llama 4 Maverick', provider: 'Meta', blurb: 'Pesos abertos, modelo geral robusto', in: 0.5, out: 1.5, vision: false, streamUsage: false, tools: true, maxOut: 8192 },
-  { id: 'databricks-glm-5-2', label: 'GLM-5.2', provider: 'Zhipu AI', blurb: 'Aberto, forte em raciocínio e código', in: 0.6, out: 2, vision: false, streamUsage: true, tools: true, maxOut: 32768 },
-  { id: 'databricks-qwen35-122b-a10b', label: 'Qwen3.5 122B', provider: 'Alibaba', blurb: 'Aberto e eficiente, raciocínio MoE', in: 0.4, out: 1.2, vision: false, streamUsage: true, tools: true, maxOut: 16384 },
-  { id: 'databricks-gpt-oss-120b', label: 'GPT-OSS 120B', provider: 'OpenAI (OSS)', blurb: 'Pesos abertos, ideal para auto-hospedagem', in: 0.3, out: 1.0, vision: false, streamUsage: false, tools: true, maxOut: 16384 },
+  { id: 'databricks-glm-5-2', label: 'GLM-5.2', provider: 'Zhipu AI', blurb: 'Aberto, forte em raciocínio e código', in: 1.4, out: 4.4, vision: false, streamUsage: true, tools: true, maxOut: 32768 },
+  { id: 'databricks-qwen35-122b-a10b', label: 'Qwen3.5 122B', provider: 'Alibaba', blurb: 'Aberto e eficiente, raciocínio MoE', in: 0.22, out: 2.2, vision: false, streamUsage: true, tools: true, maxOut: 8192 },
+  // Image-generation endpoints. Sondado ao vivo (jul/2026, e2-demo-field-eng):
+  // servem por `task=llm/v1/chat` — NÃO há API de imagem separada. A resposta
+  // traz `choices[0].message.content` como um array [{type:"image_url",
+  // image_url:{url:"data:image/png;base64,..."}}] e `usage.image_output_tokens`.
+  // Aceitam imagem no input (edição/img2img) e `usage_context` (custos). São
+  // chamados por generateImage(), nunca pelo streamChat do chat comum — por isso
+  // `modality:'image'` os mantém FORA do picker de chat (ver buildUserModels).
+  // noTemperature: conservador (nunca causa 400); vision: aceitam image_url no input.
+  { id: 'databricks-gemini-3-1-flash-image', label: 'Nano Banana 2', provider: 'Google', blurb: 'Gemini 3.1 Flash — geração de imagem rápida', modality: 'image', vision: true, noTemperature: true, tools: false, maxOut: 8192 },
 ]
+
+// Modality helpers: an endpoint without `modality` is a chat model (the
+// overwhelming default). Only image-generation endpoints carry modality:'image'.
+export function isImageModel(id) {
+  return modelById(id)?.modality === 'image'
+}
+export function imageModels() {
+  return MODELS.filter((m) => m.modality === 'image')
+}
+// Default image model when the user hasn't chosen one (mirrors MODELS[0] for chat).
+export const DEFAULT_IMAGE_MODEL = 'databricks-gemini-3-1-flash-image'
 
 // A fast, non-reasoning model: reasoning models can burn the whole token
 // budget on hidden thinking and return empty content for tiny outputs.
@@ -218,14 +241,45 @@ function applyCacheControl(messages) {
  * final { usage, toolCalls, finishReason } object once the stream ends.
  * `toolCalls` is null unless the model asked to call one or more tools.
  */
+// Some gateways are strict about `system` messages: Gemini rejects MORE THAN
+// ONE ("Gemini models only support one system prompt"), and Qwen requires the
+// system message to be FIRST ("System message must be at the beginning").
+// This app legitimately builds several system messages, some appended AFTER the
+// history (narration policy, forced language) for salience. To satisfy every
+// provider, collapse them all into a SINGLE system message at index 0, joining
+// their text in original order (so the last-appended directive — e.g. forced
+// language — stays last WITHIN the system block, keeping its intended salience).
+// Content-only system blocks are concatenated as text; array-content system
+// blocks are flattened to their text. Non-system messages keep their order.
+// Harmless for Claude/GPT (which tolerate the original shape); required for
+// Gemini/Qwen. Runs BEFORE applyCacheControl so the merged block is what gets
+// the cache breakpoint.
+function systemBlockText(content) {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content.map((b) => (typeof b === 'string' ? b : b?.text || '')).join('')
+  return ''
+}
+function mergeSystemMessages(messages) {
+  const systems = []
+  const rest = []
+  for (const m of messages) {
+    if (m.role === 'system') systems.push(systemBlockText(m.content))
+    else rest.push(m)
+  }
+  if (systems.length <= 1) return messages // already compliant — untouched
+  const merged = { role: 'system', content: systems.filter(Boolean).join('\n\n') }
+  return [merged, ...rest]
+}
+
 export async function* streamChat(token, model, messages, opts = {}) {
   const info = modelById(model)
+  const normalized = mergeSystemMessages(messages)
   const body = {
     model,
     // Prompt caching: mark the stable prefix so tool rounds within a turn reuse
     // it (big latency win on the synthesis round) — zero change to what the
     // model reads. Only for endpoints sondados as honoring cache_control.
-    messages: info.promptCache ? applyCacheControl(messages) : messages,
+    messages: info.promptCache ? applyCacheControl(normalized) : normalized,
     max_tokens: opts.maxTokens || info.maxOut || 8192,
     stream: true,
   }
@@ -322,6 +376,71 @@ export async function complete(token, model, messages, opts = {}) {
   }
   const json = await res.json()
   return extractContent(json.choices?.[0]?.message?.content)
+}
+
+// Pulls every generated image out of a chat/completions message `content`.
+// Image endpoints (gemini-*-image) return content as an array of parts, with
+// the image as {type:"image_url", image_url:{url:"data:image/png;base64,..."}}
+// — the exact shape sondado ao vivo. `extractContent` above deliberately skips
+// these (it wants the answer TEXT); this is the complementary reader for the
+// image path. Returns an array of data-URL strings (usually one).
+function extractImageUrls(content) {
+  if (!Array.isArray(content)) return []
+  const urls = []
+  for (const part of content) {
+    const url = part?.image_url?.url
+    if (part?.type === 'image_url' && typeof url === 'string' && url.startsWith('data:image/')) {
+      urls.push(url)
+    }
+  }
+  return urls
+}
+
+/**
+ * Generate (or edit) an image via an image-generation serving endpoint. These
+ * endpoints speak the OpenAI-compatible chat/completions protocol — a normal
+ * chat request whose model happens to render images — so this reuses chatUrl()
+ * and the usage-context stamp. `baseImages` (data-URLs) are attached as input
+ * image parts for editing/img2img; omit them for pure text→image.
+ *
+ * Returns { dataUrls: string[], usage } — dataUrls are `data:image/png;base64,…`
+ * strings ready to persist. Throws on a non-200 or when the endpoint returned
+ * no image (so the caller can surface an honest error to the model/user).
+ */
+export async function generateImage(token, model, { prompt, baseImages = [] } = {}) {
+  const info = modelById(model)
+  const userContent = [{ type: 'text', text: prompt || '' }]
+  for (const b of baseImages) {
+    if (typeof b === 'string' && b.startsWith('data:image/')) {
+      userContent.push({ type: 'image_url', image_url: { url: b } })
+    }
+  }
+  const body = {
+    model,
+    // when there are no base images, send the prompt as a plain string — the
+    // simplest shape these endpoints accept; with base images we must use the
+    // parts array to carry them.
+    messages: [{ role: 'user', content: baseImages.length ? userContent : (prompt || '') }],
+    max_tokens: info.maxOut || 8192,
+  }
+  const res = await fetch(chatUrl(), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(withUsageContext(body)),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Image endpoint ${model} returned ${res.status}: ${text.slice(0, 300)}`)
+  }
+  const json = await res.json()
+  const dataUrls = extractImageUrls(json.choices?.[0]?.message?.content)
+  if (!dataUrls.length) {
+    // The model may refuse or return only text (e.g. a safety decline) — pass
+    // that text up so the caller can relay the actual reason, not a blank fail.
+    const text = extractContent(json.choices?.[0]?.message?.content)
+    throw new Error(text ? `Model returned no image: ${text.slice(0, 200)}` : 'Model returned no image.')
+  }
+  return { dataUrls, usage: json.usage || null }
 }
 
 // Vision model used to label mined design-system assets at import time —
