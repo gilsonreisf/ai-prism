@@ -93,19 +93,20 @@ O que o bundle (`databricks.yml`) gerencia:
 |---|---|
 | **Lakebase** (`postgres_projects` + `postgres_endpoints`) | serverless, autoscaling **0.5–16 CU**, **auto-stop 30 min** |
 | **SQL Warehouse** (`sql_warehouses`) | Serverless, 2X-Small, Photon, auto-stop 10 min |
-| **App** (`apps`) | env cabeado a partir dos recursos acima; `APP_OWNER_EMAIL` = quem deployou |
+| **App** (`apps`) | Lakebase e SQL Warehouse anexados como **recursos da App** (a runtime injeta `PGHOST`/`SQL_WAREHOUSE_ID`); env estático no `app.yaml` |
 | **Dashboard de custos** (`dashboards`) | Lakeview de auditoria de custos (system tables) |
-| **Job de auto-config** (`jobs`) | provisiona a UDF `ai_prism_python_exec` **e o Volume de imagens** (catálogo/schema/volume dedicados + grant ao SP do app); imprime a config |
+| **Job de auto-config** (`jobs`) | cria o **role Postgres do SP** do app no Lakebase (`databricks_create_role`), a UDF `ai_prism_python_exec` e o Volume de imagens (tudo no catálogo `ai_prism`), e **semeia o admin bootstrap** (quem deployou) na tabela `app_admins` |
 
 > **Alvos:** `dev` (padrão, prefixa recursos com seu usuário — bom para testar) e
 > `prod` (nomes limpos, para o deploy oficial). Troque `-t dev` por `-t prod`
 > quando for para valer. Nenhum dos alvos fixa host — o workspace vem do
 > `-p <PROFILE>`, então não é preciso editar o `databricks.yml`.
 
-> **Sobre os IDs do Lakebase serverless:** o app lê `PGHOST` do output do endpoint
-> Postgres do bundle. Na primeira vez, confira no `bundle summary` (ou no job de
-> auto-config, que imprime `PGHOST`/`PGDATABASE`) se o host resolvido está correto
-> antes de anunciar o app para o time.
+> **Sobre a conexão com o Lakebase:** o `PGHOST` é injetado automaticamente pela
+> runtime da App a partir do recurso `lakebase` (não é hardcoded em lugar nenhum —
+> por isso o mesmo bundle funciona em qualquer cloud). O app conecta como o **service
+> principal dele** (o job cria o role Postgres do SP); o isolamento por usuário é
+> app-level (`WHERE user_email`).
 
 Ao final, `databricks bundle summary -p <PROFILE> -t dev` mostra a URL pública da
 App (atrás do OAuth do workspace).
@@ -143,8 +144,8 @@ browser. O isolamento por usuário continua **app-level** (`WHERE user_email` em
 ## 4. Primeiro acesso e configuração de modelos (5 min)
 
 1. Abra a URL da App e autentique com sua conta do workspace.
-2. Como você é o `APP_OWNER_EMAIL` (o deployer), verá as abas de **admin** em
-   *Configurações*.
+2. Como o deployer, o job de auto-config já te semeou como **admin** (tabela
+   `app_admins`), então você verá as abas de **admin** em *Configurações*.
 3. **Modelos (LLM)**: habilite os endpoints de serving que o time deve usar e
    defina rótulos/ordem. Só os habilitados aparecem para usuários comuns.
 4. **Custos de IA**: a auditoria de custos vive no **dashboard AI/BI** provisionado
@@ -181,10 +182,11 @@ browser. O isolamento por usuário continua **app-level** (`WHERE user_email` em
 | Sintoma | Causa provável | Ação |
 |---|---|---|
 | `bundle deploy` falha em Lakebase/endpoint | recurso serverless Postgres indisponível na região/conta | confirme disponibilidade do Lakebase serverless; ajuste `databricks.yml` |
-| App sobe mas não conecta no Postgres | `PGHOST` resolveu para host errado | veja o `PGHOST` impresso pelo job de auto-config / `bundle summary` |
+| Chat falha com **"External authorization failed"** / 0 tabelas no Lakebase | login do SP no Lakebase rejeitado (SQLSTATE 28000): role do SP não criado, ou `PGHOST` apontando pro Lakebase errado (nunca hardcode host no `app.yaml`!) | rode `databricks bundle run ai_prism_auto_config` (cria o role do SP); confirme que o recurso `lakebase` está anexado à App |
 | Tool `execute_python` some | UDF não provisionada | rode `databricks bundle run ai_prism_auto_config` (ou o app a cria no 1º uso) |
 | Modelos não aparecem | Nenhum endpoint habilitado no catálogo | Admin → *Modelos (LLM)* → habilite |
-| Deploy sem efeito | Esqueceu de `npm run bundle` | Rebuild + `bundle deploy` novamente |
+| Não vejo as abas de admin | admin bootstrap não semeado | rode `databricks bundle run ai_prism_auto_config` (semeia o deployer em `app_admins`) |
+| Mudança no código sem efeito | `bundle deploy` não republica o código da App | rode `npm run bundle` e depois `databricks apps deploy ai-prism --source-code-path <SRC>` |
 
 ---
 

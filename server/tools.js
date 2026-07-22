@@ -36,7 +36,9 @@ const GENIE_ONE_SPACE_ID = '__genie_one__'
 export const GENIE_ONE_TOOL_FN_NAME = 'ask_genie_one'
 
 function catalog() {
-  return process.env.TOOLS_CATALOG || 'main'
+  // default to the dedicated AI Prism catalog so the built-in Python UDF lives
+  // alongside the image volume (all AI Prism assets in one place)
+  return process.env.TOOLS_CATALOG || 'ai_prism'
 }
 function schema() {
   return process.env.TOOLS_SCHEMA || 'default'

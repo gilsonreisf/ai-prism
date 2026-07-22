@@ -20,45 +20,52 @@ user_authorization:
     # on-behalf-of the user) — see server/imageStore.js
     - files
 
+# IMPORTANT: never hardcode workspace-specific infra here (Lakebase host, warehouse
+# id, catalogs). The Apps runtime reads env from this file, so a hardcoded host
+# would point the app at the WRONG (e.g. another cloud's) Lakebase and fail every
+# DB call with SQLSTATE 28000 "External authorization failed".
+#
+# The Lakebase connection is delivered via an APP RESOURCE (key: `lakebase`,
+# declared in databricks.yml). `valueFrom: lakebase` injects that resource's
+# endpoint PATH at runtime, and the resource also auto-injects PGHOST; the app
+# resolves the real host + a connection JWT at boot (lakebaseHost() in
+# server/db.js). SQL_WAREHOUSE_ID comes from the `sql-warehouse` resource the
+# same way. The bundle's databricks.yml config.env does NOT reach the running app
+# (verified), so ALL env lives HERE. For LOCAL dev (bare `npm start`, no bundle),
+# export PGHOST + SQL_WAREHOUSE_ID in your shell.
 env:
   - name: NODE_ENV
     value: 'production'
-  # bootstrap admin: this identity is always an app admin and can add other
-  # admins (users/groups) via the in-app admin panel (see server/authz.js)
-  - name: APP_OWNER_EMAIL
-    value: 'pedro.ramos@databricks.com'
-  # used by the admin-candidates autocomplete (permissions API is keyed by
-  # app NAME); set explicitly in case the runtime doesn't inject it
   - name: DATABRICKS_APP_NAME
     value: 'ai-prism'
   - name: PORT
     value: '8000'
-  # NOTE: the values below are local-dev / E2_Demo defaults ONLY. A `databricks
-  # bundle deploy` does NOT use this file's env — the deployed app's config comes
-  # from databricks.yml (apps.ai_prism.config.env), which wires PGHOST, catalogs,
-  # warehouse and image volume per-workspace from the bundle's own resources. So
-  # this AWS host is never used on a bundle deploy (Azure/GCP included); it's just
-  # what a bare `npm start` against E2 points at.
-  - name: PGHOST
-    value: 'ep-rough-smoke-d16ogta3.database.us-west-2.cloud.databricks.com'
-  - name: PGDATABASE
-    value: 'databricks_postgres'
   - name: PGPORT
     value: '5432'
   - name: PGSSLMODE
     value: 'require'
+  - name: PGDATABASE
+    value: 'databricks_postgres'
+  # Lakebase endpoint path, injected from the `lakebase` app resource. The app
+  # resolves host + connection token from it at boot (server/db.js lakebaseHost()).
+  # (The `lakebase` resource also auto-injects PGHOST directly.)
+  - name: PG_ENDPOINT
+    valueFrom: 'lakebase'
+  # SQL warehouse id, injected from the `sql-warehouse` app resource (declared in
+  # databricks.yml). The app runtime reads env from THIS file plus resource
+  # injections — the bundle's databricks.yml config.env does NOT reach the running
+  # app — so warehouse/PG must arrive via app.yaml + resources, never config.env.
   - name: SQL_WAREHOUSE_ID
-    value: '75718e4268126449'
+    valueFrom: 'sql-warehouse'
+  # Tools UDF + image-store locations. Everything AI Prism owns lives in the
+  # dedicated `ai_prism` catalog (built-in Python UDF and the image volume), so
+  # it's all in one place. The app falls back to these same defaults in code.
   - name: TOOLS_CATALOG
-    value: 'main'
+    value: 'ai_prism'
   - name: TOOLS_SCHEMA
     value: 'default'
-  # Where generated images are stored (own catalog, kept separate from other
-  # assets). On E2_Demo we use the pedro_ramos catalog; a fresh bundle deploy
-  # defaults to a dedicated `ai_prism` catalog. The app service principal is
-  # granted READ/WRITE VOLUME here; per-user isolation is app-level (user_email).
   - name: IMAGE_VOLUME_CATALOG
-    value: 'pedro_ramos'
+    value: 'ai_prism'
   - name: IMAGE_VOLUME_SCHEMA
     value: 'default'
   - name: IMAGE_VOLUME_NAME

@@ -30,6 +30,8 @@ dbutils.widgets.text("image_volume_catalog", "ai_prism", "Image store catalog")
 dbutils.widgets.text("image_volume_schema", "default", "Image store schema")
 dbutils.widgets.text("image_volume_name", "ai_prism_images", "Image store volume")
 dbutils.widgets.text("app_sp_client_id", "", "App service principal client id")
+dbutils.widgets.text("lakebase_port", "5432", "Lakebase port")
+dbutils.widgets.text("lakebase_endpoint", "", "Lakebase endpoint path (projects/../branches/../endpoints/..)")
 
 catalog = dbutils.widgets.get("catalog").strip() or "main"
 schema = dbutils.widgets.get("schema").strip() or "default"
@@ -42,6 +44,8 @@ image_catalog = dbutils.widgets.get("image_volume_catalog").strip() or "ai_prism
 image_schema = dbutils.widgets.get("image_volume_schema").strip() or "default"
 image_volume = dbutils.widgets.get("image_volume_name").strip() or "ai_prism_images"
 app_sp_client_id = dbutils.widgets.get("app_sp_client_id").strip()
+lakebase_port = dbutils.widgets.get("lakebase_port").strip() or "5432"
+lakebase_endpoint = dbutils.widgets.get("lakebase_endpoint").strip()
 
 # COMMAND ----------
 
@@ -104,6 +108,103 @@ if app_sp_client_id:
 else:
     print("WARNING: no app_sp_client_id provided — grant READ/WRITE VOLUME on "
           f"{image_catalog}.{image_schema} to the app service principal manually.")
+
+# COMMAND ----------
+
+# Provision the Lakebase Postgres ROLE for the app's service principal, so the
+# app can connect to Lakebase as itself (app authorization — the app uses its SP
+# OAuth token as the PG password; per-user isolation stays app-level via the
+# user_email WHERE clauses). WITHOUT this role the app's SP has no PG login and
+# the whole schema never gets created (0 tables) — and because ensureSchema runs
+# on the first request, EVERY authenticated call fails at the DB with SQLSTATE
+# 28000, surfaced to the user as "External authorization failed".
+#
+# This runs as the DEPLOYER. The Lakebase "Autoscaling" product
+# (projects/branches/endpoints) has no REST roles API; the supported mechanism is
+# the `databricks_auth` extension's `databricks_create_role(identity, type)`
+# function, run over SQL. The app then applies its own table GRANTs at runtime
+# (see ensureSpGrants in db.js), but that only works once this role exists — so
+# we create it here, idempotently.
+if lakebase_host and app_sp_client_id and lakebase_endpoint:
+    try:
+        import psycopg2  # present on serverless/DBR notebook images
+    except ImportError:
+        import subprocess, sys as _sys
+        subprocess.check_call([_sys.executable, "-m", "pip", "install", "-q", "psycopg2-binary"])
+        import psycopg2
+
+    # Lakebase requires an OAuth JWT as the PG password. The notebook's runtime
+    # auth can't mint one directly (config.oauth_token() isn't available under
+    # runtime auth), so we use the Lakebase credentials API, which returns a
+    # short-lived JWT scoped to the endpoint — connecting as the deployer, whose
+    # identity-federated PG login auto-exists on first connect.
+    from databricks.sdk import WorkspaceClient
+    _w = WorkspaceClient()
+    _cred = _w.api_client.do(
+        "POST", "/api/2.0/postgres/credentials",
+        body={"endpoint": lakebase_endpoint},
+    )
+    pg_token = _cred["token"]
+
+    conn = psycopg2.connect(
+        host=lakebase_host,
+        port=int(lakebase_port),
+        dbname=lakebase_db,
+        user=deployer_email,
+        password=pg_token,
+        sslmode="require",
+        connect_timeout=30,
+    )
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS databricks_auth")
+            # role name = SP client id. Idempotent: skip if it already exists.
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (app_sp_client_id,))
+            if cur.fetchone():
+                print(f"Lakebase role for app SP already exists: {app_sp_client_id}")
+            else:
+                cur.execute(
+                    "SELECT databricks_create_role(%s, %s)",
+                    (app_sp_client_id, "SERVICE_PRINCIPAL"),
+                )
+                print(f"Created Lakebase role for app SP: {app_sp_client_id}")
+            # let the SP bootstrap its schema on first run (the app's ensureSpGrants
+            # then handles table-level DML grants once tables exist)
+            cur.execute(f'GRANT CREATE, USAGE ON SCHEMA public TO "{app_sp_client_id}"')
+            cur.execute(f'GRANT CREATE ON DATABASE "{lakebase_db}" TO "{app_sp_client_id}"')
+            print("Granted CREATE/USAGE on public + CREATE on database to app SP.")
+
+            # Seed the deployer as the bootstrap ADMIN. The app reads admins from
+            # this table (server/authz.js) — a persistent, redeploy-safe source of
+            # truth. We do this here (not via APP_OWNER_EMAIL) because the bundle's
+            # config.env does NOT reach the running app; only app.yaml + resource
+            # injections do, and app.yaml can't carry the (dynamic) deployer email.
+            # Create the table if the app hasn't booted yet (same shape as db.js);
+            # idempotent upsert so re-deploys are safe.
+            if deployer_email:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS app_admins ("
+                    " principal TEXT PRIMARY KEY,"
+                    " kind TEXT NOT NULL DEFAULT 'user',"
+                    " added_by TEXT NOT NULL,"
+                    " created_at TIMESTAMPTZ DEFAULT NOW())"
+                )
+                cur.execute(
+                    "INSERT INTO app_admins (principal, kind, added_by) VALUES (%s,'user','auto-config')"
+                    " ON CONFLICT (principal) DO NOTHING",
+                    (deployer_email,),
+                )
+                # the app SP owns the schema; let it manage this table too
+                cur.execute(f'GRANT SELECT, INSERT, UPDATE, DELETE ON app_admins TO "{app_sp_client_id}"')
+                print(f"Seeded bootstrap admin: {deployer_email}")
+    finally:
+        conn.close()
+else:
+    print("WARNING: lakebase_host / app_sp_client_id / lakebase_endpoint missing — "
+          "skipping SP role provisioning. The app SP won't be able to connect to "
+          "Lakebase; create the role manually with "
+          "databricks_create_role(<client_id>,'SERVICE_PRINCIPAL').")
 
 # COMMAND ----------
 
