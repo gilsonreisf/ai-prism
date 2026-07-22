@@ -20,8 +20,11 @@ bundle:
 
 variables:
   tools_catalog:
-    description: Catalog where the built-in Python UDF is provisioned.
-    default: main
+    description: >-
+      Catalog where the built-in Python UDF is provisioned. Defaults to the
+      dedicated `ai_prism` catalog so all AI Prism assets (UDF + image volume)
+      live in one place.
+    default: ai_prism
   tools_schema:
     description: Schema where the built-in Python UDF is provisioned.
     default: default
@@ -30,9 +33,9 @@ variables:
     default: databricks_postgres
   image_volume_catalog:
     description: >-
-      Catalog for AI Prism's generated-image storage. Kept separate from the
-      tools catalog so image bytes never mix with other assets. Defaults to a
-      dedicated `ai_prism` catalog; the app owner can point it anywhere.
+      Catalog for AI Prism's generated-image storage. Defaults to the dedicated
+      `ai_prism` catalog (same as the tools catalog) so all AI Prism assets live
+      in one place; the app owner can point it anywhere.
     default: ai_prism
   image_volume_schema:
     description: Schema (inside image_volume_catalog) for the images volume.
@@ -43,6 +46,18 @@ variables:
 
 resources:
   # --- Lakebase: serverless Postgres, autoscaling 0.5–16 CU, 30-min auto-stop ---
+  # Lakebase has TWO product lines with different APIs:
+  #   • "Autoscaling" (projects/branches/endpoints, /api/2.0/postgres/...) —
+  #     the ONLY one with an autoscaling CU range + scale-to-zero. Cloud-agnostic.
+  #   • "Provisioned" (database_instances) — fixed capacity SKU only, no autoscale.
+  # We use Autoscaling so the compute range + auto-stop below are honored.
+  #
+  # Creating the project auto-provisions a default branch ("production") and a
+  # read-write endpoint ("primary") with these default_endpoint_settings applied.
+  # The endpoint host is not exposed on the project, so we declare the primary
+  # endpoint explicitly and adopt the auto-created one via replace_existing, with
+  # its parent = the branch path (NOT the project — that path 404s). We then read
+  # the resolved read-write host from status.hosts.host.
   postgres_projects:
     ai_prism_pg:
       project_id: ai-prism
@@ -54,9 +69,12 @@ resources:
 
   postgres_endpoints:
     ai_prism_pg_rw:
-      endpoint_id: ai-prism-rw
-      parent: ${resources.postgres_projects.ai_prism_pg.project_id}
+      endpoint_id: primary
+      # branch path of the auto-created default branch on the project above
+      parent: projects/${resources.postgres_projects.ai_prism_pg.project_id}/branches/production
       endpoint_type: ENDPOINT_TYPE_READ_WRITE
+      # adopt the endpoint the project auto-created instead of erroring on "already exists"
+      replace_existing: true
       autoscaling_limit_min_cu: 0.5
       autoscaling_limit_max_cu: 16
       suspend_timeout_duration: 1800s
@@ -90,8 +108,12 @@ resources:
               catalog: ${var.tools_catalog}
               schema: ${var.tools_schema}
               warehouse_id: ${resources.sql_warehouses.ai_prism_wh.id}
-              lakebase_host: ${resources.postgres_endpoints.ai_prism_pg_rw.host}
+              lakebase_host: ${resources.postgres_endpoints.ai_prism_pg_rw.status.hosts.host}
               lakebase_db: ${var.lakebase_database}
+              lakebase_port: "5432"
+              # endpoint path for the Lakebase credentials API (mints a PG JWT so
+              # the deploy job can create the app SP's Postgres role)
+              lakebase_endpoint: projects/${resources.postgres_projects.ai_prism_pg.project_id}/branches/production/endpoints/primary
               app_name: ai-prism
               # The bundle deploys the cost dashboard as a draft; the job publishes
               # it so admins see it live right after deploy.
@@ -109,51 +131,64 @@ resources:
       name: ai-prism
       description: "AI Prism — your own multi-model chat on the Databricks AI Gateway."
       source_code_path: ./
+      # On-behalf-of-user (OBO) OAuth scopes the app requests when calling
+      # Databricks APIs as the signed-in user. These MUST be declared here on the
+      # bundle resource — the scopes in app.yaml (user_authorization.scopes) are
+      # NOT applied by `bundle deploy`, so without this the app only gets the
+      # auto-granted iam.* scopes and every AI Gateway call fails with
+      # "External authorization failed". (iam.current-user:read /
+      # iam.access-control:read are auto-granted — do not list them.)
+      user_api_scopes:
+        - serving.serving-endpoints   # AI Gateway: /serving-endpoints/chat/completions + embeddings
+        - sql                         # Statement Execution: UC Function discovery/exec + Python UDF
+        - dashboards.genie            # Genie spaces + Genie One MCP
+        - vectorsearch.vector-search-endpoints
+        - vectorsearch.vector-search-indexes
+        - catalog.connections         # UC connections (external MCP discovery)
+        - mcp.external                # external MCP connections
+        - files.files                 # UC Volume read/write for generated images (Files API)
       resources:
         - name: sql-warehouse
           sql_warehouse:
             id: ${resources.sql_warehouses.ai_prism_wh.id}
             permission: CAN_USE
+        # Lakebase as an app resource. The Apps runtime injects the endpoint path
+        # for value_from: lakebase (see PG_ENDPOINT below) and lets the app SP
+        # connect. This is how the app learns its Lakebase per workspace WITHOUT a
+        # hardcoded host — a nested ${...status.hosts.host} does NOT resolve into
+        # app config, which is why an earlier hardcoded PGHOST silently pointed the
+        # app at the wrong cloud's Lakebase (SQLSTATE 28000).
+        - name: lakebase
+          postgres:
+            branch: projects/${resources.postgres_projects.ai_prism_pg.project_id}/branches/production
+            # NOTE: the database_id in this PATH is the UC resource id, which the
+            # platform derives from the PG db name by replacing '_' with '-' — so
+            # the default "databricks_postgres" DB has id "databricks-postgres".
+            # The actual PG connection still uses PGDATABASE=databricks_postgres.
+            database: projects/${resources.postgres_projects.ai_prism_pg.project_id}/branches/production/databases/databricks-postgres
+            permission: CAN_CONNECT_AND_CREATE
+      # IMPORTANT: the app's runtime ENV comes from `app.yaml` (+ the resource
+      # injections declared above: `lakebase` → PGHOST/PG_ENDPOINT,
+      # `sql-warehouse` → SQL_WAREHOUSE_ID) — NOT from a `config.env` block here.
+      # A `config.env` set at this level did NOT reach the running app in testing
+      # (values came back undefined), so all env lives in app.yaml. The bootstrap
+      # admin (deployer) is seeded into the app_admins table by the auto-config
+      # job (see bundle/auto_config.py), since it can't be a static app.yaml value.
+      # We still set `command` here to pin the entrypoint.
       config:
         command: ["node", "server-dist/index.cjs"]
-        env:
-          - name: NODE_ENV
-            value: production
-          - name: APP_OWNER_EMAIL
-            value: ${workspace.current_user.userName}
-          - name: DATABRICKS_APP_NAME
-            value: ai-prism
-          - name: PORT
-            value: "8000"
-          - name: PGHOST
-            value: ${resources.postgres_endpoints.ai_prism_pg_rw.host}
-          - name: PGDATABASE
-            value: ${var.lakebase_database}
-          - name: PGPORT
-            value: "5432"
-          - name: PGSSLMODE
-            value: require
-          - name: SQL_WAREHOUSE_ID
-            value: ${resources.sql_warehouses.ai_prism_wh.id}
-          - name: TOOLS_CATALOG
-            value: ${var.tools_catalog}
-          - name: TOOLS_SCHEMA
-            value: ${var.tools_schema}
-          - name: IMAGE_VOLUME_CATALOG
-            value: ${var.image_volume_catalog}
-          - name: IMAGE_VOLUME_SCHEMA
-            value: ${var.image_volume_schema}
-          - name: IMAGE_VOLUME_NAME
-            value: ${var.image_volume_name}
 
+# Cloud-agnostic: no host is hardcoded here. The workspace comes from the CLI
+# profile you deploy with (`-p <PROFILE>`), so the SAME bundle deploys to any
+# workspace on any cloud (AWS / Azure / GCP) without editing this file:
+#
+#   databricks bundle deploy -p <PROFILE> -t dev
+#
+# `-p` selects the profile from ~/.databrickscfg; its `host` is the workspace.
 targets:
   dev:
     mode: development
     default: true
-    workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com
 
   prod:
     mode: production
-    workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com

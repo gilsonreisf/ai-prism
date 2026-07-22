@@ -8,13 +8,14 @@ const { Client, Pool } = pg
 // per-user isolation is enforced app-level by the user_email WHERE clauses —
 // this is what makes the app truly multi-user (workspace users don't get
 // Lakebase PG roles of their own) and what lets admins publish global
-// templates every user can read. Requires a one-time setup:
-//   POST /api/2.0/database/instances/<instance>/roles
-//     {"name": "<DATABRICKS_CLIENT_ID>", "identity_type": "SERVICE_PRINCIPAL"}
-//   + GRANTs on the app tables (see ensureSchema's grant block).
-// Fallback: the caller's own identity + OBO token as password (original
-// behavior — works for the table owner even without the SP role). A failed SP
-// login only disables the SP path temporarily (never a permanent latch).
+// templates every user can read. Requires the SP's Postgres role to exist:
+// the deploy job (bundle/auto_config.py) creates it on the Lakebase "Autoscaling"
+// product via the databricks_auth extension —
+//   SELECT databricks_create_role('<DATABRICKS_CLIENT_ID>', 'SERVICE_PRINCIPAL')
+// — and ensureSpGrants (below) applies the table GRANTs at runtime.
+// Fallback: the caller's own identity + OBO token as password (works for the
+// table owner even without the SP role). A failed SP login only disables the SP
+// path temporarily (never a permanent latch).
 const SP_RETRY_MS = 5 * 60 * 1000
 let spToken = { value: null, exp: 0 }
 let spDisabledUntil = 0
@@ -43,6 +44,43 @@ async function spAccessToken() {
   return spToken.value
 }
 
+// ---- Lakebase host resolution (cloud-agnostic, no hardcoded PGHOST) ----------
+// The app learns its Lakebase host from the `lakebase` app resource: the runtime
+// injects the endpoint PATH as PG_ENDPOINT (value_from: lakebase in app.yaml /
+// databricks.yml). We resolve that path -> host once via the REST API using the
+// SP token, and cache it for the process. Local dev can still set PGHOST directly.
+//
+// Why not just an env host? A nested bundle ref (${...status.hosts.host}) does NOT
+// resolve into app config, and a hardcoded host silently points the app at the
+// wrong cloud's Lakebase (login fails with SQLSTATE 28000). The endpoint path,
+// injected by the platform, is the reliable per-workspace handle.
+let resolvedPgHost = null
+async function lakebaseHost() {
+  // explicit override wins: PGHOST is set directly for local dev, and is ALSO
+  // auto-injected by the `lakebase` app resource — so in production this returns
+  // immediately without an API call. The PG_ENDPOINT path below is the fallback.
+  if (process.env.PGHOST) return process.env.PGHOST
+  if (resolvedPgHost) return resolvedPgHost
+  // endpoint path from the injected app resource, or derived from defaults the
+  // bundle creates (project = app name; default branch "production"; endpoint
+  // "primary" — see databricks.yml postgres_projects/postgres_endpoints).
+  let endpointPath = process.env.PG_ENDPOINT
+  if (!endpointPath) {
+    const proj = process.env.DATABRICKS_APP_NAME || 'ai-prism'
+    endpointPath = `projects/${proj}/branches/production/endpoints/primary`
+  }
+  const token = await spAccessToken()
+  const res = await fetch(`${oidcHost()}/api/2.0/postgres/${endpointPath}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`lakebase endpoint lookup ${endpointPath}: HTTP ${res.status}`)
+  const d = await res.json()
+  const host = d?.status?.hosts?.host
+  if (!host) throw new Error(`lakebase endpoint ${endpointPath}: no status.hosts.host`)
+  resolvedPgHost = host
+  return host
+}
+
 // The APP's own OAuth token (service principal, all-apis scope). Used for
 // app-owned storage that must not depend on a per-user OAuth scope/consent —
 // notably the generated-image UC Volume (see imageStore.js). Returns null when
@@ -59,9 +97,9 @@ export async function appServiceToken() {
   }
 }
 
-function connInfo(user, password) {
+async function connInfo(user, password) {
   return {
-    host: process.env.PGHOST,
+    host: await lakebaseHost(),
     port: parseInt(process.env.PGPORT || '5432', 10),
     database: process.env.PGDATABASE || 'databricks_postgres',
     user,
@@ -101,10 +139,10 @@ const POOL_OPTS = {
 // SP pool: one shared identity for the whole app, so a single pool serves every
 // user. `password` is a function → each new connection gets a fresh SP token.
 let spPool = null
-function getSpPool() {
+async function getSpPool() {
   if (!spPool) {
     spPool = new Pool({
-      ...connInfo(process.env.DATABRICKS_CLIENT_ID, () => spAccessToken()),
+      ...(await connInfo(process.env.DATABRICKS_CLIENT_ID, () => spAccessToken())),
       ...POOL_OPTS,
     })
     // a broken idle socket must never crash the process — pg emits 'error' on
@@ -119,10 +157,10 @@ function getSpPool() {
 // rotating OBO token as password we can't safely pool (a reaped+reopened
 // connection would use a stale token), so that path stays one-shot below.
 const userPools = new Map()
-function getUserPool(userEmail, password) {
+async function getUserPool(userEmail, password) {
   let p = userPools.get(userEmail)
   if (!p) {
-    p = new Pool({ ...connInfo(userEmail, password), ...POOL_OPTS })
+    p = new Pool({ ...(await connInfo(userEmail, password)), ...POOL_OPTS })
     p.on('error', (e) => console.warn(`lakebase user pool (${userEmail}): idle client error (dropped):`, e.message))
     userPools.set(userEmail, p)
   }
@@ -142,14 +180,16 @@ async function withPool(pool, fn) {
 async function withClient(userEmail, userToken, fn) {
   if (process.env.DATABRICKS_CLIENT_ID && process.env.DATABRICKS_CLIENT_SECRET && Date.now() >= spDisabledUntil) {
     try {
-      return await withPool(getSpPool(), fn)
+      return await withPool(await getSpPool(), fn)
     } catch (e) {
       // only auth/connection/authorization failures demote to the per-user
       // path; real query errors (thrown inside fn) must surface, not be
       // silently retried. "permission denied" means the SP role exists but
       // its GRANTs haven't been applied yet (see ensureSpGrants) — degrading
       // to the caller's own identity keeps the table owner working meanwhile.
-      if (!/password authentication|role .* does not exist|sp token|permission denied|ECONNREFUSED|ETIMEDOUT/i.test(e.message || '')) throw e
+      // "external authorization failed" (SQLSTATE 28000) is Lakebase rejecting
+      // the login — also an auth failure, so demote rather than 500 the app.
+      if (!/password authentication|role .* does not exist|sp token|permission denied|external authorization|ECONNREFUSED|ETIMEDOUT/i.test(e.message || '')) throw e
       spDisabledUntil = Date.now() + SP_RETRY_MS
       console.warn('lakebase: service-principal login unavailable, using per-user identity:', e.message)
     }
@@ -161,11 +201,11 @@ async function withClient(userEmail, userToken, fn) {
   const stablePassword = process.env.PGPASSWORD
   if (stablePassword) {
     // stable password across the process → safe to pool by user
-    return await withPool(getUserPool(userEmail, stablePassword), fn)
+    return await withPool(await getUserPool(userEmail, stablePassword), fn)
   }
   // rotating OBO token as password: can't pool safely, so keep the original
   // fresh-client-per-op behavior (always uses a currently-valid token).
-  const client = new Client(connInfo(userEmail, userToken))
+  const client = new Client(await connInfo(userEmail, userToken))
   await client.connect()
   try {
     return await fn(client)
@@ -604,7 +644,7 @@ export async function ensureSpGrants(userEmail, userToken) {
   const last = spGrantAttempts.get(userEmail) || 0
   if (Date.now() - last < SP_GRANT_RETRY_MS) return
   spGrantAttempts.set(userEmail, Date.now())
-  const client = new Client(connInfo(userEmail, process.env.PGPASSWORD || userToken))
+  const client = new Client(await connInfo(userEmail, process.env.PGPASSWORD || userToken))
   try {
     await client.connect()
     const probe = await client.query(`SELECT has_table_privilege($1, 'chat_sessions', 'SELECT') AS ok`, [spRole])

@@ -30,8 +30,8 @@ de assento fixo mensal. São quatro componentes, e o maior de longe é o primeir
 
 > Os valores acima são **preços de tabela** lidos ao vivo de
 > `system.billing.list_prices` (podem variar por conta, região e descontos
-> negociados). O próprio painel de **Custos de IA** do app mostra o **custo real
-> faturado** (DBU × preço da sua conta), não estimativas.
+> negociados). O **dashboard de Custos de IA** (AI/BI, provisionado pelo bundle)
+> mostra o **custo real faturado** (DBU × preço da sua conta), não estimativas.
 
 **Na prática, ~95%+ do custo é Model Serving** — ou seja, você paga essencialmente
 pelo uso real dos modelos, proporcional ao volume de tokens. Um usuário que faz
@@ -46,11 +46,11 @@ licenças.
   serverless só faturam quando são usados.
 
 ### Transparência embutida
-O app inclui um **painel de Custos de IA** (aba nas Configurações, só para
-admins) que lê as *system tables* da Databricks via SQL Warehouse — **sem onerar
-o banco do app** — e mostra, por usuário / modelo / período: custo real em USD,
-DBU consumido e tokens (inclusive tokens servidos por cache). Auditar quem gastou
-o quê é uma tela, não um projeto de dados.
+O bundle provisiona um **dashboard de Custos de IA** (AI/BI, aberto no workspace —
+ver [`dashboards/`](../dashboards/)) que lê as *system tables* da Databricks via SQL
+Warehouse — **sem onerar o banco do app** — e mostra, por usuário / modelo / período:
+custo real em USD, DBU consumido e tokens (inclusive tokens servidos por cache).
+Auditar quem gastou o quê é uma tela, não um projeto de dados.
 
 ---
 
