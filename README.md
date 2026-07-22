@@ -16,16 +16,17 @@ e chama ferramentas nativas do workspace (Genie, Python, Vector Search, UC Funct
 - **Modelos**: acessados via endpoint OpenAI-compatible do AI Gateway
   (`/serving-endpoints/chat/completions` e `/serving-endpoints/embeddings`), sem SDKs de
   provedor — apenas `fetch`.
-- **Persistência**: Lakebase Postgres, com autenticação por token OAuth do próprio usuário
-  (sem service principal / credenciais fixas).
+- **Persistência**: Lakebase Postgres — o app conecta como o **service principal** dele
+  (um único role PG serve todos os usuários; o isolamento é app-level por `WHERE user_email`).
 - **Deploy**: roda como Databricks App (`app.yaml`), servindo o build estático do client a
   partir do próprio processo Express.
 
 ## Arquitetura
 
-Toda credencial é *on-behalf-of* do usuário logado (ver abaixo). O servidor Express
-é a única porta de entrada; ele fala com quatro serviços da Databricks, sempre com o
-token OAuth do próprio usuário — nada de credencial estática.
+O servidor Express é a única porta de entrada. Ele chama o AI Gateway, o Genie, o Vector
+Search e as UC Functions *on-behalf-of* do usuário logado (com o token OAuth dele); o
+Lakebase é a exceção — o app conecta como o **service principal** dele, com isolamento
+app-level por `WHERE user_email` (ver abaixo).
 
 ```mermaid
 flowchart TB
@@ -59,20 +60,26 @@ flowchart TB
 > faturado (DBU × preço) por usuário — fora do app, para que nenhuma consulta pesada
 > ao warehouse trave a UI.
 
-### Autenticação (on-behalf-of)
+### Autenticação (on-behalf-of + service principal)
 
-O app não usa nenhuma credencial estática. Em produção, o runtime da Databricks App injeta
-em cada requisição os headers `x-forwarded-email` e `x-forwarded-access-token` do usuário
-autenticado no workspace. O servidor usa esse mesmo token para:
+Em produção, o runtime da Databricks App injeta em cada requisição os headers
+`x-forwarded-email` e `x-forwarded-access-token` do usuário autenticado no workspace. O
+servidor usa esse token do usuário (*on-behalf-of*) para tudo que deve respeitar as
+permissões dele: **AI Gateway**, **Genie**, **Vector Search**, **UC Functions** e **MCP
+externo** (`Authorization: Bearer <token>`).
 
-- chamar o AI Gateway (`Authorization: Bearer <token>`); e
-- autenticar no Lakebase, onde o token OAuth do usuário funciona como *senha* da conexão
-  Postgres (`server/db.js`). Como o token gira a cada ~1h, cada operação de banco abre uma
-  conexão curta e nova (`withClient`) em vez de usar um pool — evita reutilizar credenciais
-  expiradas.
+O **Lakebase é a exceção**: o app conecta como o **service principal dele** (o runtime
+injeta `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET`; ver `server/db.js`). Um único role
+Postgres serve todos os usuários, e o isolamento por usuário é **app-level** (cláusulas
+`WHERE user_email` em todas as queries) — é isso que torna o app genuinamente multiusuário
+sem precisar de um role PG por pessoa. Como o token do SP sobrevive à rotação, as conexões
+são **pooladas** (`spPool`): só a primeira operação de um pool frio paga o handshake. O role
+PG do SP é criado no deploy pelo job de auto-config (`databricks_create_role`); a conexão via
+token OAuth do usuário como senha existe apenas como fallback e no dev local.
 
-Em desenvolvimento local, na ausência desses headers, o servidor cai para as variáveis de
-ambiente `DATABRICKS_USER_EMAIL` / `DATABRICKS_USER_TOKEN`.
+Em desenvolvimento local, na ausência dos headers, o servidor cai para
+`DATABRICKS_USER_EMAIL` / `DATABRICKS_USER_TOKEN`, e para o Lakebase use `PGHOST` +
+`PGPASSWORD` (uma credencial de banco dedicada).
 
 ### Fluxo de uma mensagem de chat
 
@@ -128,8 +135,8 @@ ai-prism/
 
 ### Chat multimodelo
 - Catálogo curado de modelos via AI Gateway (`server/llm.js`): família Claude 5
-  (Sonnet 5, Opus 4.8, Fable 5, Haiku 4.5), GPT-5.6 / GPT-5 mini, Gemini 3 Pro /
-  Gemini 3.5 Flash, Llama 4 Maverick, GLM-5.2, Qwen3.5 122B e GPT-OSS 120B — cada um com
+  (Sonnet 5, Opus 4.8, Fable 5, Haiku 4.5), GPT-5.6 (Luna / Terra / Sol),
+  Gemini 3.5 Flash, Llama 4 Maverick, GLM-5.2 e Qwen3.5 122B — cada um com
   provedor, indicação de suporte a visão, suporte a tools e preços aproximados (usados só
   para estimativa de custo na UI).
 - Troca de modelo por sessão a qualquer momento (`ModelPicker`), com preferência lembrada
@@ -161,7 +168,7 @@ ai-prism/
 
 ### Busca semântica no histórico
 - Campo de busca na sidebar (`/api/search`) que embeda a query com um modelo multilíngue
-  (`qwen3-embedding-0-6b`, com prompt de instrução assimétrico) e ranqueia sessões por
+  (`databricks-qwen3-embedding-0-6b`, com prompt de instrução assimétrico) e ranqueia sessões por
   similaridade de cosseno com o embedding do conteúdo do usuário.
 - Embeddings calculados e persistidos de forma incremental (backfill preguiçoso) conforme
   as sessões são usadas/buscadas.
@@ -304,9 +311,11 @@ npm install
 npm run dev        # client (Vite, :5173) + servidor (Node --watch, :8000) em paralelo
 ```
 
-O Vite faz proxy de `/api` para `http://localhost:8000`. Defina `DATABRICKS_HOST`,
-`DATABRICKS_USER_EMAIL` e `DATABRICKS_USER_TOKEN` no ambiente para autenticar contra o AI
-Gateway e o Lakebase fora do runtime da Databricks App.
+O Vite faz proxy de `/api` para `http://localhost:8000`. Fora do runtime da Databricks App,
+defina no ambiente: `DATABRICKS_HOST`, `DATABRICKS_USER_EMAIL` e `DATABRICKS_USER_TOKEN`
+(para o AI Gateway e demais tools), `SQL_WAREHOUSE_ID` (para as UC Functions / UDF Python)
+e, para o Lakebase, `PGHOST` + `PGPASSWORD` (uma credencial de banco dedicada — o token de
+CLI do workspace não é aceito pelo Lakebase).
 
 ## Build e deploy
 
@@ -315,16 +324,26 @@ npm run bundle      # build:client (Vite) + build:server (esbuild -> server-dist
 npm start           # roda o bundle de produção (node server-dist/index.cjs)
 ```
 
-O deploy usa um **Databricks Asset Bundle** (`databricks.yml`): um único
-`databricks bundle deploy` provisiona **toda a stack** — Lakebase serverless
-(autoscaling 0.5–16 CU, auto-stop em 30 min), Serverless SQL Warehouse, a própria
-App (com o env já cabeado a partir desses recursos), o dashboard de custos e um
-job de auto-configuração que provisiona a UDF de Python e descobre o e-mail do
-deployer (vira o admin bootstrap). Nenhum passo manual de infra.
+O deploy usa um **Databricks Asset Bundle** (`databricks.yml`), em três comandos:
+
+```bash
+databricks bundle deploy -p <PROFILE> -t dev                 # provisiona a infra
+databricks apps deploy ai-prism --source-code-path <SRC> -p <PROFILE>  # publica o código da App
+databricks bundle run ai_prism_auto_config -p <PROFILE> -t dev  # role PG do SP + UDF + volume + admin
+```
+
+O `bundle deploy` provisiona **toda a infra** — Lakebase serverless (produto
+*Autoscaling*: 0.5–16 CU, auto-stop em 30 min), Serverless SQL Warehouse, a própria App
+(com Lakebase e warehouse anexados como recursos) e o dashboard de custos. O `apps deploy`
+publica o código (o `bundle deploy` sozinho não republica o processo em execução). O
+`bundle run ai_prism_auto_config` cria o **role Postgres do service principal** do app,
+provisiona a UDF de Python e o Volume de imagens (no catálogo `ai_prism`) e **semeia o
+deployer como admin bootstrap** (tabela `app_admins`). Nenhum passo manual de infra — o
+host do workspace vem do `-p <PROFILE>`, então o mesmo bundle roda em AWS/Azure/GCP.
 
 > **Importante:** a App roda os artefatos pré-compilados (`client/dist` +
 > `server-dist/index.cjs`), não o código-fonte — **sempre rode `npm run bundle`
-> antes de `bundle deploy`**.
+> antes de `bundle deploy` / `apps deploy`**.
 
 O passo a passo completo (pré-requisitos, primeiro acesso, customização, convite
 do time e troubleshooting) está em **[docs/onboarding-deployment.md](docs/onboarding-deployment.md)**.
@@ -339,7 +358,7 @@ npm run qa   # deck-elements + deck-composition + mine-pptx + spreadsheet QA
 
 ## Documentação
 
-- [Onboarding e deploy](docs/onboarding-deployment.md) — do "workspace vazio" à App rodando, em um `bundle deploy`.
+- [Onboarding e deploy](docs/onboarding-deployment.md) — do "workspace vazio" à App rodando, em poucos comandos (`bundle deploy` + `apps deploy` + `bundle run`).
 - [Custos e posicionamento](docs/custos-e-posicionamento.md) — como o AI Prism consome recursos Databricks e por que o modelo é vantajoso.
 - [Dashboard de custos (AI/BI)](dashboards/README.md) — auditoria de custos de IA fora do app.
 

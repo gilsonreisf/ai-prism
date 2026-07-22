@@ -8,13 +8,14 @@ const { Client, Pool } = pg
 // per-user isolation is enforced app-level by the user_email WHERE clauses —
 // this is what makes the app truly multi-user (workspace users don't get
 // Lakebase PG roles of their own) and what lets admins publish global
-// templates every user can read. Requires a one-time setup:
-//   POST /api/2.0/database/instances/<instance>/roles
-//     {"name": "<DATABRICKS_CLIENT_ID>", "identity_type": "SERVICE_PRINCIPAL"}
-//   + GRANTs on the app tables (see ensureSchema's grant block).
-// Fallback: the caller's own identity + OBO token as password (original
-// behavior — works for the table owner even without the SP role). A failed SP
-// login only disables the SP path temporarily (never a permanent latch).
+// templates every user can read. Requires the SP's Postgres role to exist:
+// the deploy job (bundle/auto_config.py) creates it on the Lakebase "Autoscaling"
+// product via the databricks_auth extension —
+//   SELECT databricks_create_role('<DATABRICKS_CLIENT_ID>', 'SERVICE_PRINCIPAL')
+// — and ensureSpGrants (below) applies the table GRANTs at runtime.
+// Fallback: the caller's own identity + OBO token as password (works for the
+// table owner even without the SP role). A failed SP login only disables the SP
+// path temporarily (never a permanent latch).
 const SP_RETRY_MS = 5 * 60 * 1000
 let spToken = { value: null, exp: 0 }
 let spDisabledUntil = 0

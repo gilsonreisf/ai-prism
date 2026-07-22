@@ -1,4 +1,4 @@
-# Onboarding: seu próprio "ChatGPT" no Databricks em ~15 minutos
+# Onboarding: seu próprio "ChatGPT" no Databricks em ~20 minutos
 
 > **Aviso.** O AI Prism não é um produto oficial da Databricks e não tem SLA. É
 > um acelerador open-source que **você deploya no seu próprio workspace** e
@@ -16,17 +16,19 @@ provisionada por um **Databricks Asset Bundle** — você não cria recursos à 
 ```mermaid
 flowchart LR
     A["1· Pré-requisitos<br/>workspace + CLI"] --> B["2· npm run bundle<br/>artefatos de build"]
-    B --> C["3· bundle deploy<br/>provisiona TUDO"]
+    B --> C["3· deploy + apps deploy<br/>+ run auto-config"]
     C --> D["4· Primeiro acesso<br/>admin + modelos"]
     D --> E["5· Customizar<br/>marca · templates · tools"]
     E --> F["6· Convidar time<br/>permissões da App"]
 ```
 
-O passo 3 cria, de uma vez: **Lakebase serverless** (autoscaling 0.5–16 CU,
-auto-stop em 30 min), **Serverless SQL Warehouse**, a **App** (com o env já
-cabeado a partir desses recursos), o **dashboard de custos** e um **job de
-auto-configuração** que provisiona a UDF de Python e descobre o e-mail de quem
-deployou (que vira o admin bootstrap).
+O passo 3 são três comandos (detalhados abaixo): **`bundle deploy`** provisiona a
+infra — **Lakebase serverless** (produto *Autoscaling*: 0.5–16 CU, auto-stop em 30
+min), **Serverless SQL Warehouse**, a **App** (com Lakebase e Warehouse anexados
+como recursos, que injetam `PGHOST`/`SQL_WAREHOUSE_ID` na runtime) e o **dashboard
+de custos**; **`apps deploy`** publica o código; e **`bundle run
+ai_prism_auto_config`** cria o role PG do service principal, provisiona a UDF de
+Python e o Volume de imagens, e semeia quem deployou como **admin bootstrap**.
 
 ---
 
@@ -35,15 +37,20 @@ deployou (que vira o admin bootstrap).
 - Um **workspace Databricks** (AWS, Azure ou GCP) com Unity Catalog habilitado.
 - **AI Gateway / Foundation Model APIs** disponíveis na região (endpoints
   `databricks-claude-*`, `databricks-gpt-*`, etc.).
-- **Databricks CLI recente (≥ 0.240)** autenticada num profile para o workspace.
-  Use uma versão atual: CLIs antigas (ex.: 0.29x) podem falhar ao baixar o
-  Terraform interno com `openpgp: key expired` no `bundle deploy`.
+- **Databricks CLI recente (≥ ~1.x; idealmente ≥ 1.8)** autenticada num profile
+  para o workspace. CLIs antigas (ex.: 0.29x) falham ao baixar o Terraform interno
+  com `openpgp: key expired` no `bundle deploy`. A CLI ≥ 1.8 guarda a credencial no
+  keyring do SO (se um token antigo em cache atrapalhar, rode `databricks auth login`
+  de novo ou exporte `DATABRICKS_AUTH_STORAGE=plaintext`).
   ```bash
   # Azure: use o host do seu workspace (adb-<id>.<n>.azuredatabricks.net)
   databricks auth login --host https://<seu-workspace> -p <PROFILE>
   ```
 - Permissão para criar **Databricks App**, **SQL Warehouse**, **Lakebase** e
-  **Jobs** (o bundle cria todos).
+  **Jobs** (o bundle cria todos). Para a UDF de Python e o Volume de imagens, você
+  precisa poder criar (ou já ter) o catálogo `ai_prism` — se não tiver `CREATE
+  CATALOG` no metastore, aponte para um catálogo existente com
+  `--var tools_catalog=<cat> --var image_volume_catalog=<cat>`.
 - **Node.js 18+** e **npm** para o build local.
 
 **Checagem:** `databricks current-user me -p <PROFILE>` retorna seu e-mail.
@@ -74,16 +81,22 @@ npm run bundle         # client/dist + server-dist/index.cjs
 
 ## 3. Deploy da stack completa (5 min)
 
-Um comando provisiona tudo e sobe a App:
+Três comandos provisionam a infra, publicam o código da App e a configuram:
 
 ```bash
 # valida a configuração do bundle (não cria nada)
 databricks bundle validate -p <PROFILE> -t dev
 
-# provisiona Lakebase + Warehouse + App + dashboard + job, e sobe a App
+# 1) provisiona Lakebase + Warehouse + App + dashboard + job
 databricks bundle deploy -p <PROFILE> -t dev
 
-# roda o job de auto-config (provisiona a UDF Python, imprime a config resolvida)
+# 2) publica o CÓDIGO da App (o bundle deploy sozinho NÃO republica o processo
+#    em execução). O <SRC> é o caminho impresso pelo deploy / bundle summary,
+#    tipicamente /Workspace/Users/<você>/.bundle/ai-prism/dev/files
+databricks apps deploy ai-prism --source-code-path <SRC> -p <PROFILE>
+
+# 3) roda o job de auto-config: cria o role PG do service principal, provisiona a
+#    UDF Python + Volume de imagens (catálogo ai_prism) e semeia o admin bootstrap
 databricks bundle run ai_prism_auto_config -p <PROFILE> -t dev
 ```
 
@@ -191,4 +204,6 @@ browser. O isolamento por usuário continua **app-level** (`WHERE user_email` em
 ---
 
 *Fluxo desenhado para o cliente deployar e operar o AI Prism no próprio
-workspace. Ajuste hosts/targets no `databricks.yml` conforme sua organização.*
+workspace. O host **nunca** é editado no `databricks.yml` — ele vem do
+`-p <PROFILE>`, então o mesmo bundle roda em AWS/Azure/GCP. Ajuste apenas
+targets/nomes de recurso se quiser.*
