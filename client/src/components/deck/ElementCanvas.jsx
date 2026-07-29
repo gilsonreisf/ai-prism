@@ -94,6 +94,9 @@ export default function ElementCanvas({
   scopeId = null,
   onScope,
   onChangeElements, // (nextElements, { commit }) — commit=true snapshots history first
+  tool = null, // armed create tool: { type, shape?, extra? } | null
+  onCreateElement, // (type, box, extra) → adds a node, returns its id
+  onToolDone, // disarm the tool after one create
   className = '',
 }) {
   const theme = resolvePreviewTheme(template)
@@ -103,6 +106,8 @@ export default function ElementCanvas({
   const wrapRef = useRef(null) // the transformed stage — pointer math reads this
   const dragRef = useRef(null) // { mode, ids, handle, startPx, startBoxes, startAbs, moved, targets }
   const panRef = useRef(null) // { startPx, startPan }
+  const createRef = useRef(null) // { x0, y0 } inches while drawing a new element
+  const [createBox, setCreateBox] = useState(null) // live preview rect (inches)
   const [editingText, setEditingText] = useState(null) // source node id being inline-edited
   const [marquee, setMarquee] = useState(null) // { x0, y0, x1, y1 } inches
   const [guides, setGuides] = useState(null) // { v:[{at,from,to}], h:[...] } absolute inches
@@ -221,6 +226,14 @@ export default function ElementCanvas({
   const onPointerMove = (ev) => {
     if (panRef.current) {
       setPan({ x: panRef.current.startPan.x + (ev.clientX - panRef.current.startPx.x), y: panRef.current.startPan.y + (ev.clientY - panRef.current.startPx.y) })
+      return
+    }
+    if (createRef.current) {
+      const p = toIn(ev)
+      const { x0, y0 } = createRef.current
+      const x = clamp(p.x, 0, SLIDE_W)
+      const y = clamp(p.y, 0, SLIDE_H)
+      setCreateBox({ x: Math.min(x0, x), y: Math.min(y0, y), w: Math.abs(x - x0), h: Math.abs(y - y0) })
       return
     }
     const d = dragRef.current
@@ -363,6 +376,27 @@ export default function ElementCanvas({
       panRef.current = null
       return
     }
+    if (createRef.current) {
+      const box = createBox
+      createRef.current = null
+      setCreateBox(null)
+      // a click (no meaningful drag) drops a default-sized element at the point;
+      // a drag sizes it to the drawn frame
+      const drawn = box && (box.w > 0.15 || box.h > 0.15)
+      const finalBox = drawn
+        ? { x: r2(box.x), y: r2(box.y), w: r2(Math.max(box.w, 0.2)), h: r2(tool.type === 'line' ? 0 : Math.max(box.h, 0.2)) }
+        : box
+          ? { x: r2(box.x), y: r2(box.y) }
+          : null
+      const newId = onCreateElement?.(tool.type, finalBox, tool.extra)
+      onToolDone?.()
+      // text lands ready to type — jump straight into inline editing. Set the
+      // id directly (not beginTextEdit, whose findNode would miss the just-added
+      // node in this stale `elements` closure); the editor overlay resolves it
+      // on the next render, when elements is fresh.
+      if (newId && tool.type === 'text') setEditingText(newId)
+      return
+    }
     const d = dragRef.current
     dragRef.current = null
     setGuides(null)
@@ -373,6 +407,12 @@ export default function ElementCanvas({
       const chain = chains.get(d.deepen.srcId) || []
       const i = chain.indexOf(d.deepen.target)
       if (i !== -1 && i < chain.length - 1) select([chain[i + 1]])
+      else {
+        // no deeper node: a clean click on an already-selected text enters
+        // inline editing (single gesture, like Claude Design / Figma)
+        const node = findNode(elements, d.deepen.target)
+        if (node?.type === 'text') setEditingText(node.id)
+      }
     }
     if (marquee) {
       const x0 = Math.min(marquee.x0, marquee.x1)
@@ -507,8 +547,18 @@ export default function ElementCanvas({
       select([])
       return
     }
+    // Enter / F2 on a single selected text enters inline edit (single-gesture)
+    if ((ev.key === 'Enter' || ev.key === 'F2') && selectedIds.length === 1 && !ev.metaKey && !ev.ctrlKey) {
+      const node = findNode(elements, selectedIds[0])
+      if (node?.type === 'text') {
+        ev.preventDefault()
+        setEditingText(node.id)
+        return
+      }
+    }
     if (ev.key === 'Escape') {
       if (menu) { setMenu(null); return }
+      if (tool) { onToolDone?.(); return }
       if (scopeId) {
         const chain = chains.get(scopeId) || []
         onScope?.(chain.length > 1 ? chain[chain.length - 2] : null)
@@ -654,6 +704,7 @@ export default function ElementCanvas({
   const editingNode = editingText ? findNode(elements, editingText) : null
   const scopeBox = scopeId ? boxes.get(scopeId) : null
   const panning = spaceHeld || !!panRef.current
+  const creating = !!tool
 
   return (
     <div
@@ -677,7 +728,7 @@ export default function ElementCanvas({
         select([])
       }}
       className={`relative aspect-video overflow-hidden rounded-md shadow-sm outline-none bg-[var(--surface-2)] ${className}`}
-      style={{ touchAction: 'none', cursor: panning ? 'grab' : 'default' }}
+      style={{ touchAction: 'none', cursor: panning ? 'grab' : creating ? 'crosshair' : 'default' }}
     >
       {/* the transformed stage: everything slide-space lives here so zoom/pan
           apply uniformly and pointer math (reads this rect) stays correct */}
@@ -690,6 +741,14 @@ export default function ElementCanvas({
           setMenu(null)
           if (spaceHeld || ev.button === 1) {
             panRef.current = { startPx: { x: ev.clientX, y: ev.clientY }, startPan: pan }
+            clipRef.current?.setPointerCapture?.(ev.pointerId)
+            return
+          }
+          // armed create tool: draw the new element's frame with a drag
+          if (tool) {
+            const p = toIn(ev)
+            createRef.current = { x0: clamp(p.x, 0, SLIDE_W), y0: clamp(p.y, 0, SLIDE_H) }
+            setCreateBox({ x: createRef.current.x0, y: createRef.current.y0, w: 0, h: 0 })
             clipRef.current?.setPointerCapture?.(ev.pointerId)
             return
           }
@@ -724,7 +783,7 @@ export default function ElementCanvas({
 
         {/* hit layer: one surface per primitive, mapping back to its source
             node — DOM order mirrors z-order so the topmost object wins */}
-        {!panning && flat.map((el) => (
+        {!panning && !creating && flat.map((el) => (
           <div
             key={`hit_${el.id}`}
             className="absolute"
@@ -793,6 +852,11 @@ export default function ElementCanvas({
               h: Math.abs(marquee.y1 - marquee.y0),
             })}
           />
+        )}
+
+        {/* drag-to-create preview frame */}
+        {createBox && (
+          <div className="absolute pointer-events-none border border-dashed border-[var(--accent)] bg-[var(--accent)]/10 rounded-sm" style={pctBox(createBox)} />
         )}
 
         {/* inline text editor overlays the text node at its flattened position */}

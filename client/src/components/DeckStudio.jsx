@@ -6,7 +6,7 @@ import ElementInspector, { MultiSelectPanel } from './deck/ElementInspector.jsx'
 import AddElementBar from './deck/AddElementBar.jsx'
 import LayerTree from './deck/LayerTree.jsx'
 import useDeckHistory from '../hooks/useDeckHistory.js'
-import { materializeSlide, CONVERTIBLE_LAYOUTS } from '../../../shared/deckLayout.js'
+import { materializeSlide, CONVERTIBLE_LAYOUTS, defaultElement } from '../../../shared/deckLayout.js'
 import { resolveDeckTheme } from '../../../shared/deckTheme.js'
 import { findNode, findParent, updateNode, removeNodes, groupNodes, ungroupNode, alignNodes, distributeNodes, patchNodesStyle } from '../lib/deckTree.js'
 import { getJSON, patchJSON, postJSON } from '../api.js'
@@ -314,6 +314,8 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
   // undo/redo history
   const [selectedElIds, setSelectedElIds] = useState([])
   const [scopeId, setScopeId] = useState(null)
+  // armed drag-to-create tool for the freeform canvas: { type, extra? } | null
+  const [tool, setTool] = useState(null)
   const history = useDeckHistory()
   const dragFrom = useRef(null)
   const saveTimer = useRef(null)
@@ -339,6 +341,7 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
     setSelection(null)
     setSelectedElIds([])
     setScopeId(null)
+    setTool(null)
   }, [activeIndex])
 
   // fresh deck load resets the undo history
@@ -587,6 +590,16 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
       updateSlide(activeIndex, { elements: [...(slide?.elements || []), el] })
     }
     setSelectedElIds([el.id])
+  }
+
+  // drag-to-create: the canvas hands back the drawn frame (or just x/y for a
+  // click); we seed a themed default element, override its box, add it, and
+  // return the id so the canvas can jump into text editing
+  const createElement = (type, box, extra = {}) => {
+    const el = { ...defaultElement(type, resolvePreviewTheme(template)), ...extra }
+    if (box) el.box = { ...el.box, ...box }
+    addElement(el)
+    return el.id
   }
 
   // one-shot semantic → freeform conversion (shared/deckLayout.js generators);
@@ -851,6 +864,9 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
                     scopeId={scopeId}
                     onScope={setScopeId}
                     onChangeElements={changeElements}
+                    tool={tool}
+                    onCreateElement={createElement}
+                    onToolDone={() => setTool(null)}
                     className="w-full shadow-lg"
                   />
                 ) : (
@@ -879,6 +895,8 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
                   <AddElementBar
                     theme={resolvePreviewTheme(template)}
                     onAdd={addElement}
+                    tool={tool}
+                    onArmTool={(next) => setTool((cur) => (cur?.type === next?.type ? null : next))}
                     canGroup={selectedElIds.length > 1}
                     canUngroup={selectedEl?.type === 'group'}
                     onGroup={groupSelectedEls}

@@ -761,6 +761,25 @@ export default function ElementInspector({ element, elements, template, onPatch,
 
       {element.type === 'text' && (
         <Section title={t('inspector.section.text')}>
+          {/* one-tap typography presets — apply a coherent bundle of type
+              styles (role/size/weight/tracking) so users don't dial each knob */}
+          <div className="flex rounded-lg bg-[var(--surface)] border border-[var(--border-soft)] p-0.5 gap-0.5">
+            {[
+              ['title', t('inspector.presetTitle'), { fontRole: 'heading', fontSize: 30, bold: true, lineHeight: 1.1, letterSpacing: undefined, uppercase: undefined }],
+              ['heading', t('inspector.presetHeading'), { fontRole: 'heading', fontSize: 18, bold: true, lineHeight: 1.2, letterSpacing: undefined, uppercase: undefined }],
+              ['body', t('inspector.presetBody'), { fontRole: 'body', fontSize: 13, bold: undefined, lineHeight: 1.3, letterSpacing: undefined, uppercase: undefined }],
+              ['caption', t('inspector.presetCaption'), { fontRole: 'body', fontSize: 9.5, bold: undefined, lineHeight: 1.25, letterSpacing: 0.4, uppercase: true }],
+            ].map(([key, label, preset]) => (
+              <button
+                key={key}
+                onClick={() => onPatchStyle(preset)}
+                title={t('inspector.presetHint')}
+                className="flex-1 min-w-0 h-6 rounded-md text-[10.5px] grid place-items-center text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <Grid2>
             <Pill label={t('inspector.font')}>
               <select value={st.fontRole || 'body'} onChange={(e) => onPatchStyle({ fontRole: e.target.value })} className={bareSelect}>
