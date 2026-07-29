@@ -8,7 +8,7 @@ import LayerTree from './deck/LayerTree.jsx'
 import useDeckHistory from '../hooks/useDeckHistory.js'
 import { materializeSlide, CONVERTIBLE_LAYOUTS } from '../../../shared/deckLayout.js'
 import { resolveDeckTheme } from '../../../shared/deckTheme.js'
-import { findNode, findParent, updateNode, removeNodes, groupNodes, ungroupNode } from '../lib/deckTree.js'
+import { findNode, findParent, updateNode, removeNodes, groupNodes, ungroupNode, alignNodes, distributeNodes, patchNodesStyle } from '../lib/deckTree.js'
 import { getJSON, patchJSON, postJSON } from '../api.js'
 import { useT } from '../lib/i18n.jsx'
 
@@ -562,6 +562,21 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
     if (scopeId === selectedEl.id) setScopeId(null)
   }
 
+  // multi-selection batch ops (align/distribute operate on absolute boxes;
+  // batch style merges one patch into every selected node) — one undo step
+  const alignSelectedEls = (edge) => {
+    if (selectedElIds.length < 2) return
+    changeElements(alignNodes(slide.elements || [], selectedElIds, edge, resolvePreviewTheme(template)), { commit: true })
+  }
+  const distributeSelectedEls = (axis) => {
+    if (selectedElIds.length < 3) return
+    changeElements(distributeNodes(slide.elements || [], selectedElIds, axis, resolvePreviewTheme(template)), { commit: true })
+  }
+  const batchStyleSelectedEls = (patch) => {
+    if (selectedElIds.length < 2) return
+    changeElements(patchNodesStyle(slide.elements || [], selectedElIds, patch), { commit: true })
+  }
+
   const addElement = (el) => {
     history.commit(deck)
     // adding inside the open group keeps the flow "drill in, keep building"
@@ -1081,7 +1096,15 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
                   </div>
                   {selectedElIds.length > 1 ? (
                     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] overflow-hidden">
-                      <MultiSelectPanel count={selectedElIds.length} onGroup={groupSelectedEls} onRemove={removeSelectedEls} />
+                      <MultiSelectPanel
+                        count={selectedElIds.length}
+                        onGroup={groupSelectedEls}
+                        onRemove={removeSelectedEls}
+                        onAlign={alignSelectedEls}
+                        onDistribute={distributeSelectedEls}
+                        onBatchStyle={batchStyleSelectedEls}
+                        theme={resolvePreviewTheme(template)}
+                      />
                     </div>
                   ) : selectedEl ? (
                     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] overflow-hidden">

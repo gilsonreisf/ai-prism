@@ -433,22 +433,60 @@ function ChartSection({ element, onPatch }) {
 }
 
 // compact panel for multi-selection (rendered by the Studio in place of the
-// single-element inspector)
-export function MultiSelectPanel({ count, onGroup, onRemove }) {
+// single-element inspector): count + group/delete, plus align/distribute and
+// batch-styling (fill/text color applied to every selected node at once).
+export function MultiSelectPanel({ count, onGroup, onRemove, onAlign, onDistribute, onBatchStyle, theme }) {
   const t = useT()
+  const alignBtns = [
+    ['left', '⇤', t('inspector.alignLeftEdge')],
+    ['hcenter', '⇔', t('inspector.alignHCenter')],
+    ['right', '⇥', t('inspector.alignRightEdge')],
+    ['top', '⤒', t('inspector.alignTopEdge')],
+    ['vcenter', '⇳', t('inspector.alignVCenter')],
+    ['bottom', '⤓', t('inspector.alignBottomEdge')],
+  ]
+  const btn = 'flex-1 min-w-0 h-7 rounded-md grid place-items-center text-[13px] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface-3)] transition'
   return (
-    <div className="flex items-center gap-2 px-3 py-2.5 text-sm">
-      <span className="text-xs font-bold flex-1">{t('inspector.selectedCount', { n: count })}</span>
-      <button
-        onClick={onGroup}
-        className="flex items-center gap-1 rounded-lg bg-[var(--surface-3)] hover:brightness-110 text-[11px] font-semibold px-2 py-1.5"
-        title={t('inspector.groupSelection')}
-      >
-        ▣ {t('inspector.group')}
-      </button>
-      <button onClick={onRemove} className="w-7 h-7 rounded-md grid place-items-center hover:bg-[var(--surface-3)] text-[var(--muted)]" title={t('inspector.deleteSelection')}>
-        <Icon.Trash size={13} />
-      </button>
+    <div className="divide-y divide-[var(--border-soft)]">
+      <div className="flex items-center gap-2 px-3 py-2.5 text-sm">
+        <span className="text-xs font-bold flex-1">{t('inspector.selectedCount', { n: count })}</span>
+        <button
+          onClick={onGroup}
+          className="flex items-center gap-1 rounded-lg bg-[var(--surface-3)] hover:brightness-110 text-[11px] font-semibold px-2 py-1.5"
+          title={t('inspector.groupSelection')}
+        >
+          ▣ {t('inspector.group')}
+        </button>
+        <button onClick={onRemove} className="w-7 h-7 rounded-md grid place-items-center hover:bg-[var(--surface-3)] text-[var(--muted)]" title={t('inspector.deleteSelection')}>
+          <Icon.Trash size={13} />
+        </button>
+      </div>
+      <Section title={t('inspector.align')}>
+        <div className="flex rounded-lg bg-[var(--surface)] border border-[var(--border-soft)] p-0.5 gap-0.5">
+          {alignBtns.map(([edge, glyph, title]) => (
+            <button key={edge} className={btn} title={title} onClick={() => onAlign?.(edge)}>
+              {glyph}
+            </button>
+          ))}
+        </div>
+        <Grid2>
+          <button className="h-7 rounded-md bg-[var(--surface)] border border-[var(--border-soft)] text-[11px] text-[var(--muted)] hover:text-[var(--text)]" title={t('inspector.distributeH')} onClick={() => onDistribute?.('x')}>
+            ⇿ {t('inspector.distribute')}
+          </button>
+          <button className="h-7 rounded-md bg-[var(--surface)] border border-[var(--border-soft)] text-[11px] text-[var(--muted)] hover:text-[var(--text)]" title={t('inspector.distributeV')} onClick={() => onDistribute?.('y')}>
+            ⇕ {t('inspector.distribute')}
+          </button>
+        </Grid2>
+      </Section>
+      <Section title={t('inspector.batchStyle')}>
+        <Pill label={t('inspector.batchFill')}>
+          <ColorControl value={undefined} onCommit={(v) => onBatchStyle?.({ fill: v })} allowNone theme={theme} />
+        </Pill>
+        <Pill label={t('inspector.batchText')}>
+          <ColorControl value={undefined} onCommit={(v) => onBatchStyle?.({ color: v })} theme={theme} />
+        </Pill>
+        <p className="text-[9.5px] text-[var(--faint)] leading-snug">{t('inspector.batchHint')}</p>
+      </Section>
     </div>
   )
 }

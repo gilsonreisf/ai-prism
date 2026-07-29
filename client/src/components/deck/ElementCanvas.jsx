@@ -2,7 +2,19 @@ import { useEffect, useRef, useState } from 'react'
 import { ElementView, resolvePreviewTheme, useTemplateFonts } from '../DeckSlidePreview.jsx'
 import { SLIDE_W, SLIDE_H, GRID, BOX_LIMITS, flattenElements } from '../../../../shared/deckLayout.js'
 import { resolveThemeColor } from '../../../../shared/deckTheme.js'
-import { findNode, findParent, updateNode, removeNodes, cloneWithNewIds, groupNodes, ungroupNode, isStackChild } from '../../lib/deckTree.js'
+import {
+  findNode,
+  findParent,
+  updateNode,
+  removeNodes,
+  insertNode,
+  cloneWithNewIds,
+  groupNodes,
+  ungroupNode,
+  isStackChild,
+  alignmentTargets,
+} from '../../lib/deckTree.js'
+import { setClipboard, getClipboard, clipboardHasContent } from '../../lib/deckClipboard.js'
 
 // The Figma-style editing canvas for FREEFORM slides, now TREE-aware: the
 // persisted elements form a tree (groups/stacks), painting goes through the
@@ -18,10 +30,23 @@ import { findNode, findParent, updateNode, removeNodes, cloneWithNewIds, groupNo
 // click toggles; dragging empty canvas draws a marquee over the scope's
 // children. Stack-managed children are not draggable — their position is
 // computed (reorder them in the layer tree or with Cmd+]/[).
+//
+// View transform (Phase 1): the stage lives inside a clipping mat and carries
+// a scale(zoom)·translate(pan) transform. Pointer math reads the STAGE's
+// getBoundingClientRect, which already reflects the transform, so every inch
+// conversion is zoom/pan-correct with no extra bookkeeping. Ctrl/⌘+wheel zooms
+// toward the cursor; Space-drag or middle-drag pans.
 
 const SNAP_IN = 1 / 16
 const SNAP_THRESHOLD = 0.07
+const GUIDE_SNAP = 0.05 // element-to-element alignment snap (tighter than margins)
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
+const ZOOM_MIN = 0.5
+const ZOOM_MAX = 4
+const ZOOM_STEPS = [0.5, 0.75, 1, 1.5, 2, 3, 4]
+
+const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
+const r2 = (v) => Math.round(v * 100) / 100
 
 function snapTo(v, targets, threshold = SNAP_THRESHOLD) {
   for (const t of targets) {
@@ -30,8 +55,20 @@ function snapTo(v, targets, threshold = SNAP_THRESHOLD) {
   return Math.round(v / SNAP_IN) * SNAP_IN
 }
 
-const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
-const r2 = (v) => Math.round(v * 100) / 100
+// snap a value against alignment targets, returning the matched target (for
+// drawing a guide) or null — separate from snapTo so callers can render lines
+function snapAlign(v, targets, threshold = GUIDE_SNAP) {
+  let best = null
+  let bestD = threshold
+  for (const t of targets) {
+    const d = Math.abs(v - t)
+    if (d <= bestD) {
+      bestD = d
+      best = t
+    }
+  }
+  return best
+}
 
 // proportionally rescale a plain group's children when its frame resizes
 // (stack groups skip this — their layout recomputes from the new frame)
@@ -62,10 +99,17 @@ export default function ElementCanvas({
   const theme = resolvePreviewTheme(template)
   useTemplateFonts(template)
   const iconById = new Map((template?.iconAssets || []).map((a) => [a.id, a]))
-  const wrapRef = useRef(null)
-  const dragRef = useRef(null) // { mode, ids, handle, startPx, startBoxes, startAbs, moved }
+  const clipRef = useRef(null)
+  const wrapRef = useRef(null) // the transformed stage — pointer math reads this
+  const dragRef = useRef(null) // { mode, ids, handle, startPx, startBoxes, startAbs, moved, targets }
+  const panRef = useRef(null) // { startPx, startPan }
   const [editingText, setEditingText] = useState(null) // source node id being inline-edited
   const [marquee, setMarquee] = useState(null) // { x0, y0, x1, y1 } inches
+  const [guides, setGuides] = useState(null) // { v:[{at,from,to}], h:[...] } absolute inches
+  const [menu, setMenu] = useState(null) // { x, y } clip-relative px for the context menu
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [spaceHeld, setSpaceHeld] = useState(false)
   const editRef = useRef(null)
 
   const elements = slide?.elements || []
@@ -114,7 +158,7 @@ export default function ElementCanvas({
 
   const scopeChildren = scopeId ? findNode(elements, scopeId)?.children || [] : elements
 
-  const pxPerIn = () => (wrapRef.current?.clientWidth || 800) / SLIDE_W
+  const pxPerIn = () => (wrapRef.current?.getBoundingClientRect().width || 800) / SLIDE_W
   const toIn = (ev) => {
     const rect = wrapRef.current.getBoundingClientRect()
     return { x: ((ev.clientX - rect.left) / rect.width) * SLIDE_W, y: ((ev.clientY - rect.top) / rect.height) * SLIDE_H }
@@ -145,8 +189,10 @@ export default function ElementCanvas({
 
   const beginDrag = (ev, srcId, mode, handle = null) => {
     if (editingText) return
+    if (ev.button === 1 || spaceHeld) return // middle-button / space = pan, not drag
     ev.preventDefault()
     ev.stopPropagation()
+    setMenu(null)
     // clicking (without dragging) a node that is already the sole selection
     // drills one level deeper toward the clicked leaf — resolved on pointerup
     const wasSole = selectedIds.length === 1 && selectedIds[0] === targetFor(srcId)
@@ -165,12 +211,18 @@ export default function ElementCanvas({
       startBoxes: new Map(ids.map((id) => [id, { ...(findNode(elements, id)?.box || {}) }])),
       startAbs: new Map(ids.map((id) => [id, boxes.get(id)])),
       moved: false,
+      // element-to-element alignment targets (everything not being dragged)
+      targets: alignmentTargets(elements, theme, ids),
       deepen: mode === 'move' && !ev.shiftKey && wasSole ? { srcId, target } : null,
     }
     ev.currentTarget.setPointerCapture?.(ev.pointerId)
   }
 
   const onPointerMove = (ev) => {
+    if (panRef.current) {
+      setPan({ x: panRef.current.startPan.x + (ev.clientX - panRef.current.startPx.x), y: panRef.current.startPan.y + (ev.clientY - panRef.current.startPx.y) })
+      return
+    }
     const d = dragRef.current
     if (d) {
       const ppi = pxPerIn()
@@ -213,15 +265,34 @@ export default function ElementCanvas({
         return
       }
       if (d.mode === 'move') {
-        // snap the primary node's ABSOLUTE box, then apply the adjusted delta
-        // to every selected node (relative boxes shift by the same delta)
+        // snap the primary node's ABSOLUTE box against margins/centers AND the
+        // other elements' edges/centers (smart guides), then apply the adjusted
+        // delta to every selected node (relative boxes shift by the same delta)
         const primary = d.ids[0]
         const abs0 = d.startAbs.get(primary)
+        const activeV = []
+        const activeH = []
         if (abs0) {
           let x = clamp(abs0.x + dx, BOX_LIMITS.xMin, BOX_LIMITS.xMax - 0.1)
           let y = clamp(abs0.y + dy, BOX_LIMITS.yMin, BOX_LIMITS.yMax - 0.1)
-          x = snapTo(x, [...xGuides, ...xGuides.map((g) => g - abs0.w), SLIDE_W / 2 - abs0.w / 2])
-          y = snapTo(y, [...yGuides, ...yGuides.map((g) => g - abs0.h), SLIDE_H / 2 - abs0.h / 2])
+          // 1) element-to-element alignment (left/center/right vs top/mid/bottom)
+          const edgesX = [x, x + abs0.w / 2, x + abs0.w]
+          const offX = [0, abs0.w / 2, abs0.w]
+          let snappedX = null
+          for (let i = 0; i < 3; i++) {
+            const m = snapAlign(edgesX[i], d.targets.x)
+            if (m != null) { snappedX = m - offX[i]; activeV.push(m); break }
+          }
+          const edgesY = [y, y + abs0.h / 2, y + abs0.h]
+          const offY = [0, abs0.h / 2, abs0.h]
+          let snappedY = null
+          for (let i = 0; i < 3; i++) {
+            const m = snapAlign(edgesY[i], d.targets.y)
+            if (m != null) { snappedY = m - offY[i]; activeH.push(m); break }
+          }
+          // 2) fall back to slide margins/centers when no element guide caught
+          x = snappedX != null ? snappedX : snapTo(x, [...xGuides, ...xGuides.map((g) => g - abs0.w), SLIDE_W / 2 - abs0.w / 2])
+          y = snappedY != null ? snappedY : snapTo(y, [...yGuides, ...yGuides.map((g) => g - abs0.h), SLIDE_H / 2 - abs0.h / 2])
           dx = x - abs0.x
           dy = y - abs0.y
         }
@@ -232,6 +303,7 @@ export default function ElementCanvas({
           next = patchNodeBox(next, id, { x: r2((b0.x || 0) + dx), y: r2((b0.y || 0) + dy) })
         }
         setElements(next)
+        setGuides(activeV.length || activeH.length ? { v: activeV, h: activeH } : null)
       } else {
         const id = d.ids[0]
         const node = findNode(elements, id)
@@ -259,8 +331,16 @@ export default function ElementCanvas({
         const minS = node.type === 'line' ? 0 : BOX_LIMITS.minSize
         w = clamp(w, minS, BOX_LIMITS.maxSize)
         h = clamp(h, minS, BOX_LIMITS.maxSize)
-        x = snapTo(x, xGuides)
-        y = snapTo(y, yGuides)
+        // snap the moving edge to element guides, else grid/margins
+        const activeV = []
+        const activeH = []
+        if (d.handle.includes('e')) { const m = snapAlign(x + w, d.targets.x); if (m != null) { w = m - x; activeV.push(m) } }
+        if (d.handle.includes('w')) { const m = snapAlign(x, d.targets.x); if (m != null) { w += x - m; x = m; activeV.push(m) } }
+        if (d.handle.includes('s')) { const m = snapAlign(y + h, d.targets.y); if (m != null) { h = m - y; activeH.push(m) } }
+        if (d.handle.includes('n')) { const m = snapAlign(y, d.targets.y); if (m != null) { h += y - m; y = m; activeH.push(m) } }
+        if (!activeV.length) x = snapTo(x, xGuides)
+        if (!activeH.length) y = snapTo(y, yGuides)
+        setGuides(activeV.length || activeH.length ? { v: activeV, h: activeH } : null)
         const boxPatch = { x: r2((b.x || 0) + (x - abs0.x)), y: r2((b.y || 0) + (y - abs0.y)), w: r2(w), h: r2(h) }
         let next = updateNode(elements, id, (n) => {
           const resized = { ...n, box: { ...n.box, ...boxPatch } }
@@ -279,8 +359,13 @@ export default function ElementCanvas({
   }
 
   const endDrag = () => {
+    if (panRef.current) {
+      panRef.current = null
+      return
+    }
     const d = dragRef.current
     dragRef.current = null
+    setGuides(null)
     // progressive click-through: a clean click (no drag) on the already-
     // selected node selects the next level down the chain toward the clicked
     // leaf — successive clicks walk INTO nested groups, Escape walks back up
@@ -307,13 +392,81 @@ export default function ElementCanvas({
     }
   }
 
+  // --- clipboard ---------------------------------------------------------------
+
+  const copySelection = () => {
+    const nodes = selectedIds.map((id) => findNode(elements, id)).filter(Boolean)
+    if (nodes.length) setClipboard(nodes)
+    return nodes.length
+  }
+
+  const pasteClipboard = () => {
+    if (!clipboardHasContent()) return
+    const clones = getClipboard().map((n) => cloneWithNewIds({ ...n, box: { ...n.box, x: r2((n.box?.x || 0) + 0.2), y: r2((n.box?.y || 0) + 0.2) } }))
+    // paste into the open group if scoped, else at the slide root
+    let next = elements
+    for (const c of clones) next = insertNode(next, scopeId || null, Infinity, c)
+    onChangeElements(next, { commit: true })
+    select(clones.map((c) => c.id))
+  }
+
+  const duplicateSelection = () => {
+    if (!selectedIds.length) return
+    const selectedNodes = selectedIds.map((id) => findNode(elements, id)).filter(Boolean)
+    let next = elements
+    const fresh = []
+    for (const n of selectedNodes) {
+      const { parent, index } = findParent(next, n.id)
+      const clone = cloneWithNewIds({ ...n, box: { ...n.box, x: r2((n.box?.x || 0) + 0.2), y: r2((n.box?.y || 0) + 0.2) } })
+      fresh.push(clone.id)
+      next = insertNode(next, parent?.id || null, index + 1, clone)
+    }
+    onChangeElements(next, { commit: true })
+    select(fresh)
+  }
+
+  const reorderSelection = (dir, toEdge = false) => {
+    if (selectedIds.length !== 1) return
+    const id = selectedIds[0]
+    const { parent, index } = findParent(elements, id)
+    const list = parent ? [...(parent.children || [])] : [...elements]
+    if (index === -1) return
+    const [node] = list.splice(index, 1)
+    const target = toEdge ? (dir > 0 ? list.length : 0) : clamp(index + dir, 0, list.length)
+    list.splice(target, 0, node)
+    const next = parent ? updateNode(elements, parent.id, (g) => ({ ...g, children: list })) : list
+    onChangeElements(next, { commit: true })
+  }
+
   // --- keyboard ------------------------------------------------------------------
 
   const selectedNodes = selectedIds.map((id) => findNode(elements, id)).filter(Boolean)
 
   const onKeyDown = (ev) => {
     if (editingText) return
+    if (ev.key === ' ' && !spaceHeld) {
+      setSpaceHeld(true)
+      return // don't scroll; enables pan cursor
+    }
     const mod = ev.metaKey || ev.ctrlKey
+    if (mod && ev.key.toLowerCase() === 'c' && selectedIds.length) {
+      ev.preventDefault()
+      copySelection()
+      return
+    }
+    if (mod && ev.key.toLowerCase() === 'x' && selectedIds.length) {
+      ev.preventDefault()
+      if (copySelection()) {
+        onChangeElements(removeNodes(elements, selectedIds), { commit: true })
+        select([])
+      }
+      return
+    }
+    if (mod && ev.key.toLowerCase() === 'v') {
+      ev.preventDefault()
+      pasteClipboard()
+      return
+    }
     if (mod && ev.key.toLowerCase() === 'g' && !ev.shiftKey && selectedIds.length > 1) {
       ev.preventDefault()
       const { elements: next, groupId } = groupNodes(elements, selectedIds, theme)
@@ -340,39 +493,12 @@ export default function ElementCanvas({
     }
     if (mod && ev.key === 'd' && selectedNodes.length) {
       ev.preventDefault()
-      let next = elements
-      const fresh = []
-      for (const n of selectedNodes) {
-        const { parent, index } = findParent(next, n.id)
-        const clone = cloneWithNewIds({ ...n, box: { ...n.box, x: r2((n.box?.x || 0) + 0.2), y: r2((n.box?.y || 0) + 0.2) } })
-        fresh.push(clone.id)
-        next = parent
-          ? updateNode(next, parent.id, (g) => {
-              const children = [...(g.children || [])]
-              children.splice(index + 1, 0, clone)
-              return { ...g, children }
-            })
-          : (() => {
-              const list = [...next]
-              list.splice(index + 1, 0, clone)
-              return list
-            })()
-      }
-      onChangeElements(next, { commit: true })
-      select(fresh)
+      duplicateSelection()
       return
     }
     if (mod && (ev.key === ']' || ev.key === '[') && selectedIds.length === 1) {
       ev.preventDefault()
-      const id = selectedIds[0]
-      const { parent, index } = findParent(elements, id)
-      const list = parent ? [...(parent.children || [])] : [...elements]
-      if (index === -1) return
-      const [node] = list.splice(index, 1)
-      const target = ev.altKey ? (ev.key === ']' ? list.length : 0) : clamp(index + (ev.key === ']' ? 1 : -1), 0, list.length)
-      list.splice(target, 0, node)
-      const next = parent ? updateNode(elements, parent.id, (g) => ({ ...g, children: list })) : list
-      onChangeElements(next, { commit: true })
+      reorderSelection(ev.key === ']' ? 1 : -1, ev.altKey)
       return
     }
     if ((ev.key === 'Delete' || ev.key === 'Backspace') && selectedIds.length) {
@@ -382,6 +508,7 @@ export default function ElementCanvas({
       return
     }
     if (ev.key === 'Escape') {
+      if (menu) { setMenu(null); return }
       if (scopeId) {
         const chain = chains.get(scopeId) || []
         onScope?.(chain.length > 1 ? chain[chain.length - 2] : null)
@@ -412,6 +539,42 @@ export default function ElementCanvas({
     }
   }
 
+  const onKeyUp = (ev) => {
+    if (ev.key === ' ') setSpaceHeld(false)
+  }
+
+  // --- zoom / pan ----------------------------------------------------------------
+
+  const zoomTo = (nextZoom, center) => {
+    const z = clamp(nextZoom, ZOOM_MIN, ZOOM_MAX)
+    setZoom((prev) => {
+      if (z === prev || !center || !clipRef.current) return z
+      // keep the point under the cursor fixed while zooming
+      const rect = clipRef.current.getBoundingClientRect()
+      const cx = center.x - rect.left
+      const cy = center.y - rect.top
+      setPan((p) => ({ x: cx - ((cx - p.x) / prev) * z, y: cy - ((cy - p.y) / prev) * z }))
+      return z
+    })
+  }
+
+  const onWheel = (ev) => {
+    if (!(ev.ctrlKey || ev.metaKey)) return
+    ev.preventDefault()
+    zoomTo(zoom * (ev.deltaY < 0 ? 1.1 : 0.9), { x: ev.clientX, y: ev.clientY })
+  }
+
+  const resetView = () => {
+    setZoom(1)
+    setPan({ x: 0, y: 0 })
+  }
+
+  // reset the view when switching to a different freeform slide
+  useEffect(() => {
+    resetView()
+    setMenu(null)
+  }, [slide]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // --- inline text editing --------------------------------------------------------
 
   useEffect(() => {
@@ -434,6 +597,16 @@ export default function ElementCanvas({
     }
   }
 
+  const beginTextEdit = (srcId) => {
+    const node = findNode(elements, srcId)
+    if (node?.type === 'text') {
+      select([node.id])
+      setEditingText(node.id)
+      return true
+    }
+    return false
+  }
+
   const onDoubleClick = (ev, srcId) => {
     ev.stopPropagation()
     const target = targetFor(srcId)
@@ -446,11 +619,18 @@ export default function ElementCanvas({
       select(child ? [child] : [])
       return
     }
-    const srcNode = findNode(elements, srcId)
-    if (srcNode?.type === 'text') {
-      select([srcNode.id])
-      setEditingText(srcNode.id)
+    beginTextEdit(srcId)
+  }
+
+  const openMenu = (ev, srcId) => {
+    ev.preventDefault()
+    ev.stopPropagation()
+    if (srcId) {
+      const target = targetFor(srcId)
+      if (!selectedIds.includes(target)) select([target])
     }
+    const rect = clipRef.current.getBoundingClientRect()
+    setMenu({ x: ev.clientX - rect.left, y: ev.clientY - rect.top, onElement: !!srcId })
   }
 
   const pctBox = (b) => ({
@@ -459,6 +639,7 @@ export default function ElementCanvas({
     width: `${(Math.max(b.w, 0.01) / SLIDE_W) * 100}%`,
     height: `${(Math.max(b.h, 0.01) / SLIDE_H) * 100}%`,
   })
+  const pctLine = (at, axis) => (axis === 'x' ? `${(at / SLIDE_W) * 100}%` : `${(at / SLIDE_H) * 100}%`)
 
   // Background + plate MUST paint identically to the thumbnail path
   // (DeckSlidePreview's freeform branch), or the focused canvas and the rail
@@ -472,149 +653,261 @@ export default function ElementCanvas({
   const plateHasOverlay = plateBase === theme.coverPlate && theme.coverOverlay
   const editingNode = editingText ? findNode(elements, editingText) : null
   const scopeBox = scopeId ? boxes.get(scopeId) : null
+  const panning = spaceHeld || !!panRef.current
 
   return (
     <div
-      ref={wrapRef}
+      ref={clipRef}
       tabIndex={0}
       onKeyDown={onKeyDown}
+      onKeyUp={onKeyUp}
+      onWheel={onWheel}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
+      onContextMenu={(ev) => { if (ev.target === ev.currentTarget) openMenu(ev, null) }}
       onPointerDown={(ev) => {
         if (ev.target !== ev.currentTarget) return
-        // blank-canvas press: clear selection and start a marquee
-        if (!ev.shiftKey) select([])
-        const p = toIn(ev)
-        setMarquee({ x0: p.x, y0: p.y, x1: p.x, y1: p.y })
-        ev.currentTarget.setPointerCapture?.(ev.pointerId)
+        setMenu(null)
+        // space-drag / middle-button pans the view
+        if (spaceHeld || ev.button === 1) {
+          panRef.current = { startPx: { x: ev.clientX, y: ev.clientY }, startPan: pan }
+          ev.currentTarget.setPointerCapture?.(ev.pointerId)
+          return
+        }
+        select([])
       }}
-      className={`relative aspect-video overflow-hidden rounded-md shadow-sm outline-none ${className}`}
-      style={{ background: bgColor, containerType: 'inline-size', fontFamily: theme.bodyFont, touchAction: 'none' }}
+      className={`relative aspect-video overflow-hidden rounded-md shadow-sm outline-none bg-[var(--surface-2)] ${className}`}
+      style={{ touchAction: 'none', cursor: panning ? 'grab' : 'default' }}
     >
-      {bg.plate && plateBase && (
-        <>
-          <img
-            src={plateBase}
-            alt=""
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          />
-          {plateHasOverlay && (
-            <img src={theme.coverOverlay} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none" />
-          )}
-          <div
-            className="absolute inset-0 pointer-events-none"
-            style={{ background: theme.primary, opacity: plateHasOverlay ? 0.45 : 0.74 }}
-          />
-        </>
-      )}
+      {/* the transformed stage: everything slide-space lives here so zoom/pan
+          apply uniformly and pointer math (reads this rect) stays correct */}
+      <div
+        ref={wrapRef}
+        className="absolute inset-0"
+        style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: '0 0', background: bgColor, fontFamily: theme.bodyFont, containerType: 'inline-size' }}
+        onPointerDown={(ev) => {
+          if (ev.target !== ev.currentTarget) return
+          setMenu(null)
+          if (spaceHeld || ev.button === 1) {
+            panRef.current = { startPx: { x: ev.clientX, y: ev.clientY }, startPan: pan }
+            clipRef.current?.setPointerCapture?.(ev.pointerId)
+            return
+          }
+          if (!ev.shiftKey) select([])
+          const p = toIn(ev)
+          setMarquee({ x0: p.x, y0: p.y, x1: p.x, y1: p.y })
+          clipRef.current?.setPointerCapture?.(ev.pointerId)
+        }}
+        onContextMenu={(ev) => { if (ev.target === ev.currentTarget) openMenu(ev, null) }}
+      >
+        {bg.plate && plateBase && (
+          <>
+            <img
+              src={plateBase}
+              alt=""
+              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+            />
+            {plateHasOverlay && (
+              <img src={theme.coverOverlay} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none" />
+            )}
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{ background: theme.primary, opacity: plateHasOverlay ? 0.45 : 0.74 }}
+            />
+          </>
+        )}
 
-      {/* paint layer: the flattened primitives, exactly what exports */}
-      <div className="absolute inset-0 pointer-events-none">
-        {flat.map((el) => (editingText && el.srcId === editingText ? null : <ElementView key={el.id} el={el} theme={theme} iconById={iconById} />))}
+        {/* paint layer: the flattened primitives, exactly what exports */}
+        <div className="absolute inset-0 pointer-events-none">
+          {flat.map((el) => (editingText && el.srcId === editingText ? null : <ElementView key={el.id} el={el} theme={theme} iconById={iconById} />))}
+        </div>
+
+        {/* hit layer: one surface per primitive, mapping back to its source
+            node — DOM order mirrors z-order so the topmost object wins */}
+        {!panning && flat.map((el) => (
+          <div
+            key={`hit_${el.id}`}
+            className="absolute"
+            style={{ ...pctBox(el.box), cursor: editingText ? 'text' : 'move', minWidth: 6, minHeight: 6 }}
+            onPointerDown={(ev) => beginDrag(ev, el.srcId, 'move')}
+            onDoubleClick={(ev) => onDoubleClick(ev, el.srcId)}
+            onContextMenu={(ev) => openMenu(ev, el.srcId)}
+          />
+        ))}
+
+        {/* smart alignment guides (element-to-element + slide) while dragging */}
+        {guides?.v?.map((at, i) => (
+          <div key={`gv_${i}`} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: pctLine(at, 'x'), width: 1, background: '#F43F5E' }} />
+        ))}
+        {guides?.h?.map((at, i) => (
+          <div key={`gh_${i}`} className="absolute left-0 right-0 pointer-events-none" style={{ top: pctLine(at, 'y'), height: 1, background: '#F43F5E' }} />
+        ))}
+
+        {/* open-group scope frame */}
+        {scopeBox && (
+          <div
+            className="absolute pointer-events-none rounded-sm"
+            style={{ ...pctBox(scopeBox), boxShadow: '0 0 0 1px #3B82F6', outline: '1px dashed rgba(59,130,246,0.6)', outlineOffset: 2 }}
+          />
+        )}
+
+        {/* selection frames + resize handles (handles on single selection) */}
+        {!panning && selectedIds.map((id) => {
+          const b = boxes.get(id)
+          if (!b || editingText === id) return null
+          const single = selectedIds.length === 1
+          return (
+            <div key={`sel_${id}`} className="absolute pointer-events-none" style={pctBox(b)}>
+              <div className="absolute inset-0" style={{ boxShadow: '0 0 0 1.5px #3B82F6' }} />
+              {single &&
+                HANDLES.map((hd) => {
+                  const pos = {}
+                  if (hd.includes('n')) pos.top = '-4px'
+                  else if (hd.includes('s')) pos.bottom = '-4px'
+                  else pos.top = 'calc(50% - 4px)'
+                  if (hd.includes('w')) pos.left = '-4px'
+                  else if (hd.includes('e')) pos.right = '-4px'
+                  else pos.left = 'calc(50% - 4px)'
+                  const cursor = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' }[hd]
+                  return (
+                    <div
+                      key={hd}
+                      onPointerDown={(ev) => beginDrag(ev, id, 'resize', hd)}
+                      className="absolute w-2 h-2 bg-white border border-[#3B82F6] rounded-[2px] pointer-events-auto"
+                      style={{ ...pos, cursor, zIndex: 5 }}
+                    />
+                  )
+                })}
+            </div>
+          )
+        })}
+
+        {/* marquee */}
+        {marquee && (
+          <div
+            className="absolute pointer-events-none border border-[#3B82F6] bg-[#3B82F6]/10"
+            style={pctBox({
+              x: Math.min(marquee.x0, marquee.x1),
+              y: Math.min(marquee.y0, marquee.y1),
+              w: Math.abs(marquee.x1 - marquee.x0),
+              h: Math.abs(marquee.y1 - marquee.y0),
+            })}
+          />
+        )}
+
+        {/* inline text editor overlays the text node at its flattened position */}
+        {editingNode && boxes.get(editingNode.id) && (
+          <div
+            ref={editRef}
+            contentEditable
+            suppressContentEditableWarning
+            onBlur={() => commitText(editingNode)}
+            onKeyDown={(ev) => {
+              if (ev.key === 'Escape') {
+                ev.preventDefault()
+                setEditingText(null)
+              }
+              if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
+                ev.preventDefault()
+                commitText(editingNode)
+              }
+              ev.stopPropagation()
+            }}
+            className="absolute outline-none"
+            style={{
+              ...pctBox(boxes.get(editingNode.id)),
+              fontFamily: editingNode.style?.fontFamily || (editingNode.style?.fontRole === 'heading' ? theme.headingFont : theme.bodyFont),
+              fontSize: `${(editingNode.style?.fontSize || 13) / 7.2}cqw`,
+              color: editingNode.style?.color?.startsWith('@') ? theme[editingNode.style.color.slice(1)] : editingNode.style?.color || theme.bodyText,
+              fontWeight: editingNode.style?.bold ? 700 : 400,
+              fontStyle: editingNode.style?.italic ? 'italic' : 'normal',
+              textAlign: editingNode.style?.align || 'left',
+              lineHeight: editingNode.style?.lineHeight || 1.2,
+              padding: '0.4cqw 0.95cqw',
+              whiteSpace: 'pre-wrap',
+              background: 'rgba(59,130,246,0.06)',
+              boxShadow: '0 0 0 1.5px #3B82F6 inset',
+              zIndex: 10,
+            }}
+          >
+            {editingNode.text}
+          </div>
+        )}
       </div>
 
-      {/* hit layer: one surface per primitive, mapping back to its source
-          node — DOM order mirrors z-order so the topmost object wins */}
-      {flat.map((el) => (
-        <div
-          key={`hit_${el.id}`}
-          className="absolute"
-          style={{ ...pctBox(el.box), cursor: editingText ? 'text' : 'move', minWidth: 6, minHeight: 6 }}
-          onPointerDown={(ev) => beginDrag(ev, el.srcId, 'move')}
-          onDoubleClick={(ev) => onDoubleClick(ev, el.srcId)}
-        />
-      ))}
+      {/* zoom control (clip-space, fixed to the corner regardless of pan) */}
+      <div className="absolute bottom-2 right-2 flex items-center gap-0.5 rounded-lg bg-[var(--surface)]/90 backdrop-blur border border-[var(--border)] shadow-sm px-0.5 py-0.5 text-[var(--muted)] select-none">
+        <button className="w-6 h-6 rounded grid place-items-center hover:bg-[var(--surface-3)] text-sm" onClick={() => zoomTo(zoom - 0.25, null)} title="Zoom −">−</button>
+        <button className="px-1.5 h-6 rounded hover:bg-[var(--surface-3)] text-[11px] tabular-nums min-w-[3rem]" onClick={resetView} title="Ajustar (100%)">
+          {Math.round(zoom * 100)}%
+        </button>
+        <button className="w-6 h-6 rounded grid place-items-center hover:bg-[var(--surface-3)] text-sm" onClick={() => zoomTo(zoom + 0.25, null)} title="Zoom +">+</button>
+      </div>
 
-      {/* open-group scope frame */}
-      {scopeBox && (
-        <div
-          className="absolute pointer-events-none rounded-sm"
-          style={{ ...pctBox(scopeBox), boxShadow: '0 0 0 1px #3B82F6', outline: '1px dashed rgba(59,130,246,0.6)', outlineOffset: 2 }}
-        />
-      )}
-
-      {/* selection frames + resize handles (handles on single selection) */}
-      {selectedIds.map((id) => {
-        const b = boxes.get(id)
-        if (!b || editingText === id) return null
-        const single = selectedIds.length === 1
-        return (
-          <div key={`sel_${id}`} className="absolute pointer-events-none" style={pctBox(b)}>
-            <div className="absolute inset-0" style={{ boxShadow: '0 0 0 1.5px #3B82F6' }} />
-            {single &&
-              HANDLES.map((hd) => {
-                const pos = {}
-                if (hd.includes('n')) pos.top = '-4px'
-                else if (hd.includes('s')) pos.bottom = '-4px'
-                else pos.top = 'calc(50% - 4px)'
-                if (hd.includes('w')) pos.left = '-4px'
-                else if (hd.includes('e')) pos.right = '-4px'
-                else pos.left = 'calc(50% - 4px)'
-                const cursor = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' }[hd]
-                return (
-                  <div
-                    key={hd}
-                    onPointerDown={(ev) => beginDrag(ev, id, 'resize', hd)}
-                    className="absolute w-2 h-2 bg-white border border-[#3B82F6] rounded-[2px] pointer-events-auto"
-                    style={{ ...pos, cursor, zIndex: 5 }}
-                  />
-                )
-              })}
-          </div>
-        )
-      })}
-
-      {/* marquee */}
-      {marquee && (
-        <div
-          className="absolute pointer-events-none border border-[#3B82F6] bg-[#3B82F6]/10"
-          style={pctBox({
-            x: Math.min(marquee.x0, marquee.x1),
-            y: Math.min(marquee.y0, marquee.y1),
-            w: Math.abs(marquee.x1 - marquee.x0),
-            h: Math.abs(marquee.y1 - marquee.y0),
-          })}
-        />
-      )}
-
-      {/* inline text editor overlays the text node at its flattened position */}
-      {editingNode && boxes.get(editingNode.id) && (
-        <div
-          ref={editRef}
-          contentEditable
-          suppressContentEditableWarning
-          onBlur={() => commitText(editingNode)}
-          onKeyDown={(ev) => {
-            if (ev.key === 'Escape') {
-              ev.preventDefault()
-              setEditingText(null)
-            }
-            if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
-              ev.preventDefault()
-              commitText(editingNode)
-            }
-            ev.stopPropagation()
-          }}
-          className="absolute outline-none"
-          style={{
-            ...pctBox(boxes.get(editingNode.id)),
-            fontFamily: editingNode.style?.fontFamily || (editingNode.style?.fontRole === 'heading' ? theme.headingFont : theme.bodyFont),
-            fontSize: `${(editingNode.style?.fontSize || 13) / 7.2}cqw`,
-            color: editingNode.style?.color?.startsWith('@') ? theme[editingNode.style.color.slice(1)] : editingNode.style?.color || theme.bodyText,
-            fontWeight: editingNode.style?.bold ? 700 : 400,
-            fontStyle: editingNode.style?.italic ? 'italic' : 'normal',
-            textAlign: editingNode.style?.align || 'left',
-            lineHeight: editingNode.style?.lineHeight || 1.2,
-            padding: '0.4cqw 0.95cqw',
-            whiteSpace: 'pre-wrap',
-            background: 'rgba(59,130,246,0.06)',
-            boxShadow: '0 0 0 1.5px #3B82F6 inset',
-            zIndex: 10,
-          }}
-        >
-          {editingNode.text}
-        </div>
-      )}
+      {/* right-click context menu */}
+      {menu && <CanvasMenu menu={menu} onClose={() => setMenu(null)} actions={{
+        hasSelection: selectedIds.length > 0,
+        multi: selectedIds.length > 1,
+        isGroup: selectedNodes.length === 1 && selectedNodes[0]?.type === 'group',
+        canPaste: clipboardHasContent(),
+        copy: () => copySelection(),
+        cut: () => { if (copySelection()) { onChangeElements(removeNodes(elements, selectedIds), { commit: true }); select([]) } },
+        paste: pasteClipboard,
+        duplicate: duplicateSelection,
+        group: () => { const { elements: n, groupId } = groupNodes(elements, selectedIds, theme); if (groupId) { onChangeElements(n, { commit: true }); select([groupId]) } },
+        ungroup: () => { const n = selectedNodes[0]; if (n?.type === 'group') { const res = ungroupNode(elements, n.id, theme); onChangeElements(res.elements, { commit: true }); select(res.ids) } },
+        toFront: () => reorderSelection(1, true),
+        toBack: () => reorderSelection(-1, true),
+        forward: () => reorderSelection(1),
+        backward: () => reorderSelection(-1),
+        remove: () => { onChangeElements(removeNodes(elements, selectedIds), { commit: true }); select([]) },
+      }} />}
     </div>
+  )
+}
+
+// Right-click menu (Claude-Design-style): a compact floating list of the
+// canvas commands, positioned at the pointer within the clip. Backdrop closes.
+function CanvasMenu({ menu, onClose, actions }) {
+  const run = (fn) => () => { fn?.(); onClose() }
+  const Item = ({ label, on, kbd, disabled }) => (
+    <button
+      disabled={disabled}
+      onClick={run(on)}
+      className="w-full flex items-center gap-3 px-2.5 py-1.5 text-[12px] rounded-md text-left text-[var(--text)] hover:bg-[var(--surface-3)] disabled:opacity-35 disabled:hover:bg-transparent"
+    >
+      <span className="flex-1">{label}</span>
+      {kbd && <span className="text-[10px] text-[var(--faint)] tabular-nums">{kbd}</span>}
+    </button>
+  )
+  const Sep = () => <div className="my-1 h-px bg-[var(--border-soft)]" />
+  return (
+    <>
+      <div className="fixed inset-0 z-20" onPointerDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }} />
+      <div
+        className="absolute z-30 w-52 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl shadow-black/40 p-1"
+        style={{ left: Math.min(menu.x, (menu.clipW || 9999)), top: menu.y }}
+      >
+        {actions.hasSelection ? (
+          <>
+            <Item label="Copiar" on={actions.copy} kbd="⌘C" />
+            <Item label="Recortar" on={actions.cut} kbd="⌘X" />
+            <Item label="Duplicar" on={actions.duplicate} kbd="⌘D" />
+            <Item label="Colar" on={actions.paste} kbd="⌘V" disabled={!actions.canPaste} />
+            <Sep />
+            {actions.multi && <Item label="Agrupar" on={actions.group} kbd="⌘G" />}
+            {actions.isGroup && <Item label="Desagrupar" on={actions.ungroup} kbd="⌘⇧G" />}
+            <Item label="Trazer para frente" on={actions.toFront} />
+            <Item label="Avançar" on={actions.forward} kbd="⌘]" />
+            <Item label="Recuar" on={actions.backward} kbd="⌘[" />
+            <Item label="Enviar para trás" on={actions.toBack} />
+            <Sep />
+            <Item label="Excluir" on={actions.remove} kbd="⌫" />
+          </>
+        ) : (
+          <Item label="Colar" on={actions.paste} kbd="⌘V" disabled={!actions.canPaste} />
+        )}
+      </div>
+    </>
   )
 }
