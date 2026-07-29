@@ -95,7 +95,8 @@ export default function AdminSettings({ open }) {
       setPrincipal('')
       await load()
     } catch (e) {
-      setError(e.message || t('admins.error.add'))
+      const code = e.message || ''
+      setError(code === 'sem_acesso' ? t('admins.error.noAccess') : code || t('admins.error.add'))
     } finally {
       setBusy(false)
     }
@@ -120,15 +121,25 @@ export default function AdminSettings({ open }) {
         <Icon.Shield size={16} /> {t('admins.title')}
       </label>
       <p className="text-xs text-[var(--faint)] mt-1">
-        {t('admins.description', { owner: data.owner })}
+        {data.owner ? t('admins.description', { owner: data.owner }) : t('admins.descriptionNoOwner')}
+      </p>
+      <p className="text-xs text-[var(--faint)] mt-1.5 flex items-start gap-1.5">
+        <Icon.Shield size={13} className="shrink-0 mt-0.5 opacity-70" />
+        <span>{t('admins.accessNote')}</span>
       </p>
 
       <div className="mt-3 space-y-1.5">
-        <div className="flex items-center gap-2 text-xs rounded-lg border border-[var(--border)] px-3 py-2">
-          <Icon.Check size={13} className="text-[var(--accent)] shrink-0" />
-          <span className="flex-1 truncate font-medium">{data.owner}</span>
-          <span className="text-[var(--faint)]">{t('admins.owner')}</span>
-        </div>
+        {/* The "owner" (APP_OWNER_EMAIL) is only shown when set. In a bundle
+            deploy it isn't wired into the runtime — the deployer is instead
+            seeded into app_admins and shows up in the list below — so an empty
+            owner row would read "proprietário ()". Hide it entirely then. */}
+        {data.owner && (
+          <div className="flex items-center gap-2 text-xs rounded-lg border border-[var(--border)] px-3 py-2">
+            <Icon.Check size={13} className="text-[var(--accent)] shrink-0" />
+            <span className="flex-1 truncate font-medium">{data.owner}</span>
+            <span className="text-[var(--faint)]">{t('admins.owner')}</span>
+          </div>
+        )}
         {data.admins.map((a) => (
           <div key={a.principal} className="flex items-center gap-2 text-xs rounded-lg border border-[var(--border)] px-3 py-2">
             {a.kind === 'group' ? (
@@ -172,6 +183,14 @@ export default function AdminSettings({ open }) {
               onBlur={() => setInputFocused(false)}
               onKeyDown={(e) => e.key === 'Enter' && add()}
               placeholder={t('admins.inputPlaceholder')}
+              // This is a principal-search field, not a credential. Password
+              // managers (1Password/LastPass/Bitwarden/Dashlane) otherwise inject
+              // their "fill" glyph and pop the vault — suppress all of them.
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore
+              data-form-type="other"
               className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface-2)] pl-8 pr-3 py-2 text-xs outline-none focus:border-[var(--accent)]"
             />
           </div>

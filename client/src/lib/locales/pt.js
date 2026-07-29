@@ -71,6 +71,8 @@ export default {
   'composer.listening': 'Ouvindo… fale agora',
   'composer.placeholder': 'Pergunte algo, ou anexe um documento…',
   'composer.attach': 'Anexar documentos',
+  'composer.attachMedia': 'Anexar documentos, imagens, áudio ou vídeo',
+  'composer.segmenting': 'Preparando áudio ({name}) — parte {done} de {total}…',
   'composer.dictate': 'Ditar (voz para texto)',
   'composer.voiceMode': 'Modo de voz — conversar com a IA',
   'composer.stop': 'Parar',
@@ -158,6 +160,7 @@ export default {
   // admins
   'admins.title': 'Administração do app',
   'admins.description': 'Administradores podem publicar design systems como padrão para todos os usuários e gerenciar esta lista. O proprietário ({owner}) é sempre administrador.',
+  'admins.descriptionNoOwner': 'Administradores podem publicar design systems como padrão para todos os usuários e gerenciar esta lista.',
   'admins.owner': 'proprietário',
   'admins.kind.group': 'grupo',
   'admins.kind.user': 'usuário',
@@ -166,6 +169,8 @@ export default {
   'admins.inferKind.user': 'Usuário',
   'admins.inferKind.either': 'Usuário ou grupo',
   'admins.inputPlaceholder': 'e-mail do usuário ou nome do grupo…',
+  'admins.accessNote': 'Só é possível promover a administrador usuários ou grupos que já têm acesso ao app na camada de permissões do Databricks Apps. Conceda o acesso lá primeiro (CAN USE ou superior) e o principal aparecerá nas sugestões abaixo.',
+  'admins.error.noAccess': 'Esse usuário ou grupo não tem acesso ao app. Conceda acesso no Databricks Apps (CAN USE ou superior) antes de torná-lo administrador.',
   'admins.withAccess': 'Com acesso ao app',
   'admins.level.manage': 'manage',
   'admins.level.use': 'use',
@@ -240,6 +245,8 @@ export default {
   'message.exportPdf': 'Exportar como PDF',
   'message.regenerate': 'Regenerar',
   'message.tokensInOut': 'Tokens entrada / saída',
+  'message.mediaProcessedBy': 'mídia lida por {model}',
+  'message.mediaProcessedTitle': 'O áudio/vídeo anexado ({files}) foi transcrito por este modelo multimodal; a resposta acima foi redigida pelo modelo selecionado a partir dessa transcrição.',
   'message.estimatedCost': 'Custo estimado (preços de lista públicos)',
 
   // loading chips (per artifact kind)

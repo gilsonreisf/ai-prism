@@ -5,8 +5,9 @@ import { useT } from '../lib/i18n.jsx'
 
 // One attachment chip. Image attachments show a live thumbnail (from an object
 // URL, revoked on unmount) so a pasted/attached image is recognizable at a
-// glance; other files show the generic file icon + name.
-function AttachmentChip({ file, isImage, onRemove }) {
+// glance; audio/video show a media glyph (they'll be transcribed server-side);
+// other files show the generic file icon + name.
+function AttachmentChip({ file, isImage, media, onRemove }) {
   const [thumb, setThumb] = useState(null)
   useEffect(() => {
     if (!isImage) return
@@ -14,6 +15,19 @@ function AttachmentChip({ file, isImage, onRemove }) {
     setThumb(url)
     return () => URL.revokeObjectURL(url)
   }, [file, isImage])
+
+  if (!isImage && media) {
+    const MediaIcon = media === 'video' ? Icon.Play : Icon.Waveform
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs bg-[var(--surface-3)] rounded-lg pl-2 pr-1 py-1">
+        <MediaIcon size={13} className="text-[var(--accent)]" />
+        <span className="max-w-[160px] truncate">{file.name}</span>
+        <button onClick={onRemove} className="p-0.5 rounded hover:bg-[var(--surface)] text-[var(--faint)]">
+          <Icon.Close size={12} />
+        </button>
+      </span>
+    )
+  }
 
   if (isImage) {
     return (
@@ -53,6 +67,7 @@ export default function Composer({
   files,
   setFiles,
   supportedExt,
+  mediaExt,
   onOpenVoice,
 }) {
   const t = useT()
@@ -64,10 +79,32 @@ export default function Composer({
   const [dragOver, setDragOver] = useState(false)
 
   // images are always acceptable (pasted or attached) — they go to the model as
-  // vision input, a separate path from the text-extracted document types.
-  const accept = [...(supportedExt || []).map((e) => '.' + e), 'image/*'].join(',')
+  // vision input, a separate path from the text-extracted document types. Audio
+  // and video are accepted only when the workspace advertises media_extensions
+  // (transcription enabled); they're transcribed server-side into text.
+  const accept = [
+    ...(supportedExt || []).map((e) => '.' + e),
+    ...(mediaExt || []).map((e) => '.' + e),
+    'image/*',
+    ...((mediaExt || []).length ? ['audio/*', 'video/*'] : []),
+  ].join(',')
 
   const isImageFile = (f) => (f.type || '').startsWith('image/')
+
+  // Classify an attachment as audio/video for the chip glyph. Uses the mime type
+  // first, then the extension against the workspace's advertised media list.
+  const mediaKind = (f) => {
+    const m = f.type || ''
+    if (m.startsWith('audio/')) return 'audio'
+    if (m.startsWith('video/')) return 'video'
+    const dot = f.name.lastIndexOf('.')
+    const ext = dot >= 0 ? f.name.slice(dot + 1).toLowerCase() : ''
+    if ((mediaExt || []).includes(ext)) {
+      // heuristic split for the icon only; the server does real detection
+      return /^(mp4|mov|webm|m4v|mpeg|mpg|avi|mkv|3gp)$/.test(ext) ? 'video' : 'audio'
+    }
+    return null
+  }
 
   // auto-grow the textarea with its content (up to max-h-48) — a fixed
   // one-line box feels cramped, especially in the narrow focus-mode column
@@ -162,6 +199,7 @@ export default function Composer({
                 key={i}
                 file={f}
                 isImage={isImageFile(f)}
+                media={mediaKind(f)}
                 onRemove={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
               />
             ))}
@@ -192,7 +230,7 @@ export default function Composer({
           <button
             onClick={() => fileInput.current?.click()}
             className="shrink-0 p-2 rounded-xl hover:bg-[var(--surface-3)] text-[var(--muted)] transition"
-            title={t('composer.attach')}
+            title={(mediaExt || []).length ? t('composer.attachMedia') : t('composer.attach')}
           >
             <Icon.Paperclip size={19} />
           </button>

@@ -5,7 +5,13 @@
 // page's :root variables, so every var(...) is inlined to its current
 // resolved value in the serialized markup before rasterizing.
 export function downloadChartAsPng(containerEl, filename = 'grafico') {
-  const svg = containerEl?.querySelector('svg')
+  // The chart's SVG is the one Recharts renders inside its ResponsiveContainer
+  // (class `.recharts-surface`). Scope to that — a bare querySelector('svg')
+  // would match the FIRST <svg> in the card, which is the header's inline
+  // download-button icon, so the "export" would download the button glyph.
+  const svg =
+    containerEl?.querySelector('.recharts-surface') ||
+    containerEl?.querySelector('.recharts-wrapper svg')
   if (!svg) return
 
   const rootStyle = getComputedStyle(document.documentElement)

@@ -70,3 +70,16 @@ env:
     value: 'default'
   - name: IMAGE_VOLUME_NAME
     value: 'ai_prism_images'
+  # Audio/video understanding (server/transcribe.js). Media attachments are read
+  # by a MULTIMODAL LLM — Gemini via the gateway's `audio_url`/`video_url`
+  # content parts — which transcribes audio and understands video (speech +
+  # on-screen), then flows into the normal attachment pipeline so the user's own
+  # model does the task (summary, action items, …). NOTE: only Gemini ingests
+  # audio/video on the Databricks gateway (Claude/GPT reject it), so this hop
+  # always uses a Gemini model regardless of the user's chat model. Override
+  # with TRANSCRIBE_MODEL (must accept audio/video); default is
+  # databricks-gemini-3-5-flash. Long recordings (1h+) are segmented in the
+  # browser into sub-cap chunks before upload. Set TRANSCRIBE_DISABLED=1 to
+  # hard-disable (hides the media picker).
+  - name: TRANSCRIBE_MODEL
+    value: 'databricks-gemini-3-5-flash'

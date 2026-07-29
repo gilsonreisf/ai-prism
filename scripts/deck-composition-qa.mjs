@@ -21,7 +21,7 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { sanitizeDeck } from '../server/blocks.js'
+import { sanitizeDeck, freeformSlideIsMateriallyEmpty } from '../server/blocks.js'
 import { flattenElements, SLIDE_W, SLIDE_H, GRID } from '../shared/deckLayout.js'
 import { resolveDeckTheme, resolveThemeColor, luminance } from '../shared/deckTheme.js'
 import { TEMPLATES } from './fixtures/templates.mjs'
@@ -65,10 +65,36 @@ function surfaceBehind(el, flat, slideBg, theme) {
   return surface
 }
 
+// a group with no content-bearing descendant is the "Grupo · 0" blank-plate
+// symptom — the prune/salvage in sanitizeElement must guarantee none survive
+const CONTENT = new Set(['text', 'image', 'chart', 'icon'])
+const hasContent = (el) =>
+  !el
+    ? false
+    : CONTENT.has(el.type)
+      ? el.type !== 'text' || String(el.text ?? '').trim()
+      : el.type === 'group'
+        ? (el.children || []).some(hasContent)
+        : false
+function emptyGroups(elements, out = []) {
+  for (const el of elements || []) {
+    if (el?.type === 'group') {
+      if (!(el.children || []).some(hasContent)) out.push(el.id || '(sem id)')
+      emptyGroups(el.children, out)
+    }
+  }
+  return out
+}
+
 function checkSlide(label, slide, theme) {
   if (slide.layout !== 'freeform') return 0
   const slideBg = hex(theme, slide.background?.color, slide.background?.plate ? theme.primary : theme.background)
   const flat = flattenElements(slide.elements || [], theme, { background: slideBg })
+  // (0) no empty groups + slide is not materially blank — the core "never a
+  // blank freeform slide" guarantee that the sanitizer must uphold
+  const empties = emptyGroups(slide.elements)
+  assert(empties.length === 0, `${label}: grupo(s) vazio(s) sem conteúdo: ${empties.join(', ')}`)
+  assert(!freeformSlideIsMateriallyEmpty(slide), `${label}: slide freeform sem conteúdo material (renderiza em branco)`)
   let checked = 0
   const topText = []
   for (const el of flat) {
@@ -129,6 +155,54 @@ for (const fix of fixtures) {
     if (s.layout === 'freeform') checkSlide(`${fix}#${i}`, s, theme)
   })
 }
+
+// --- negative fixtures: slides the model USED to emit that rendered blank.
+// The sanitizer must SALVAGE (chart→placeholder) or PRUNE (empty group) so the
+// result is never materially empty and never carries a "Grupo · 0" plate. This
+// proves the repair works — not just that the golden is clean.
+const NEG_THEME = resolveDeckTheme(TEMPLATES.rich)
+// (a) a group whose only child is a heatmap chart missing `values` — the exact
+// bug repro. Expect: chart salvaged to a text placeholder, group survives with
+// content, slide not materially empty.
+const negChart = {
+  title: 'neg: chart sem dados',
+  slides: [{
+    layout: 'freeform',
+    elements: [{
+      type: 'group', id: 'g1', box: { x: 1, y: 1, w: 8, h: 3 },
+      stack: { direction: 'column', gap: 0.2 },
+      children: [{ type: 'chart', id: 'c1', box: { x: 0, y: 0, w: 8, h: 3 }, chart: { kind: 'heatmap', heatmap: { xLabels: ['A'] } } }],
+    }],
+  }],
+}
+const negChartDeck = sanitizeDeck(negChart, new Map(), TEMPLATES.rich)
+assert(negChartDeck && negChartDeck.slides.length === 1, 'neg-chart: deck sobrevive (chart salvo, não descartado)')
+if (negChartDeck) {
+  const s = negChartDeck.slides[0]
+  assert(emptyGroups(s.elements).length === 0, 'neg-chart: nenhum grupo vazio após salvamento')
+  assert(!freeformSlideIsMateriallyEmpty(s), 'neg-chart: slide tem conteúdo material após salvamento')
+}
+// (b) a group whose only child is an invalid-type element — nothing to salvage,
+// so the group must be PRUNED; with no other content the slide collapses and
+// sanitizeDeck drops it entirely (a missing slide beats a blank one).
+const negEmpty = {
+  title: 'neg: grupo que esvazia',
+  slides: [
+    { layout: 'freeform', elements: [{ type: 'group', id: 'g2', box: { x: 1, y: 1, w: 8, h: 3 }, children: [{ type: 'bogus', box: { x: 0, y: 0, w: 1, h: 1 } }] }] },
+    { layout: 'title', heading: 'Slide real', subheading: 'para o deck não ficar vazio' },
+  ],
+}
+const negEmptyDeck = sanitizeDeck(negEmpty, new Map(), TEMPLATES.rich)
+assert(negEmptyDeck, 'neg-empty: deck sobrevive (via o slide title real)')
+if (negEmptyDeck) {
+  for (const s of negEmptyDeck.slides) {
+    if (s.layout === 'freeform') {
+      assert(emptyGroups(s.elements).length === 0, 'neg-empty: nenhum grupo vazio sobreviveu')
+      assert(!freeformSlideIsMateriallyEmpty(s), 'neg-empty: nenhum slide freeform materialmente vazio')
+    }
+  }
+}
+console.log('negativas: salvamento/poda mantêm slides não-vazios')
 
 if (failures) {
   console.error(`\n${failures} falha(s) de composição`)

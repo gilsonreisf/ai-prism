@@ -7,7 +7,8 @@ import Logo from './Logo.jsx'
 import BlockRenderer from './blocks/BlockRenderer.jsx'
 import LoadingChip from './blocks/LoadingChip.jsx'
 import { exportMessageToPdf } from '../pdfExport.js'
-import { useT } from '../lib/i18n.jsx'
+import { useT, useI18n } from '../lib/i18n.jsx'
+import { shortMessageDate } from '../lib/date.js'
 
 const MARKER = '\n\n--- ANEXOS ---'
 const FENCE_START = '```prism-block'
@@ -347,6 +348,7 @@ const MARKDOWN_COMPONENTS = { pre: CodeBlock }
 
 function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUser, onOpenDeck, onOpenSpreadsheet, onOpenDocument, canRegenerate, streaming, isLatest, onSubmitAnswers }) {
   const t = useT()
+  const { locale } = useI18n()
   const isUser = msg.role === 'user'
   const text = stripAttachments(msg.content)
   const toolCalls = msg.toolCalls || msg.tool_calls
@@ -438,23 +440,10 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
       )
     }
 
+    const msgDate = shortMessageDate(msg.created_at, locale)
+
     return (
-      <div className="flex justify-end items-center gap-1.5 animate-fade-in group/msg">
-        <span className="shrink-0 opacity-0 group-hover/msg:opacity-100 transition">
-          <CopyBtn text={text} label={t('message.copyPrompt')} />
-        </span>
-        {onEditUser && !streaming && (
-          <button
-            onClick={() => {
-              setDraft(text)
-              setEditing(true)
-            }}
-            className="shrink-0 p-1 rounded-md hover:bg-[var(--surface-3)] text-[var(--faint)] hover:text-[var(--text)] opacity-0 group-hover/msg:opacity-100 transition"
-            title={t('common.edit')}
-          >
-            <Icon.Pencil size={13} />
-          </button>
-        )}
+      <div className="flex justify-end animate-fade-in group/msg">
         <div className="max-w-[85%] md:max-w-[75%]">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 justify-end mb-1.5">
@@ -470,6 +459,31 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
           )}
           <div className="rounded-2xl rounded-tr-md bg-[var(--bubble-user)] px-4 py-2.5 text-[0.95rem] leading-relaxed whitespace-pre-wrap">
             {text}
+          </div>
+          {/* Discreet action row UNDER the bubble (Claude-style): the date sits
+              at the left of the row and the actions reveal on hover, so the
+              message reads cleanly at rest. */}
+          <div className="flex items-center justify-end gap-0.5 mt-1 pr-0.5 text-[11px] text-[var(--faint)]">
+            {msgDate && (
+              <span className="mr-1 opacity-0 group-hover/msg:opacity-100 transition" title={new Date(msg.created_at).toLocaleString(locale)}>
+                {msgDate}
+              </span>
+            )}
+            {onEditUser && !streaming && (
+              <button
+                onClick={() => {
+                  setDraft(text)
+                  setEditing(true)
+                }}
+                className="p-1 rounded-md hover:bg-[var(--surface-3)] hover:text-[var(--text)] opacity-0 group-hover/msg:opacity-100 transition"
+                title={t('common.edit')}
+              >
+                <Icon.Pencil size={13} />
+              </button>
+            )}
+            <span className="opacity-0 group-hover/msg:opacity-100 transition">
+              <CopyBtn text={text} label={t('message.copyPrompt')} />
+            </span>
           </div>
         </div>
       </div>
@@ -613,6 +627,22 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
               <span title={t('message.estimatedCost')}>· ~{fmtCost(cost)}</span>
             )}
           </span>
+          {/* Two-model media pipeline disclosure: the audio/video was read by a
+              different model (Gemini) than the one that wrote this answer. Shown
+              so the media step + its token spend aren't invisible. */}
+          {msg.media_processing?.model && (
+            <span
+              className="inline-flex items-center gap-1 whitespace-nowrap"
+              title={t('message.mediaProcessedTitle', {
+                files: (msg.media_processing.files || []).join(', '),
+              })}
+            >
+              <Icon.Waveform size={12} className="shrink-0 opacity-70" />
+              {t('message.mediaProcessedBy', {
+                model: models.find((m) => m.id === msg.media_processing.model)?.label || 'Gemini',
+              })}
+            </span>
+          )}
           </div>
         )}
       </div>

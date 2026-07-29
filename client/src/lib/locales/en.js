@@ -68,6 +68,8 @@ export default {
   'composer.listening': 'Listening… speak now',
   'composer.placeholder': 'Ask something, or attach a document…',
   'composer.attach': 'Attach documents',
+  'composer.attachMedia': 'Attach documents, images, audio or video',
+  'composer.segmenting': 'Preparing audio ({name}) — part {done} of {total}…',
   'composer.dictate': 'Dictate (speech to text)',
   'composer.voiceMode': 'Voice mode — talk with the AI',
   'composer.stop': 'Stop',
@@ -155,6 +157,7 @@ export default {
   // admins
   'admins.title': 'App administration',
   'admins.description': 'Admins can publish design systems as the default for all users and manage this list. The owner ({owner}) is always an admin.',
+  'admins.descriptionNoOwner': 'Admins can publish design systems as the default for all users and manage this list.',
   'admins.owner': 'owner',
   'admins.kind.group': 'group',
   'admins.kind.user': 'user',
@@ -163,6 +166,8 @@ export default {
   'admins.inferKind.user': 'User',
   'admins.inferKind.either': 'User or group',
   'admins.inputPlaceholder': 'user e-mail or group name…',
+  'admins.accessNote': 'Only users or groups that already have access to the app in the Databricks Apps permission layer can be promoted to admin. Grant access there first (CAN USE or higher) and the principal will show up in the suggestions below.',
+  'admins.error.noAccess': "That user or group doesn't have access to the app. Grant access in Databricks Apps (CAN USE or higher) before making them an admin.",
   'admins.withAccess': 'With app access',
   'admins.level.manage': 'manage',
   'admins.level.use': 'use',
@@ -237,6 +242,8 @@ export default {
   'message.exportPdf': 'Export as PDF',
   'message.regenerate': 'Regenerate',
   'message.tokensInOut': 'Input / output tokens',
+  'message.mediaProcessedBy': 'media read by {model}',
+  'message.mediaProcessedTitle': 'The attached audio/video ({files}) was transcribed by this multimodal model; the answer above was written by the selected model from that transcript.',
   'message.estimatedCost': 'Estimated cost (public list prices)',
 
   // loading chips (per artifact kind)
