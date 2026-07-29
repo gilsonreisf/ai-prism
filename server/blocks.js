@@ -356,10 +356,13 @@ const SPREADSHEET_POLICY =
   'de linhas da própria tabela (ex.: uma linha "Total"), prefira SUM sobre uma coluna inteira via ' +
   'token OU garanta que só há UMA tabela e conte as linhas com cuidado; na dúvida, use tokens. Cada ' +
   'linha de dados de uma tabela é contígua (sem linhas em branco automáticas entre elas).\n' +
-  'PREFIRA FUNÇÕES CLÁSSICAS E ROBUSTAS (SUM, SUMIF, SUMIFS, IF, ROUND, COUNTIF, AVERAGE, MIN, MAX, ' +
-  'INDEX/MATCH). EVITE funções de matriz dinâmica (XLOOKUP, FILTER, SORT, UNIQUE, SEQUENCE) e ' +
-  'funções muito recentes — resolva o mesmo com INDEX/MATCH ou já deixe os dados prontos. Isso ' +
-  'garante compatibilidade ampla e que o preview do app mostre o valor calculado.\n\n' +
+  'PREFIRA FUNÇÕES CLÁSSICAS E ROBUSTAS (SUM, SUMIF, SUMIFS, IF, ROUND, COUNTIF, COUNTIFS, AVERAGE, ' +
+  'MIN, MAX, INDEX/MATCH, VLOOKUP, HLOOKUP). EVITE funções de matriz dinâmica (XLOOKUP, FILTER, SORT, ' +
+  'UNIQUE, SEQUENCE) e funções muito recentes — resolva o mesmo com INDEX/MATCH ou já deixe os dados ' +
+  'prontos. Isso garante compatibilidade ampla (Excel, Google Sheets, LibreOffice) e que o preview do ' +
+  'app mostre o valor calculado. Para buscar um valor em OUTRA aba (ex.: a % de sazonalidade do mês), ' +
+  'prefira INDEX([Aba!ColunaValor], MATCH([@Chave], [Aba!ColunaChave], 0)) — é o padrão que o preview ' +
+  'resolve com mais confiabilidade.\n\n' +
 
   '=== GRÁFICOS NATIVOS (opcional, por aba) ===\n' +
   '"charts":[{"kind":"bar|line|area|pie","title":"...","tableBlock":IDX,"categoryColumn":C,' +

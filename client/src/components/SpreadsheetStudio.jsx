@@ -8,6 +8,7 @@ import { useT } from '../lib/i18n.jsx'
 import { getJSON, postJSON } from '../api.js'
 import { resolveDeckTheme, blend, contrastOn } from '../../../shared/deckTheme.js'
 import { materializeWorkbook, colLetter } from '../lib/sheetEval.js'
+import { SUBMIT_CHORD } from '../lib/platform.js'
 
 // Full-screen studio for a generated spreadsheet — the tabular sibling of
 // DeckStudio. It is READ-ONLY on purpose: the grid faithfully previews the
@@ -173,6 +174,16 @@ function GridView({ mat, computed, sheetName, fills, th, sel, setSel }) {
   // selection normalized bounds
   const inSel = (r, c) => sel && r >= Math.min(sel.r1, sel.r2) && r <= Math.max(sel.r1, sel.r2) && c >= Math.min(sel.c1, sel.c2) && c <= Math.max(sel.c1, sel.c2)
   const isActive = (r, c) => sel && sel.ar === r && sel.ac === c
+  // which OUTER edges of the selection rectangle a given in-range cell touches —
+  // used to paint one continuous accent border around the whole range (not just
+  // a background tint on the active cell, which read as "only A1 is selected")
+  const selEdges = (r, c) => {
+    if (!sel) return null
+    const r1 = Math.min(sel.r1, sel.r2), r2 = Math.max(sel.r1, sel.r2)
+    const c1 = Math.min(sel.c1, sel.c2), c2 = Math.max(sel.c1, sel.c2)
+    return { top: r === r1, bottom: r === r2, left: c === c1, right: c === c2 }
+  }
+  const isRange = sel && (Math.min(sel.r1, sel.r2) !== Math.max(sel.r1, sel.r2) || Math.min(sel.c1, sel.c2) !== Math.max(sel.c1, sel.c2))
 
   // set active cell (and collapse selection unless extending)
   const pick = (r, c, { extend = false } = {}) => {
@@ -192,6 +203,20 @@ function GridView({ mat, computed, sheetName, fills, th, sel, setSel }) {
     if (!cell) return false
     const v = cell.value
     return v != null && v !== '' && !cell.header
+  }
+  // any content (incl. headers) in a cell — used to decide Excel-style text
+  // overflow: a left-aligned text cell spills into the empty cells to its right
+  // and clips as soon as a neighbour has content
+  const cellHasAnything = (r, c) => {
+    if (c < 0 || c >= maxCols) return false
+    const cell = mat.cells.get(`${colLetter(c)}${r}`)
+    return !!cell && cell.value != null && cell.value !== ''
+  }
+  // how many empty columns follow (r,c) — the text may overflow across them
+  const emptyRunRight = (r, c) => {
+    let n = 0
+    for (let cc = c + 1; cc < totalCols && !cellHasAnything(r, cc); cc++) n++
+    return n
   }
   const jump = (r, c, dr, dc) => {
     let nr = r, nc = c
@@ -217,27 +242,55 @@ function GridView({ mat, computed, sheetName, fills, th, sel, setSel }) {
     if (!d) return
     e.preventDefault()
     const jumpMod = e.metaKey || e.ctrlKey
-    let [r, c] = [sel.ar, sel.ac]
+    // Shift extends the MOVING edge of the range (r2/c2) from where it is, so
+    // repeated Shift+Arrow keeps growing the selection; without Shift we move
+    // the active cell itself. (The past bug stepped from the anchor every time,
+    // so Shift+Arrow could only ever reach anchor±1.)
+    let [r, c] = e.shiftKey ? [sel.r2, sel.c2] : [sel.ar, sel.ac]
     if (jumpMod) { [r, c] = jump(r, c, d[0], d[1]) }
     else { r = Math.min(Math.max(1, r + d[0]), totalRows); c = Math.min(Math.max(0, c + d[1]), totalCols - 1) }
     pick(r, c, { extend: e.shiftKey })
-    // keep active cell visible
+    // keep the moving edge visible
     const el = wrapRef.current?.querySelector(`[data-rc="${r}-${c}"]`)
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }
 
-  const cellStyle = (r, c, base) => ({
-    ...base,
-    width: COL_W, height: ROW_H,
-    outline: isActive(r, c) ? `2px solid ${th.accent}` : 'none',
-    outlineOffset: -2,
-    boxShadow: inSel(r, c) && !isActive(r, c) ? `inset 0 0 0 9999px ${th.accent}22` : 'none',
-  })
+  const cellStyle = (r, c, base) => {
+    const active = isActive(r, c)
+    const within = inSel(r, c)
+    // build box-shadow layers: a tint fill for every in-range cell + accent
+    // segments on whichever outer edges of the range this cell sits on, so the
+    // whole selection carries one crisp rectangle (Excel/Sheets-style)
+    const shadows = []
+    if (within && !active) shadows.push(`inset 0 0 0 9999px ${th.accent}1f`)
+    if (isRange && within) {
+      const e = selEdges(r, c)
+      const w = 2
+      if (e.top) shadows.push(`inset 0 ${w}px 0 ${th.accent}`)
+      if (e.bottom) shadows.push(`inset 0 -${w}px 0 ${th.accent}`)
+      if (e.left) shadows.push(`inset ${w}px 0 0 ${th.accent}`)
+      if (e.right) shadows.push(`inset -${w}px 0 0 ${th.accent}`)
+    }
+    return {
+      ...base,
+      width: COL_W, height: ROW_H,
+      // the active cell keeps its solid outline; a single-cell selection has no
+      // range border. zIndex lifts the active/edge cells above neighbour borders
+      outline: active ? `2px solid ${th.accent}` : 'none',
+      outlineOffset: -2,
+      position: 'relative',
+      zIndex: active || (isRange && within) ? 1 : undefined,
+      boxShadow: shadows.length ? shadows.join(', ') : 'none',
+    }
+  }
 
   const rows = []
   for (let r = 1; r <= totalRows; r++) {
     const band = bandByRow.get(r)
     const rowCells = []
+    // text-overflow overlays for this row (Excel-style spill into empty cells);
+    // collected while painting value cells, rendered on top afterwards
+    const overlays = []
     rowCells.push(
       <div key={`g${r}`} onMouseDown={(e) => selectRow(r, e.shiftKey)}
         className="sticky left-0 z-10 flex items-center justify-center text-[10px] text-[#8a8a8a] bg-[#f5f5f5] border-r border-b border-[#e0e0e0] select-none shrink-0 cursor-pointer hover:bg-[#ececec]"
@@ -305,17 +358,35 @@ function GridView({ mat, computed, sheetName, fills, th, sel, setSel }) {
         const style = fills[role] || fills.normal
         const display = isFormula ? fmtNumber(computed(sheetName, addr), cell.format) : fmtNumber(raw, cell.format)
         const numRight = NUM_FORMATS.includes(cell.format)
+        // Excel-style overflow: a LEFT-aligned text value (not a number, which
+        // stays right-aligned) that overruns its cell spills into the empty
+        // cells to its right. The painted cell stays clipped + individually
+        // selectable; a pointer-through overlay (added after the row loop, like
+        // band text) carries the full text across the empty run.
+        const overflow = !numRight && !style.bg && display ? emptyRunRight(r, c) : 0
+        if (overflow) overlays.push({ r, c, text: display, span: overflow + 1, color: style.fg || INK })
         rowCells.push(
           <div key={addr} {...common}
             className={`flex items-center px-2 text-xs truncate border-r border-b border-[#eee] cursor-cell shrink-0 ${numRight ? 'justify-end' : ''}`}
             style={cellStyle(r, c, { background: style.bg || '#fff', color: style.fg || INK })}>
-            {display}
+            {overflow ? '' : display}
           </div>
         )
       }
     }
-    // band rows are position:relative so the overflowing text overlay anchors
-    rows.push(<div key={`r${r}`} className={`flex ${band ? 'relative' : ''}`}>{rowCells}</div>)
+    // text-overflow overlays: anchored at the source cell, spilling rightward
+    // across the empty run, pointer-events:none so clicks reach the cells below
+    for (const o of overlays) {
+      rowCells.push(
+        <div key={`ov${o.r}-${o.c}`} aria-hidden
+          className="absolute flex items-center px-2 text-xs whitespace-nowrap overflow-hidden pointer-events-none"
+          style={{ left: GUTTER_W + o.c * COL_W, width: COL_W * o.span, height: ROW_H, color: o.color }}>
+          {o.text}
+        </div>
+      )
+    }
+    // rows are position:relative so band text and overflow overlays anchor
+    rows.push(<div key={`r${r}`} className={`flex ${band || overlays.length ? 'relative' : ''}`}>{rowCells}</div>)
   }
 
   const colHeader = [
@@ -727,7 +798,7 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
               {tweaking ? (
                 <><span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-white/70 border-t-transparent animate-spin" /> {t('sheetStudio.applying')}</>
               ) : (
-                <><Icon.Send size={14} /> {t('sheetStudio.apply')} <span className="opacity-60 text-[11px] font-normal">⌘↵</span></>
+                <><Icon.Send size={14} /> {t('sheetStudio.apply')} <span className="opacity-60 text-[11px] font-normal">{SUBMIT_CHORD}</span></>
               )}
             </button>
 
