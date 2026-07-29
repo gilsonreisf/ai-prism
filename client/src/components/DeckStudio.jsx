@@ -309,6 +309,13 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
   const [tweak, setTweak] = useState('')
   const [tweakWholeDeck, setTweakWholeDeck] = useState(false)
   const [tweaking, setTweaking] = useState(false)
+  // AI tweak preview: a pending edit shown in the canvas with Accept/Discard,
+  // so an AI change is reversible before it lands. `before` is the deck to
+  // restore on discard; `label` describes the edit for the history log.
+  const [tweakPreview, setTweakPreview] = useState(null) // null | { before, label }
+  const tweakPreviewRef = useRef(null) // mirror for cleanup on slide switch
+  tweakPreviewRef.current = tweakPreview
+  const [tweakHistory, setTweakHistory] = useState([]) // [{ label, at }] applied edits
   const [presenting, setPresenting] = useState(false)
   // element canvas (freeform slides): selection (multi) + open-group scope +
   // undo/redo history
@@ -336,13 +343,19 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
       .finally(() => setLoading(false))
   }, [open, deckId, loadTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // element selection is per-slide — switching slides clears it
+  // element selection is per-slide — switching slides clears it. A pending AI
+  // preview is auto-discarded (revert to before) so it never leaks across slides
   useEffect(() => {
     setSelection(null)
     setSelectedElIds([])
     setScopeId(null)
     setTool(null)
-  }, [activeIndex])
+    if (tweakPreviewRef.current) {
+      skipNextSave.current = true
+      setDeck(tweakPreviewRef.current.before)
+      setTweakPreview(null)
+    }
+  }, [activeIndex]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // fresh deck load resets the undo history
   useEffect(() => {
@@ -429,35 +442,77 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
   }
 
   // NL tweak: the server calls the model with the slide (or deck) JSON plus
-  // the selection context, revalidates and persists — the fresh deck comes
-  // back whole, so skip the next autosave (it would just re-PATCH the same)
-  const submitTweak = async () => {
-    const instruction = tweak.trim()
+  // the selection context and revalidates. We run in PREVIEW mode (nothing
+  // persists yet): the returned deck is shown in the canvas and the user
+  // Accepts (persist) or Discards (restore `before`). `overrideInstruction`
+  // lets the recompose button run a canned instruction.
+  const runTweak = async (instructionArg, { label } = {}) => {
+    const instruction = (instructionArg ?? tweak).trim()
     if (!instruction || tweaking) return
     setTweaking(true)
     try {
-      // freeform slides scope the tweak to the selected ELEMENT: the server
-      // asks the model for that element's JSON only and splices it back, so
-      // the rest of the slide is guaranteed untouched
-      const elSel = selectedEl
-        ? { elementId: selectedEl.id, label: selectedElLabel, text: selectedEl.text || '' }
-        : null
+      // freeform slides scope the tweak to the selection: a MULTI selection is
+      // a region (server edits only those elements), a single is one element;
+      // the server splices the answer back so the rest of the slide is safe
+      const elSel =
+        isFreeform && !tweakWholeDeck
+          ? selectedElIds.length > 1
+            ? { elementIds: selectedElIds }
+            : selectedEl
+              ? { elementId: selectedEl.id, label: selectedElLabel, text: selectedEl.text || '' }
+              : null
+          : null
       const r = await postJSON(`/api/decks/${deck.id}/tweak`, {
         instruction,
         slideIndex: tweakWholeDeck ? null : activeIndex,
         selection: tweakWholeDeck ? null : isFreeform ? elSel : selection,
+        preview: true,
       })
-      skipNextSave.current = true
+      // stash the pre-edit deck so Discard is a one-click revert
+      setTweakPreview({ before: deck, label: label || instruction })
+      skipNextSave.current = true // preview never autosaves until accepted
       setDeck(r.deck)
       setTweak('')
-      setSelection(null)
-      setSelectedElIds([])
-      setScopeId(null)
     } catch (e) {
       pushToast?.(e.message || t('deckStudio.tweakError'))
     } finally {
       setTweaking(false)
     }
+  }
+  const submitTweak = () => runTweak()
+
+  const acceptTweak = () => {
+    if (!tweakPreview) return
+    // persist the previewed deck as-is
+    patchJSON(`/api/decks/${deck.id}`, {
+      title: deck.title,
+      slides: deck.slides,
+      audience: deck.audience,
+      author: deck.author,
+      narrative: deck.narrative,
+    }).catch((e) => pushToast?.(e.message))
+    skipNextSave.current = true
+    setTweakHistory((h) => [{ label: tweakPreview.label, at: Date.now() }, ...h].slice(0, 20))
+    setTweakPreview(null)
+    setSelection(null)
+    setSelectedElIds([])
+    setScopeId(null)
+  }
+
+  const discardTweak = () => {
+    if (!tweakPreview) return
+    skipNextSave.current = true // restoring the old deck must not PATCH
+    setDeck(tweakPreview.before)
+    setTweakPreview(null)
+  }
+
+  // canned "improve this slide's layout" recomposition — runs through the
+  // same preview flow so the user sees it before it lands
+  const recomposeSlide = () => {
+    runTweak(
+      'Melhore a COMPOSIÇÃO visual deste slide mantendo exatamente o mesmo conteúdo (textos, números e dados idênticos): melhore alinhamento, hierarquia, espaçamento e agrupamento dos elementos para um layout denso e profissional, no estilo do design system. Não invente dados novos nem remova informação.',
+      { label: t('deckStudio.tweak.recompose') }
+    )
   }
 
   const addSlide = () => {
@@ -972,55 +1027,95 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
 
             {/* NL tweak bar */}
             <div className="shrink-0 mx-auto w-full px-6 pt-2 pb-1" style={{ maxWidth: 'calc((100dvh - 19rem) * 1.7778 + 3rem)' }}>
-              <div className="flex items-center gap-2">
-                <div className="flex-1 flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-2.5">
+              {tweakPreview ? (
+                // preview banner: the shown deck is a pending AI edit — Accept
+                // persists it, Discard restores the pre-edit deck
+                <div className="flex items-center gap-2 rounded-xl border border-[var(--accent)] bg-[var(--accent-soft)] px-3 py-2 animate-fade-in">
                   <Icon.Wand size={14} className="text-[var(--accent)] shrink-0" />
-                  <input
-                    value={tweak}
-                    onChange={(e) => setTweak(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && submitTweak()}
-                    placeholder={
-                      tweakWholeDeck
-                        ? t('deckStudio.tweak.placeholderDeck')
-                        : isFreeform && selectedEl
-                          ? t('deckStudio.tweak.placeholderLayer', { label: selectedElLabel })
-                          : selection
-                            ? t('deckStudio.tweak.placeholderSelection', { label: selection.label })
-                            : t('deckStudio.tweak.placeholderSlide')
-                    }
-                    disabled={tweaking}
-                    className="flex-1 bg-transparent text-sm py-2 outline-none placeholder:text-[var(--faint)] disabled:opacity-50"
-                  />
-                </div>
-                <button
-                  onClick={submitTweak}
-                  disabled={!tweak.trim() || tweaking}
-                  className="rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-xs px-3 py-2.5 transition shrink-0 inline-flex items-center gap-1.5"
-                >
-                  {tweaking && (
-                    <span className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" aria-hidden />
-                  )}
-                  {t('deckStudio.tweak.apply')}
-                </button>
-              </div>
-              {tweaking && (
-                <div className="flex items-center gap-1.5 text-[11px] text-[var(--accent)] mt-1.5 animate-fade-in">
-                  <span className="w-2.5 h-2.5 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" aria-hidden />
-                  <span>
-                    {tweakWholeDeck
-                      ? t('deckStudio.tweak.applyingDeck')
-                      : isFreeform && selectedEl
-                        ? t('deckStudio.tweak.editingLayer', { label: selectedElLabel })
-                        : selection
-                          ? t('deckStudio.tweak.editingSelection', { label: selection.label })
-                          : t('deckStudio.tweak.applyingSlide')}
+                  <span className="text-xs text-[var(--text)] flex-1 min-w-0 truncate" title={tweakPreview.label}>
+                    {t('deckStudio.tweak.previewLabel', { label: tweakPreview.label })}
                   </span>
+                  <button onClick={discardTweak} className="rounded-lg border border-[var(--border)] bg-[var(--surface)] hover:brightness-110 text-[var(--muted)] font-semibold text-xs px-2.5 py-1.5 shrink-0">
+                    {t('deckStudio.tweak.discard')}
+                  </button>
+                  <button onClick={acceptTweak} className="rounded-lg bg-[var(--accent)] hover:brightness-110 text-white font-semibold text-xs px-2.5 py-1.5 shrink-0">
+                    {t('deckStudio.tweak.accept')}
+                  </button>
                 </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-2.5">
+                      <Icon.Wand size={14} className="text-[var(--accent)] shrink-0" />
+                      <input
+                        value={tweak}
+                        onChange={(e) => setTweak(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && submitTweak()}
+                        placeholder={
+                          tweakWholeDeck
+                            ? t('deckStudio.tweak.placeholderDeck')
+                            : isFreeform && selectedElIds.length > 1
+                              ? t('deckStudio.tweak.placeholderRegion', { n: selectedElIds.length })
+                              : isFreeform && selectedEl
+                                ? t('deckStudio.tweak.placeholderLayer', { label: selectedElLabel })
+                                : selection
+                                  ? t('deckStudio.tweak.placeholderSelection', { label: selection.label })
+                                  : t('deckStudio.tweak.placeholderSlide')
+                        }
+                        disabled={tweaking}
+                        className="flex-1 bg-transparent text-sm py-2 outline-none placeholder:text-[var(--faint)] disabled:opacity-50"
+                      />
+                    </div>
+                    {isFreeform && !tweakWholeDeck && (
+                      <button
+                        onClick={recomposeSlide}
+                        disabled={tweaking}
+                        title={t('deckStudio.tweak.recomposeTitle')}
+                        className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] hover:brightness-110 disabled:opacity-50 text-[var(--muted)] font-semibold text-xs px-3 py-2.5 transition shrink-0 inline-flex items-center gap-1.5"
+                      >
+                        <Icon.Sparkle size={13} /> <span className="hidden sm:inline">{t('deckStudio.tweak.recompose')}</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={submitTweak}
+                      disabled={!tweak.trim() || tweaking}
+                      className="rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-xs px-3 py-2.5 transition shrink-0 inline-flex items-center gap-1.5"
+                    >
+                      {tweaking && (
+                        <span className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" aria-hidden />
+                      )}
+                      {t('deckStudio.tweak.apply')}
+                    </button>
+                  </div>
+                  {tweaking && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-[var(--accent)] mt-1.5 animate-fade-in">
+                      <span className="w-2.5 h-2.5 rounded-full border-2 border-[var(--accent)]/40 border-t-[var(--accent)] animate-spin" aria-hidden />
+                      <span>
+                        {tweakWholeDeck
+                          ? t('deckStudio.tweak.applyingDeck')
+                          : isFreeform && selectedElIds.length > 1
+                            ? t('deckStudio.tweak.editingRegion', { n: selectedElIds.length })
+                            : isFreeform && selectedEl
+                              ? t('deckStudio.tweak.editingLayer', { label: selectedElLabel })
+                              : selection
+                                ? t('deckStudio.tweak.editingSelection', { label: selection.label })
+                                : t('deckStudio.tweak.applyingSlide')}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between mt-1">
+                    <label className="flex items-center gap-1.5 text-[10px] text-[var(--muted)] cursor-pointer w-fit">
+                      <input type="checkbox" checked={tweakWholeDeck} onChange={(e) => setTweakWholeDeck(e.target.checked)} />
+                      {t('deckStudio.tweak.wholeDeckToggle')}
+                    </label>
+                    {tweakHistory.length > 0 && (
+                      <span className="text-[10px] text-[var(--faint)] truncate max-w-[60%]" title={tweakHistory.map((h) => `• ${h.label}`).join('\n')}>
+                        {t('deckStudio.tweak.historyLast', { label: tweakHistory[0].label })}
+                      </span>
+                    )}
+                  </div>
+                </>
               )}
-              <label className="flex items-center gap-1.5 text-[10px] text-[var(--muted)] mt-1 cursor-pointer w-fit">
-                <input type="checkbox" checked={tweakWholeDeck} onChange={(e) => setTweakWholeDeck(e.target.checked)} />
-                {t('deckStudio.tweak.wholeDeckToggle')}
-              </label>
             </div>
           </div>
 

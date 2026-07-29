@@ -1855,6 +1855,9 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
     if (!instruction) return res.status(400).json({ error: 'instrução vazia' })
     const slideIndex = Number.isInteger(req.body?.slideIndex) ? req.body.slideIndex : null
     const scoped = slideIndex != null && deck.slides[slideIndex] ? deck.slides[slideIndex] : null
+    // preview mode: compute the edit but DON'T persist — the Studio shows the
+    // result with Accept/Discard, so an AI tweak is reversible before it lands
+    const preview = req.body?.preview === true
     const sel = req.body?.selection
     const selection =
       sel && typeof sel.path === 'string'
@@ -1900,23 +1903,39 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
       const slides = [...deck.slides]
       slides[slideIndex] = revalidated.slides[0]
       const updated = { ...deck, slides }
-      const meta = { audience: updated.audience, author: updated.author, narrative: updated.narrative }
-      await updateDeckSlides(req.email, req.token, req.params.id, updated.title, updated.slides, meta)
-      return res.json({ deck: updated })
+      if (!preview) {
+        const meta = { audience: updated.audience, author: updated.author, narrative: updated.narrative }
+        await updateDeckSlides(req.email, req.token, req.params.id, updated.title, updated.slides, meta)
+      }
+      return res.json({ deck: updated, preview })
     }
     // freeform layer scoping: with a selected element the model answers with
     // the JSON of THAT element only and the server splices it back into the
     // slide — a hard guarantee the rest of the slide survives untouched
     const elementId = scopedFreeform && typeof sel?.elementId === 'string' ? sel.elementId.slice(0, 80) : null
     const selEl = elementId ? findElementById(scoped.elements || [], elementId) : null
+    // region scoping: a MULTI-element selection edits only those elements.
+    // The model gets their JSON as an array and answers with an array we
+    // splice back by id — siblings outside the region stay byte-identical.
+    const elementIds =
+      scopedFreeform && Array.isArray(sel?.elementIds)
+        ? sel.elementIds.filter((x) => typeof x === 'string').slice(0, 40).map((x) => x.slice(0, 80))
+        : null
+    const selEls = elementIds ? elementIds.map((id) => findElementById(scoped.elements || [], id)).filter(Boolean) : null
+    const regionScope = selEls && selEls.length > 1
     const system =
-      (selEl
+      (regionScope
+        ? `Você edita uma REGIÃO (${selEls.length} elementos selecionados) de um slide freeform de um deck de apresentação. Você receberá um ARRAY com o JSON de cada elemento selecionado — só eles existem para você; nada fora da região muda.`
+        : selEl
         ? 'Você edita UM ELEMENTO de um slide freeform de um deck de apresentação. Você receberá o JSON APENAS desse elemento (é tudo o que você precisa — nada fora dele existe para você).'
         : scoped
           ? 'Você edita UM slide de um deck de apresentação, representado em JSON (o schema é o mesmo dos blocos `deck` do AI Prism: layout, heading, subheading, kicker, bullets, cards, stats, phases, items, columns, callout, footnote, notes, styles...).'
           : 'Você edita um deck de apresentação inteiro, representado em JSON ({"title","slides":[...]}, schema dos blocos `deck` do AI Prism; slides com layout "freeform" carregam uma lista `elements` posicionada — preserve ids e boxes que a instrução não pedir para mudar).') +
       (scopedFreeform ? `\n${FREEFORM_TWEAK_SCHEMA}` : '') +
-      (selEl
+      (regionScope
+        ? ' Aplique a instrução aos elementos da região (e aos filhos deles, se forem grupos) — nada fora da região muda. ' +
+          'Nunca invente dados numéricos novos. Responda APENAS com um ARRAY JSON contendo o JSON atualizado de CADA elemento selecionado, mantendo os mesmos "id" (um objeto por id recebido) e preservando os campos que não precisar mudar (inclusive sentinelas __ASSET_n__; nunca as invente nem remova), sem cercas de markdown e sem comentários.'
+        : selEl
         ? ' Aplique a instrução SOMENTE ao elemento selecionado (e aos filhos dele, se for um grupo) — nada fora dele muda. ' +
           'Nunca invente dados numéricos novos. Responda APENAS com o JSON atualizado DESSE elemento, mantendo o mesmo "id" e preservando os campos que não precisar mudar (inclusive sentinelas __ASSET_n__; nunca as invente nem remova), sem cercas de markdown e sem comentários.'
         : ' Aplique SOMENTE a alteração pedida pelo usuário, preservando todo o resto intacto — incluindo campos que você não conhece (styles, iconAssetId, diagramSpec, imageDataUrl, series) e sentinelas __ASSET_n__ (referências a imagens; nunca as invente nem remova). ' +
@@ -1931,14 +1950,17 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
     // (not the whole slide) — the model edits one element, siblings are
     // irrelevant, and a smaller prompt is materially faster + cheaper. Other
     // scopes still serialize their full target (slide or deck).
-    const { stripped, assets } = stripDataUrls(selEl || scoped || { title: deck.title, slides: deck.slides })
+    const { stripped, assets } = stripDataUrls(regionScope ? selEls : selEl || scoped || { title: deck.title, slides: deck.slides })
     const strippedJson = JSON.stringify(stripped)
     if (!scoped && strippedJson.length > 60_000) {
       return res.status(422).json({
         error: 'o deck é grande demais para uma alteração de uma vez — desmarque "aplicar ao deck inteiro" e edite slide a slide',
       })
     }
-    const user = selEl
+    const user = regionScope
+      ? `Região selecionada (${selEls.length} elementos, ids ${selEls.map((e) => `"${e.id}"`).join(', ')}):\n${strippedJson}\n\n` +
+        `Instrução: ${instruction}\n\nResponda com um ARRAY JSON com o JSON atualizado de cada elemento, mantendo os mesmos "id".`
+      : selEl
       ? `JSON do elemento selecionado (id "${elementId}"` +
         (sel?.label ? `, ${String(sel.label).slice(0, 120)}` : '') +
         `):\n${strippedJson}\n\n` +
@@ -1964,10 +1986,25 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
     }
     let parsed = restoreDataUrls(extracted, assets)
 
-    // element-scoped answer: splice the revised element back into the
-    // ORIGINAL slide (if the model answered with the whole slide anyway,
-    // accept it — the scoped path below validates either)
-    if (selEl && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    // region-scoped answer: an array of revised elements — splice each back
+    // into the ORIGINAL slide by id (only the region changes). Accept a whole
+    // freeform slide too, in case the model over-answered.
+    if (regionScope) {
+      if (Array.isArray(parsed)) {
+        let els = scoped.elements || []
+        for (const revised of parsed) {
+          if (revised && typeof revised === 'object' && typeof revised.id === 'string' && elementIds.includes(revised.id)) {
+            els = replaceElementById(els, revised.id, revised)
+          }
+        }
+        parsed = { ...scoped, elements: els }
+      } else if (!(parsed?.layout === 'freeform' && Array.isArray(parsed?.elements))) {
+        return res.status(422).json({ error: 'o modelo não devolveu o array de elementos esperado — tente reformular a instrução' })
+      }
+    } else if (selEl && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      // element-scoped answer: splice the revised element back into the
+      // ORIGINAL slide (if the model answered with the whole slide anyway,
+      // accept it — the scoped path below validates either)
       if (!(parsed.layout === 'freeform' && Array.isArray(parsed.elements))) {
         parsed = { ...scoped, elements: replaceElementById(scoped.elements || [], elementId, { ...parsed, id: elementId }) }
       }
@@ -1985,9 +2022,11 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
       if (!revalidated) return res.status(422).json({ error: 'a edição resultou em um deck inválido' })
       updated = { ...deck, title: revalidated.title, slides: revalidated.slides }
     }
-    const meta = { audience: updated.audience, author: updated.author, narrative: updated.narrative }
-    await updateDeckSlides(req.email, req.token, req.params.id, updated.title, updated.slides, meta)
-    res.json({ deck: updated })
+    if (!preview) {
+      const meta = { audience: updated.audience, author: updated.author, narrative: updated.narrative }
+      await updateDeckSlides(req.email, req.token, req.params.id, updated.title, updated.slides, meta)
+    }
+    res.json({ deck: updated, preview })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
