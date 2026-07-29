@@ -71,9 +71,10 @@ import {
   getToolPolicy,
   setToolPolicy,
 } from './db.js'
-import { isAdmin, isOwner, ownerEmail, groupCheckStatus, invalidateAdminsCache, appAccessCandidates } from './authz.js'
+import { isAdmin, isOwner, ownerEmail, groupCheckStatus, invalidateAdminsCache, appAccessCandidates, isAppAccessPrincipal } from './authz.js'
 import { MODELS, modelById, streamChat, complete, generateTitle, embed, cosineSim, labelDesignAssets, DEFAULT_IMAGE_MODEL } from './llm.js'
 import { extractText, SUPPORTED_EXTENSIONS } from './files.js'
+import { transcribe, isMediaFile, transcriptionEnabled, MEDIA_EXTENSIONS, TranscriptionError, mediaModelName } from './transcribe.js'
 import { ingestPptx, pptxDeckToBrief } from './pptxIngest.js'
 import { analyzeSpreadsheet, isSpreadsheet } from './analysis.js'
 import {
@@ -111,6 +112,19 @@ function baseDir() {
 const DIST = path.join(baseDir(), '..', 'client', 'dist')
 const PORT = parseInt(process.env.PORT || '8000', 10)
 const ATTACH_MARKER = '\n\n--- ANEXOS ---\n\n'
+
+// Two-model media disclosure: audio/video is read by the media model (Gemini),
+// then the user's chosen model writes the answer over that transcript. When the
+// two differ, return { model, files } so the UI can attribute the media hop;
+// null when nothing was media-processed or the same model did both. Chunk names
+// ("… (parte K de N).wav" from browser segmentation) collapse to their source.
+function computeMediaProcessing(mediaProcessedFiles, answeringModel) {
+  if (!mediaProcessedFiles?.length) return null
+  const mm = mediaModelName()
+  if (!mm || mm === answeringModel) return null
+  const files = [...new Set(mediaProcessedFiles.map((n) => n.replace(/ \(parte \d+ de \d+\)\.wav$/, '')))]
+  return { model: mm, files }
+}
 
 // Max prior messages replayed to the model per turn (see the window in
 // /api/chat). Prompt caching reuses the stable prefix across tool rounds, but
@@ -849,6 +863,15 @@ app.post('/api/admins', auth, requireAdmin, async (req, res) => {
     if (!principal || principal.length > 200) return res.status(400).json({ error: 'principal inválido' })
     if (kind === 'user' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(principal))
       return res.status(400).json({ error: 'para kind=user o principal deve ser um e-mail' })
+    // Only principals that already have access to the app (CAN_USE/CAN_MANAGE in
+    // the Databricks Apps permission layer) can be promoted to admin. If the ACL
+    // couldn't be read at all, don't silently reject — say so (503) so the UI
+    // can tell "not allowed" apart from "couldn't verify".
+    const access = await isAppAccessPrincipal(principal, kind, req.token)
+    if (!access.reachable)
+      return res.status(503).json({ error: 'não foi possível verificar o acesso ao app; tente novamente' })
+    if (!access.ok)
+      return res.status(400).json({ error: 'sem_acesso' })
     await addAppAdmin(req.email, req.token, principal, kind)
     invalidateAdminsCache()
     res.json({ ok: true })
@@ -898,7 +921,15 @@ function resolveModelId(requested) {
 
 app.get('/api/models', auth, async (req, res) => {
   const models = await getUserModels(req)
-  res.json({ models, supported_extensions: SUPPORTED_EXTENSIONS })
+  // Media extensions are only offered when transcription is enabled, so the
+  // file picker doesn't invite an upload the workspace can't process. The two
+  // lists are kept separate on the wire so the client can label media distinctly.
+  const mediaExtensions = transcriptionEnabled() ? MEDIA_EXTENSIONS : []
+  res.json({
+    models,
+    supported_extensions: SUPPORTED_EXTENSIONS,
+    media_extensions: mediaExtensions,
+  })
 })
 
 // Image-generation models the user can choose from (Settings → image model),
@@ -2237,6 +2268,9 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     const attachNames = []
     const attachBlocks = []
     const imageAttachments = [] // { name, dataUrl } — sent to the model as vision input
+    // audio/video files whose content was read by the multimodal media model
+    // (Gemini) — recorded so the answer can disclose the two-model pipeline
+    const mediaProcessedFiles = []
     let fileCandidates = []
     let pptxDeckBrief = null // structured slides from an attached .pptx, if any
     for (const f of req.files || []) {
@@ -2252,6 +2286,26 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
           name,
           dataUrl: `data:${f.mimetype};base64,${f.buffer.toString('base64')}`,
         })
+        continue
+      }
+      // Audio/video attachments (meeting recordings, voice notes) are TRANSCRIBED
+      // to text — the chat models can't ingest media bytes. The transcript is
+      // injected as a normal attachment block, so the user's own prompt drives
+      // what's done with it (summary, action items, decisions, follow-up email —
+      // never hardcoded). Any failure degrades to a note so the turn still runs.
+      if (isMediaFile(name, f.mimetype)) {
+        attachNames.push(name)
+        try {
+          const transcript = await transcribe(req.token, name, f.buffer, f.mimetype)
+          mediaProcessedFiles.push(name)
+          attachBlocks.push(
+            `### Transcrição de ${name}\n(gerada automaticamente a partir do áudio/vídeo anexado)\n\n${transcript}`
+          )
+        } catch (e) {
+          const why = e instanceof TranscriptionError ? e.message : e.message
+          console.warn(`transcrição falhou (${name}):`, why)
+          attachBlocks.push(`### Arquivo: ${name}\n[Não foi possível transcrever o áudio/vídeo: ${why}]`)
+        }
         continue
       }
       const text = await extractText(name, f.buffer)
@@ -2451,6 +2505,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
       promptTokens: hadUsage ? usage.prompt_tokens : null,
       completionTokens: hadUsage ? usage.completion_tokens : null,
       blocks: blocks.length ? blocks : null,
+      mediaProcessing: computeMediaProcessing(mediaProcessedFiles, model),
     })
     if (toolTrace.length) await addToolCalls(req.email, req.token, assistantMsg.id, toolTrace)
 

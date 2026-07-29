@@ -183,6 +183,23 @@ ai-prism/
   thumbnail no chip de anexo.
 - Conteúdo de documento truncado em 50k caracteres por arquivo para não estourar o contexto.
 
+### Anexos de áudio e vídeo (transcrição)
+- O composer aceita **áudio e vídeo** (mp3, wav, m4a, mp4, mov, webm, …) quando o workspace
+  tem transcrição habilitada. Um arquivo de mídia é **transcrito para texto** em
+  `server/transcribe.js` e a transcrição entra no **mesmo pipeline de anexos** que um
+  documento — é o **prompt do usuário** que decide o que fazer com ela (resumir uma reunião,
+  extrair insights, listar to-dos, redigir o follow-up, …). Nada é fixado em "resumo".
+- A transcrição é **plugável** via env (padrão: um endpoint compatível com a API
+  `audio/transcriptions` da OpenAI, ex.: família Whisper):
+  - `TRANSCRIBE_ENDPOINT` — nome do serving endpoint de ASR (padrão `whisper`).
+  - `TRANSCRIBE_URL` — override da URL completa (para gateways fora da convenção
+    `/serving-endpoints/<nome>/audio/transcriptions`).
+  - `TRANSCRIBE_MODEL` — campo `model` do corpo multipart (padrão = nome do endpoint).
+  - `TRANSCRIBE_DISABLED` — `1`/`true` desabilita a mídia (o picker deixa de oferecê-la).
+- **Degradação graciosa**: sem endpoint configurado, ou em caso de erro/ausência, o upload
+  vira uma nota de anexo (`[Não foi possível transcrever …]`) e o turno prossegue com o
+  prompt e os demais anexos — o app nunca quebra.
+
 ### Mensagens estruturadas e gráficos interativos
 Além de markdown, uma resposta do assistente pode carregar **blocos estruturados**
 (`chart`, `table`, `insight`) renderizados inline no chat, persistidos junto da mensagem
@@ -360,6 +377,8 @@ npm run qa   # deck-elements + deck-composition + mine-pptx + spreadsheet QA
 
 - [Onboarding e deploy](docs/onboarding-deployment.md) — do "workspace vazio" à App rodando, em poucos comandos (`bundle deploy` + `apps deploy` + `bundle run`).
 - [Custos e posicionamento](docs/custos-e-posicionamento.md) — como o AI Prism consome recursos Databricks e por que o modelo é vantajoso.
+- [Conectando MCPs](docs/mcp-connections.md) — registrar um servidor MCP externo como conexão HTTP no Unity Catalog e conectá-lo dentro do AI Prism.
+- [Microsoft 365 via Microsoft Graph](docs/mcp-microsoft-graph.md) — conectar e-mail/calendário sem licença Copilot Studio Pro, com um servidor MCP próprio sobre o Graph.
 - [Dashboard de custos (AI/BI)](dashboards/README.md) — auditoria de custos de IA fora do app.
 
 > **Nota.** O AI Prism não é um produto oficial da Databricks e não possui SLA. É um

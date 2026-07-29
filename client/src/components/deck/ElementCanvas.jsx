@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ElementView, resolvePreviewTheme, useTemplateFonts } from '../DeckSlidePreview.jsx'
 import { SLIDE_W, SLIDE_H, GRID, BOX_LIMITS, flattenElements } from '../../../../shared/deckLayout.js'
+import { resolveThemeColor } from '../../../../shared/deckTheme.js'
 import { findNode, findParent, updateNode, removeNodes, cloneWithNewIds, groupNodes, ungroupNode, isStackChild } from '../../lib/deckTree.js'
 
 // The Figma-style editing canvas for FREEFORM slides, now TREE-aware: the
@@ -459,8 +460,16 @@ export default function ElementCanvas({
     height: `${(Math.max(b.h, 0.01) / SLIDE_H) * 100}%`,
   })
 
+  // Background + plate MUST paint identically to the thumbnail path
+  // (DeckSlidePreview's freeform branch), or the focused canvas and the rail
+  // show different backgrounds for the same slide. Use the shared token
+  // resolver (not a local @-prefix hack) and the same plate/veil/overlay
+  // composition as addDarkSlide / DeckSlidePreview.
   const bg = slide?.background || {}
-  const bgColor = bg.color?.startsWith('@') ? theme[bg.color.slice(1)] || theme.background : bg.color || (bg.plate ? theme.primary : theme.background)
+  const bgColor =
+    resolveThemeColor(theme, bg.color, null) || (bg.plate ? theme.primary : theme.background)
+  const plateBase = bg.plate === 'section' && theme.sectionPlate ? theme.sectionPlate : theme.coverPlate
+  const plateHasOverlay = plateBase === theme.coverPlate && theme.coverOverlay
   const editingNode = editingText ? findNode(elements, editingText) : null
   const scopeBox = scopeId ? boxes.get(scopeId) : null
 
@@ -482,14 +491,20 @@ export default function ElementCanvas({
       className={`relative aspect-video overflow-hidden rounded-md shadow-sm outline-none ${className}`}
       style={{ background: bgColor, containerType: 'inline-size', fontFamily: theme.bodyFont, touchAction: 'none' }}
     >
-      {bg.plate && theme.coverPlate && (
+      {bg.plate && plateBase && (
         <>
           <img
-            src={bg.plate === 'section' && theme.sectionPlate ? theme.sectionPlate : theme.coverPlate}
+            src={plateBase}
             alt=""
             className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           />
-          <div className="absolute inset-0 pointer-events-none" style={{ background: theme.primary, opacity: 0.6 }} />
+          {plateHasOverlay && (
+            <img src={theme.coverOverlay} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none" />
+          )}
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{ background: theme.primary, opacity: plateHasOverlay ? 0.45 : 0.74 }}
+          />
         </>
       )}
 

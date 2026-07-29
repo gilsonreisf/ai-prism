@@ -68,6 +68,8 @@ export default {
   'composer.listening': 'Escuchando… habla ahora',
   'composer.placeholder': 'Pregunta algo, o adjunta un documento…',
   'composer.attach': 'Adjuntar documentos',
+  'composer.attachMedia': 'Adjuntar documentos, imágenes, audio o vídeo',
+  'composer.segmenting': 'Preparando audio ({name}) — parte {done} de {total}…',
   'composer.dictate': 'Dictar (voz a texto)',
   'composer.voiceMode': 'Modo de voz — conversar con la IA',
   'composer.stop': 'Detener',
@@ -155,6 +157,7 @@ export default {
   // admins
   'admins.title': 'Administración de la app',
   'admins.description': 'Los administradores pueden publicar design systems como predeterminados para todos los usuarios y gestionar esta lista. El propietario ({owner}) siempre es administrador.',
+  'admins.descriptionNoOwner': 'Los administradores pueden publicar design systems como predeterminados para todos los usuarios y gestionar esta lista.',
   'admins.owner': 'propietario',
   'admins.kind.group': 'grupo',
   'admins.kind.user': 'usuario',
@@ -163,6 +166,8 @@ export default {
   'admins.inferKind.user': 'Usuario',
   'admins.inferKind.either': 'Usuario o grupo',
   'admins.inputPlaceholder': 'correo del usuario o nombre del grupo…',
+  'admins.accessNote': 'Solo se puede promover a administrador a usuarios o grupos que ya tienen acceso a la app en la capa de permisos de Databricks Apps. Concede el acceso allí primero (CAN USE o superior) y el principal aparecerá en las sugerencias de abajo.',
+  'admins.error.noAccess': 'Ese usuario o grupo no tiene acceso a la app. Concede acceso en Databricks Apps (CAN USE o superior) antes de convertirlo en administrador.',
   'admins.withAccess': 'Con acceso a la app',
   'admins.level.manage': 'manage',
   'admins.level.use': 'use',
@@ -237,6 +242,8 @@ export default {
   'message.exportPdf': 'Exportar como PDF',
   'message.regenerate': 'Regenerar',
   'message.tokensInOut': 'Tokens de entrada / salida',
+  'message.mediaProcessedBy': 'medios leídos por {model}',
+  'message.mediaProcessedTitle': 'El audio/vídeo adjunto ({files}) fue transcrito por este modelo multimodal; la respuesta anterior fue redactada por el modelo seleccionado a partir de esa transcripción.',
   'message.estimatedCost': 'Costo estimado (precios de lista públicos)',
 
   // loading chips (per artifact kind)

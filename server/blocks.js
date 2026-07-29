@@ -1,6 +1,6 @@
 import { DECK_ICON_NAMES } from '../shared/deckIcons.js'
-import { ELEMENT_TYPES, SHAPE_KINDS, BOX_LIMITS, MAX_ELEMENTS_PER_SLIDE, CHART_KINDS, MAX_GROUP_DEPTH, SLIDE_W, SLIDE_H, textHeightIn, TEXT_INSETS } from '../shared/deckLayout.js'
-import { THEME_COLOR_TOKENS } from '../shared/deckTheme.js'
+import { ELEMENT_TYPES, SHAPE_KINDS, BOX_LIMITS, MAX_ELEMENTS_PER_SLIDE, CHART_KINDS, MAX_GROUP_DEPTH, SLIDE_W, SLIDE_H, textHeightIn, TEXT_INSETS, flattenElements } from '../shared/deckLayout.js'
+import { THEME_COLOR_TOKENS, resolveDeckTheme } from '../shared/deckTheme.js'
 
 // Structured message blocks: charts/tables/insights woven directly into the
 // model's markdown answer. The model marks *where* a block belongs with an
@@ -260,6 +260,23 @@ const DECK_POLICY =
   'permitidos SOMENTE com footnote/nota explícita de estimativa no próprio slide. NUNCA ' +
   'invente séries apresentadas como dado real. Quando um candidato candidate_N já existir, o ' +
   'layout semântico "chart" com chartRef continua sendo o caminho preferido.\n\n' +
+
+  '=== NUNCA GERE UM ELEMENTO/SLIDE VAZIO (regra dura) ===\n' +
+  'Um slide freeform SEMPRE tem que ter conteúdo textual ou visual real. Um group/placa sem ' +
+  'filhos com conteúdo é PROIBIDO — o editor mostraria "Grupo · 0" e o slide sairia em branco. ' +
+  'Cada tipo de elemento só é válido com seus campos obrigatórios; sem eles, o elemento é ' +
+  'DESCARTADO na validação (e o slide pode ficar vazio):\n' +
+  '- text: "text" não-vazio. shape: "shape" válido. icon: "icon" (assetId/builtin) válido.\n' +
+  '- chart bar/barH/line/area/pie/doughnut: "series" com ≥1 série e ≥1 ponto {label,value} com ' +
+  'value NUMÉRICO.\n' +
+  '- chart scatter: "series" com ≥1 "points":[{x,y}] numéricos.\n' +
+  '- chart heatmap: "heatmap" com "xLabels" (≥1), "yLabels" (≥1) e "values" (matriz yLabels×' +
+  'xLabels de números). NUNCA emita heatmap sem "values".\n' +
+  '- chart gantt: "gantt" com "tasks":[{label,start,end}] (≥1, start/end numéricos) e "axis".\n' +
+  '- line: "box" com w/h explícitos. group: ≥1 filho com conteúdo.\n' +
+  'SE VOCÊ NÃO TEM OS DADOS COMPLETOS PARA UM GRÁFICO, NÃO EMITA O CHART — escreva a conclusão ' +
+  'em "text" ou componha o que você tem em shape/group. Na dúvida sobre números, prefira ' +
+  'text/shape a um chart: um gráfico sem dados é pior que uma afirmação clara.\n\n' +
 
   'Nunca envie outro texto além do bloco correspondente (`deck-questions` ou `deck`) quando o ' +
   'pedido for especificamente por uma apresentação — o Estúdio de Slides cuida da renderização ' +
@@ -603,7 +620,11 @@ function templateComposition(template) {
     'da marca (elemento image com imageAssetId de um id listado acima), ou o background {plate:...}, ' +
     'ou deixa o espaço limpo. Um shape ellipse/rect só é válido quando é peça funcional da composição ' +
     '(placa de card, node de um diagrama, barra) — jamais como enfeite genérico. Espaço em branco ' +
-    'intencional é mais elegante que um enfeite inventado.'
+    'intencional é mais elegante que um enfeite inventado.' +
+    '\n\nCOMPLETUDE — cada slide freeform tem que sair CHEIO de conteúdo real (títulos, corpo, ' +
+    'cards, diagramas, números com fonte). Um slide com só um título ou só uma placa vazia é uma ' +
+    'falha. Se um elemento (ex.: um chart) não tem dados completos, substitua-o por text/shape ' +
+    'com o que você tem — nunca deixe um group/região sem conteúdo.'
   )
 }
 
@@ -1427,8 +1448,21 @@ export function sanitizeChartSpec(raw) {
   return spec
 }
 
+// Does a group's own style paint a visible panel (card plate / border / shadow)?
+// A group with no content-bearing descendants is the "Grupo · 0" blank-slide
+// symptom EVEN when it carries such a style (a plate with nothing on it), so we
+// prune it regardless — this helper is used only to word the repair note.
+function styleDrawsPanel(style) {
+  return !!(style && (style.fill || style.borderColor || style.shadow))
+}
+
+// `ctx` (optional, generation path only) collects a repair manifest: every
+// child dropped or salvaged is pushed as {reason, ...} so the caller can drive
+// a targeted regeneration and QA can explain WHY a slide came out thin. When
+// ctx is null (Studio edit path), behavior is unchanged except the same
+// prune/salvage repairs, which are correct in both paths.
 const ELEMENT_ID_RE = /^[\w.-]{1,48}$/
-export function sanitizeElement(raw, depth = 0) {
+export function sanitizeElement(raw, depth = 0, ctx = null) {
   if (!raw || typeof raw !== 'object' || !ELEMENT_TYPES.includes(raw.type)) return null
   const b = raw.box || {}
   const x = clampNum(b.x, BOX_LIMITS.xMin, BOX_LIMITS.xMax)
@@ -1493,13 +1527,34 @@ export function sanitizeElement(raw, depth = 0) {
     }
   } else if (raw.type === 'chart') {
     const spec = sanitizeChartSpec(raw.chart)
-    if (!spec) return null
+    if (!spec) {
+      // SALVAGE (don't silently drop): a chart whose data is incomplete —
+      // heatmap sem values, gantt sem tasks, série vazia — used to return null
+      // and, inside a group, evaporate the group into a blank plate. Keep the
+      // committed content region instead, as a labelled text placeholder: it
+      // renders SOMETHING honest, counts as material content, and gives the
+      // regeneration pass a concrete node to replace.
+      if (ctx) ctx.notes.push({ reason: 'chart-empty', kind: raw.chart?.kind || 'unknown', id: el.id })
+      el.type = 'text'
+      el.text = el.name || 'Gráfico indisponível (dados incompletos)'
+      el.style = { ...el.style, fontRole: el.style?.fontRole || 'body' }
+      return el
+    }
     el.chart = spec
   } else if (raw.type === 'group') {
     if (depth >= MAX_GROUP_DEPTH) return null
     el.children = Array.isArray(raw.children)
-      ? raw.children.slice(0, 40).map((c) => sanitizeElement(c, depth + 1)).filter(Boolean)
+      ? raw.children.slice(0, 40).map((c) => sanitizeElement(c, depth + 1, ctx)).filter(Boolean)
       : []
+    // PRUNE (bottom-up): a group that ended up with no children carries no
+    // information — it's exactly the "Grupo · 0" blank-slide symptom, whether
+    // or not it has a plate style. Returning null makes the PARENT's
+    // .filter(Boolean) drop it too, so an inner empty group empties its parent
+    // in the same recursion pass — no extra walk needed.
+    if (!el.children.length) {
+      if (ctx) ctx.notes.push({ reason: styleDrawsPanel(el.style) ? 'empty-panel' : 'empty-group', id: el.id })
+      return null
+    }
     if (raw.stack && typeof raw.stack === 'object') {
       const st = { direction: raw.stack.direction === 'row' ? 'row' : 'column' }
       // design bounds in INCHES on a 10×5.625 canvas — larger values are the
@@ -1523,7 +1578,7 @@ function countElementNodes(el) {
 // unique ids across the WHOLE tree (missing ids and duplicates — a tweak
 // model occasionally clones them — get deterministic replacements, stable
 // across sanitize round-trips); the element budget counts every node
-export function sanitizeElements(raw) {
+export function sanitizeElements(raw, ctx = null) {
   if (!Array.isArray(raw)) return []
   const seen = new Set()
   let assigned = 0
@@ -1536,7 +1591,7 @@ export function sanitizeElements(raw) {
   const out = []
   let total = 0
   for (const r of raw.slice(0, MAX_ELEMENTS_PER_SLIDE)) {
-    const el = sanitizeElement(r)
+    const el = sanitizeElement(r, 0, ctx)
     if (!el) continue
     const n = countElementNodes(el)
     if (total + n > MAX_ELEMENTS_PER_SLIDE) break
@@ -1592,15 +1647,18 @@ function refineFreeformComposition(elements) {
     if (el.type === 'icon' && b && typeof b.w === 'number' && typeof b.h === 'number' && Math.max(b.w, b.h) < MIN_ICON_IN) {
       el.box = { ...b, w: MIN_ICON_IN, h: MIN_ICON_IN }
     }
-    // (1) drop fully off-canvas elements (box entirely beyond a single edge)
-    if (b && typeof b.x === 'number' && typeof b.y === 'number') {
-      const w = b.w ?? 0
-      const h = b.h ?? 0
+    // (1) drop fully off-canvas elements (box entirely beyond a single edge).
+    // ONLY for elements with an EXPLICIT box (w AND h present) and NOT inside a
+    // stack: a stack child's position/size is computed by layoutStack at paint
+    // time, so its authored box is {x:0,y:0} with no w/h — evaluating that as
+    // off-canvas (0+0 ≤ pad) wrongly dropped every card in a stack, silently
+    // emptying the group (a real cause of the blank-slide bug).
+    if (!inStack && b && typeof b.x === 'number' && typeof b.y === 'number' && typeof b.w === 'number' && typeof b.h === 'number') {
       const off =
         b.x >= SLIDE_W - OFF_CANVAS_PAD ||
         b.y >= SLIDE_H - OFF_CANVAS_PAD ||
-        b.x + w <= OFF_CANVAS_PAD ||
-        b.y + h <= OFF_CANVAS_PAD
+        b.x + b.w <= OFF_CANVAS_PAD ||
+        b.y + b.h <= OFF_CANVAS_PAD
       if (off) return null
     }
     // (2) grow a too-short non-stack text box to fit its content
@@ -1650,12 +1708,20 @@ export function sanitizeDeck(raw, byId, template) {
   if (!slides.length) return null
   // composition safety net: only on the generation path (byId truthy), only
   // for freeform slides — never mutate a user's Studio edit geometry.
+  let finalSlides = slides
   if (byId) {
     for (const s of slides) {
       if (s.layout === 'freeform' && Array.isArray(s.elements)) s.elements = refineFreeformComposition(s.elements)
     }
+    // DETERMINISTIC FLOOR: after prune/salvage/refine, a freeform slide that
+    // still has no material content would paint blank (the "Grupo · 0"
+    // symptom). Drop it — a missing slide is always better than a blank one.
+    // (The async repair loop in server/index.js gets a chance to regenerate
+    // BEFORE relying on this, but this guarantees the invariant regardless.)
+    finalSlides = slides.filter((s) => !freeformSlideIsMateriallyEmpty(s, template))
+    if (!finalSlides.length) return null
   }
-  const deck = { title: raw.title.slice(0, 140), slides }
+  const deck = { title: raw.title.slice(0, 140), slides: finalSlides }
   if (typeof raw.audience === 'string' && raw.audience.trim()) deck.audience = raw.audience.slice(0, 80)
   if (typeof raw.author === 'string' && raw.author.trim()) deck.author = raw.author.slice(0, 80)
   if (typeof raw.narrative === 'string' && raw.narrative.trim()) deck.narrative = raw.narrative.slice(0, 300)
@@ -1663,6 +1729,64 @@ export function sanitizeDeck(raw, byId, template) {
     for (const warning of deckQualityWarnings(deck)) console.warn(`[deck-qa] ${warning}`)
   }
   return deck
+}
+
+// Which flattened primitives count as REAL content (vs. decoration). A slide
+// whose flattened output has none of these is "materially empty" — it renders
+// as a blank plate (the "Grupo · 0" symptom). Shapes/lines/group-__bg are
+// decoration and never count on their own.
+const CONTENT_PRIMITIVE = new Set(['text', 'image', 'chart', 'icon'])
+
+// True when a freeform slide would render with no real content. Runs the EXACT
+// geometry both renderers paint (flattenElements), so it agrees with what the
+// user sees. `template` resolves a theme for the flatten (the check is
+// structural — any resolved theme works). Non-freeform slides are never empty
+// (their layout always paints their fields), so they return false.
+export function freeformSlideIsMateriallyEmpty(slide, template = null) {
+  if (!slide || slide.layout !== 'freeform') return false
+  const els = slide.elements || []
+  if (!els.length) return true
+  let theme
+  try {
+    theme = resolveDeckTheme(template || {})
+  } catch {
+    theme = null
+  }
+  let flat
+  try {
+    flat = flattenElements(els, theme || {}, {})
+  } catch {
+    // if it can't even flatten, it can't paint meaningful content
+    return true
+  }
+  return !flat.some(
+    (el) => CONTENT_PRIMITIVE.has(el.type) && (el.type !== 'text' || String(el.text ?? '').trim())
+  )
+}
+
+// Recursively: does this element subtree contain any content-bearing node?
+// Used to flag empty nested groups that survived (shouldn't, post-prune, but
+// this is the QA backstop that proves it).
+function elementHasContent(el) {
+  if (!el) return false
+  if (CONTENT_PRIMITIVE.has(el.type)) return el.type !== 'text' || String(el.text ?? '').trim()
+  if (el.type === 'group') return (el.children || []).some(elementHasContent)
+  return false
+}
+
+// Flags every group in a freeform slide's tree that has no content-bearing
+// descendant (an empty/blank panel). Returns an array of offending group ids.
+function emptyGroupsIn(elements) {
+  const bad = []
+  const walk = (el) => {
+    if (!el) return
+    if (el.type === 'group') {
+      if (!(el.children || []).some(elementHasContent)) bad.push(el.id || '(sem id)')
+      for (const c of el.children || []) walk(c)
+    }
+  }
+  for (const el of elements || []) walk(el)
+  return bad
 }
 
 // Cheap deterministic post-generation checks (gap analysis §1.7/§5.3) — they
@@ -1700,6 +1824,12 @@ export function deckQualityWarnings(deck) {
     }
     if (s.layout === 'freeform') {
       if (!(s.elements || []).length) warnings.push(`${label}: slide freeform sem elementos`)
+      // empty nested groups (the "Grupo · 0" blank-plate symptom) and slides
+      // that would render with no real content — these should never survive
+      // the prune/salvage in sanitizeElement; flag loudly if one slips through.
+      const emptyGroups = emptyGroupsIn(s.elements)
+      if (emptyGroups.length) warnings.push(`${label}: grupo(s) vazio(s) sem conteúdo: ${emptyGroups.join(', ')}`)
+      if (freeformSlideIsMateriallyEmpty(s)) warnings.push(`${label}: slide freeform sem conteúdo material (renderiza em branco)`)
       const hexes = JSON.stringify(s.elements || []).match(/"#[0-9A-F]{6}"/g)?.length || 0
       if (hexes > 4) warnings.push(`${label}: freeform com ${hexes} cores hex literais — deveria usar tokens @tema`)
     }

@@ -236,6 +236,7 @@ export async function ensureSchema(userEmail, userToken) {
         // still missing → false → the whole idempotent DDL re-runs). All DDL is
         // CREATE/ALTER IF NOT EXISTS, so re-running is safe regardless of order.
         await c.query(`SELECT markdown FROM chat_documents LIMIT 0`)
+        await c.query(`SELECT media_processing FROM chat_messages LIMIT 0`)
         return true
       } catch {
         return false
@@ -284,6 +285,11 @@ async function runSchemaDdl(c) {
     await c.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS completion_tokens INT;`)
     await c.query(`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS embedding DOUBLE PRECISION[];`)
     await c.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS blocks JSONB;`)
+    // transparency for the multimodal media hop: when an audio/video attachment
+    // is read by a DIFFERENT model than the one that wrote the answer (media →
+    // Gemini transcript → user's model summarizes), record who processed the
+    // media so the UI can disclose it. Shape: { model: '<id>', files: ['a.mp3'] }
+    await c.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_processing JSONB;`)
     // regeneration versioning: all variants of one assistant turn share
     // `variant_group` (the id of the first/original row in that slot); only
     // one is `active` at a time — that's the one shown in the main thread,
@@ -980,8 +986,8 @@ export async function addMessage(userEmail, userToken, msg) {
     // a client can never inject a message into someone else's thread by passing
     // a guessed (enumerable BIGSERIAL) session id.
     const r = await c.query(
-      `INSERT INTO chat_messages (session_id, role, content, attachments, model, prompt_tokens, completion_tokens, blocks, variant_group)
-       SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
+      `INSERT INTO chat_messages (session_id, role, content, attachments, model, prompt_tokens, completion_tokens, blocks, variant_group, media_processing)
+       SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $11
        WHERE EXISTS (SELECT 1 FROM chat_sessions WHERE id = $1 AND user_email = $10)
        RETURNING id, created_at`,
       [
@@ -995,6 +1001,7 @@ export async function addMessage(userEmail, userToken, msg) {
         msg.blocks ? JSON.stringify(msg.blocks) : null,
         msg.variantGroup ?? null,
         userEmail,
+        msg.mediaProcessing ? JSON.stringify(msg.mediaProcessing) : null,
       ]
     )
     if (!r.rows.length) throw Object.assign(new Error('sessão não encontrada'), { status: 404 })
@@ -1112,7 +1119,7 @@ async function fetchActiveMessages(c, sessionId, userEmail, { beforeVariantGroup
   // traces) by passing a guessed session id — chat_messages carries no
   // user_email column of its own, and every user shares one PG identity.
   const r = await c.query(
-    `SELECT m.id, m.role, m.content, m.attachments, m.model, m.prompt_tokens, m.completion_tokens, m.blocks, m.variant_group, m.active, m.created_at
+    `SELECT m.id, m.role, m.content, m.attachments, m.model, m.prompt_tokens, m.completion_tokens, m.blocks, m.variant_group, m.active, m.created_at, m.media_processing
      FROM chat_messages m
      JOIN chat_sessions s ON s.id = m.session_id AND s.user_email = $2
      WHERE m.session_id = $1 ORDER BY m.id ASC`,
@@ -1152,6 +1159,7 @@ async function fetchActiveMessages(c, sessionId, userEmail, { beforeVariantGroup
     blocks: x.blocks || null,
     tool_calls: toolsByMessage.get(x.id) || null,
     created_at: x.created_at,
+    media_processing: x.media_processing || null,
   })
 
   // group every row (active or not) by slot, so each active row can carry

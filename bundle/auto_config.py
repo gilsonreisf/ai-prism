@@ -68,13 +68,34 @@ print(f"Lakebase host / db:         {lakebase_host or '(not provided)'} / {lakeb
 
 # COMMAND ----------
 
+def ensure_catalog(cat, comment=None):
+    """Make sure catalog `cat` exists, tolerating a deployer WITHOUT metastore
+    CREATE CATALOG. `CREATE CATALOG IF NOT EXISTS` still checks that privilege
+    even when the catalog already exists, which fails on shared metastores (e.g.
+    an FE Vending Machine workspace, where the deployer only owns a pre-created
+    catalog). So: if the catalog is already there, skip the CREATE entirely and
+    just use it (the schema/volume DDL below only needs privileges ON the
+    catalog, which the owner has). Only attempt CREATE when it's genuinely
+    missing — there a real permission error should surface loudly."""
+    exists = spark.sql(f"SHOW CATALOGS LIKE '{cat}'").count() > 0
+    if exists:
+        print(f"Catalog {cat} already exists — using it (skipping CREATE CATALOG)")
+        return
+    ddl = f"CREATE CATALOG IF NOT EXISTS `{cat}`"
+    if comment:
+        ddl += f" COMMENT '{comment}'"
+    spark.sql(ddl)
+    print(f"Created catalog {cat}")
+
+# COMMAND ----------
+
 # Provision the built-in Python UDF. The DDL is generated from the single source
 # of truth (shared/pythonUdf.js) into bundle/python_udf_ddl.py so the deploy-time
 # and runtime definitions are byte-for-byte identical.
 from python_udf_ddl import python_udf_ddl  # noqa: E402
 
 fq_name = f"{catalog}.{schema}.ai_prism_python_exec"
-spark.sql(f"CREATE CATALOG IF NOT EXISTS {catalog}")
+ensure_catalog(catalog)
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
 spark.sql(python_udf_ddl(fq_name))
 print(f"Provisioned UDF: {fq_name}")
@@ -94,8 +115,7 @@ print(f"UDF smoke test OK (6*7 = {check.strip()})")
 # writes/reads image bytes as its SP (not per-user OBO), so it must hold
 # READ/WRITE VOLUME here; per-user isolation stays app-level (user_email).
 # Idempotent — safe on every deploy.
-spark.sql(f"CREATE CATALOG IF NOT EXISTS `{image_catalog}` "
-          f"COMMENT 'AI Prism app-owned storage (generated images, etc.)'")
+ensure_catalog(image_catalog, comment="AI Prism app-owned storage (generated images, etc.)")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{image_catalog}`.`{image_schema}`")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS `{image_catalog}`.`{image_schema}`.`{image_volume}`")
 print(f"Provisioned image volume: {image_catalog}.{image_schema}.{image_volume}")
@@ -205,6 +225,45 @@ else:
           "skipping SP role provisioning. The app SP won't be able to connect to "
           "Lakebase; create the role manually with "
           "databricks_create_role(<client_id>,'SERVICE_PRINCIPAL').")
+
+# COMMAND ----------
+
+# Grant the app's own service principal CAN_MANAGE on the app, so it can READ the
+# app's permission ACL (GET /permissions/apps/<name>) at runtime. That ACL is the
+# universe of admin candidates for the Settings → Administrators autocomplete AND
+# the source of truth for the server-side "only principals with app access can be
+# promoted" check (server/authz.js). Neither the signed-in user's OBO token (it's
+# downscoped out of the access-management API family) nor an SP that isn't in its
+# own ACL can read it — reading app permissions requires CAN_MANAGE on the app.
+# Idempotent: PATCH is additive and re-granting the same level is a no-op. The SP
+# is filtered out of the suggestions in code, so this only enables the read.
+if app_name and app_sp_client_id:
+    import json
+    import urllib.request
+
+    _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+    _host = workspace_host or ("https://" + _ctx.browserHostName().get())
+    _token = _ctx.apiToken().get()
+    _req = urllib.request.Request(
+        f"{_host}/api/2.0/permissions/apps/{app_name}",
+        data=json.dumps({
+            "access_control_list": [
+                {"service_principal_name": app_sp_client_id, "permission_level": "CAN_MANAGE"}
+            ]
+        }).encode(),
+        headers={"Authorization": f"Bearer {_token}", "Content-Type": "application/json"},
+        method="PATCH",
+    )
+    try:
+        with urllib.request.urlopen(_req) as resp:
+            resp.read()
+        print(f"Granted CAN_MANAGE on app '{app_name}' to app SP {app_sp_client_id} "
+              "(enables ACL read for admin autocomplete + access check).")
+    except Exception as e:  # non-fatal: autocomplete degrades to free-text
+        print(f"WARNING: could not grant app SP CAN_MANAGE on '{app_name}': {e}")
+        print("Admin autocomplete will be empty until the app SP can read the app ACL.")
+else:
+    print("app_name / app_sp_client_id missing — skipping app SP ACL grant.")
 
 # COMMAND ----------
 

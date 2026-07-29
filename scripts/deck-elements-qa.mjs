@@ -91,6 +91,30 @@ assert(many.slides[0].elements.length === MAX_ELEMENTS_PER_SLIDE, `cap de ${MAX_
 const twice = sanitizeDeck(JSON.parse(JSON.stringify(deck)))
 assert(JSON.stringify(twice) === JSON.stringify(deck), 'sanitize é idempotente')
 
+// --- salvage & prune: a group must NEVER survive with children: [] ----------
+// (a) a chart child with incomplete data is SALVAGED to a text placeholder, so
+// its parent group keeps content instead of collapsing to a blank plate.
+const salvaged = sanitizeDeck({
+  title: 'salvage',
+  slides: [{ layout: 'freeform', elements: [
+    { type: 'group', id: 'g', box: { x: 1, y: 1, w: 8, h: 3 }, name: 'Painel',
+      children: [{ type: 'chart', id: 'c', box: { x: 0, y: 0, w: 8, h: 3 }, chart: { kind: 'heatmap', heatmap: { xLabels: ['A'] } } }] },
+  ] }],
+})
+const sg = salvaged?.slides[0]?.elements?.find((e) => e.id === 'g')
+assert(sg && sg.children.length === 1 && sg.children[0].type === 'text', 'chart inválido salvo como text (grupo não colapsa)')
+// (b) a group whose only child is unsalvageable (bad type) is PRUNED entirely.
+const pruned = sanitizeDeck({
+  title: 'prune',
+  slides: [{ layout: 'freeform', elements: [
+    { type: 'group', id: 'g', box: { x: 1, y: 1, w: 8, h: 3 }, children: [{ type: 'bogus', box: { x: 0, y: 0, w: 1, h: 1 } }] },
+    { type: 'text', id: 't', box: { x: 1, y: 4, w: 8, h: 0.5 }, text: 'conteúdo real' },
+  ] }],
+})
+const prunedEls = pruned?.slides[0]?.elements || []
+assert(!prunedEls.some((e) => e.type === 'group'), 'grupo sem conteúdo salvável foi podado')
+assert(prunedEls.every((e) => e.type !== 'group' || (e.children || []).length > 0), 'nenhum grupo com children: []')
+
 // materialization
 const theme = resolveDeckTheme(TEMPLATES.rich)
 assert(materializeSlide(deck.slides[0], theme)?.elements?.length > 0, 'layout semântico suportado materializa em elementos')

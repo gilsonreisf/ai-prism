@@ -141,7 +141,12 @@ resources:
       user_api_scopes:
         - serving.serving-endpoints   # AI Gateway: /serving-endpoints/chat/completions + embeddings
         - sql                         # Statement Execution: UC Function discovery/exec + Python UDF
-        - dashboards.genie            # Genie spaces + Genie One MCP
+        - dashboards.genie            # Genie spaces (list/metadata)
+        - genie                       # Genie One MCP (query). The Genie One endpoint rejects
+                                      #   `dashboards.genie` with 403 "OAuth token does not have
+                                      #   required scopes: genie" — it needs the SHORT `genie`
+                                      #   scope. Both are listed: dashboards.genie for the spaces
+                                      #   API, genie for the conversational MCP.
         - vectorsearch.vector-search-endpoints
         - vectorsearch.vector-search-indexes
         - catalog.connections         # UC connections (external MCP discovery)

@@ -15,6 +15,7 @@ import DocumentStudio from './components/DocumentStudio.jsx'
 import * as Icon from './components/Icons.jsx'
 import { getJSON, patchJSON, postJSON, del, streamChat, streamContinue, streamRegenerate } from './api.js'
 import { speak, plainForSpeech } from './lib/speech.js'
+import { prepareMediaFiles } from './lib/mediaChunk.js'
 import { parseHash, pushHash, replaceHash } from './lib/hashRouter.js'
 import { useT } from './lib/i18n.jsx'
 
@@ -155,6 +156,7 @@ export default function App({ uiLang, setUiLang }) {
   const [isAdmin, setIsAdmin] = useState(false)
   const [models, setModels] = useState([])
   const [supportedExt, setSupportedExt] = useState([])
+  const [mediaExt, setMediaExt] = useState([])
   const [sessions, setSessions] = useState([])
   const [currentId, setCurrentId] = useState(null)
   const [messages, setMessages] = useState([])
@@ -297,6 +299,7 @@ export default function App({ uiLang, setUiLang }) {
         setIsAdmin(!!me.isAdmin)
         setModels(m.models)
         setSupportedExt(m.supported_extensions)
+        setMediaExt(m.media_extensions || [])
         // a saved preference can point at an endpoint that no longer exists in
         // the catalog (ids change as models are updated) — drop it so the UI
         // doesn't sit on a phantom id (which would silently fall back to
@@ -352,6 +355,7 @@ export default function App({ uiLang, setUiLang }) {
       const m = await getJSON('/api/models')
       setModels(m.models)
       setSupportedExt(m.supported_extensions)
+      setMediaExt(m.media_extensions || [])
       // drop a selected id that no longer exists in the refreshed catalog
       setModel((prev) => (prev && m.models.some((x) => x.id === prev) ? prev : m.models[0]?.id))
       return m.models
@@ -541,6 +545,8 @@ export default function App({ uiLang, setUiLang }) {
       const userMsg = {
         role: 'user',
         content: prompt,
+        // the ORIGINAL filenames are what the user sees (chunking is an
+        // implementation detail); keep them for the attachment chips
         attachments: fileList.length ? JSON.stringify(fileList.map((f) => f.name)) : null,
       }
       const asstMsg = { role: 'assistant', content: '', model, streaming: true }
@@ -550,6 +556,35 @@ export default function App({ uiLang, setUiLang }) {
       setInput('')
       setFiles([])
       setStreaming(true)
+
+      const ctrl = new AbortController()
+      abortRef.current = ctrl
+      const accRef = { value: '' }
+      let createdId = null
+
+      // patch the last message (the streaming assistant bubble)
+      const setLast = (patch) =>
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          next[next.length - 1] = typeof patch === 'function' ? patch(last) : { ...last, ...patch }
+          return next
+        })
+
+      // Long audio/video (1h+ meetings) exceeds the per-request media cap, so
+      // oversized recordings are segmented in the browser into sub-cap WAV
+      // chunks (Web Audio API — no server ffmpeg) before upload; each chunk is
+      // transcribed in order by the multimodal model. Small media/video within
+      // budget and non-media files pass through untouched. Progress surfaces in
+      // the assistant bubble's thinking hint so a long segmentation isn't silent.
+      let uploadFiles = fileList
+      try {
+        uploadFiles = await prepareMediaFiles(fileList, ({ name, done, total }) =>
+          setLast({ reasoning: t('composer.segmenting', { name, done, total }) })
+        )
+      } catch {
+        uploadFiles = fileList // any failure → send originals; server notes limits
+      }
 
       const fd = new FormData()
       fd.append(
@@ -565,21 +600,7 @@ export default function App({ uiLang, setUiLang }) {
           enabledTools,
         })
       )
-      for (const f of fileList) fd.append('files', f)
-
-      const ctrl = new AbortController()
-      abortRef.current = ctrl
-      const accRef = { value: '' }
-      let createdId = null
-
-      // patch the last message (the streaming assistant bubble)
-      const setLast = (patch) =>
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          next[next.length - 1] = typeof patch === 'function' ? patch(last) : { ...last, ...patch }
-          return next
-        })
+      for (const f of uploadFiles) fd.append('files', f)
 
       const sseHandler = makeSSEHandler({
         setTarget: setLast,
@@ -985,6 +1006,7 @@ export default function App({ uiLang, setUiLang }) {
               files={files}
               setFiles={setFiles}
               supportedExt={supportedExt}
+              mediaExt={mediaExt}
               onOpenVoice={() => setVoiceOpen(true)}
             />
           </div>

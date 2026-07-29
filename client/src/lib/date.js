@@ -14,6 +14,25 @@ export function timeGroupKey(d) {
   return 'time.older'
 }
 
+// Short, absolute label for a message timestamp shown under the user bubble —
+// "Jul 27" style (Claude-like). Drops the year for the current year, keeps it
+// otherwise. Locale-aware via Intl. Returns '' for a missing/invalid date.
+export function shortMessageDate(d, locale = 'en') {
+  if (!d) return ''
+  const date = new Date(d)
+  if (isNaN(date.getTime())) return ''
+  const sameYear = date.getFullYear() === new Date().getFullYear()
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      month: 'short',
+      day: 'numeric',
+      ...(sameYear ? {} : { year: 'numeric' }),
+    }).format(date)
+  } catch {
+    return date.toDateString()
+  }
+}
+
 // Returns { key, vars } for the relative timestamp, resolved by the caller's t().
 export function relativeTime(d) {
   const diffMs = Date.now() - new Date(d).getTime()
