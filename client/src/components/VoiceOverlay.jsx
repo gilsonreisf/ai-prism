@@ -9,6 +9,38 @@ import {
 } from '../lib/speech.js'
 import { useT } from '../lib/i18n.jsx'
 
+// Movie-style caption: a sliding window of the spoken text centered on the word
+// currently being read (charIndex), with that word highlighted. Scrolls with the
+// audio instead of showing a fixed truncation.
+function Caption({ text, charIndex }) {
+  if (!text) return null
+  const WINDOW = 180
+  const idx = Math.min(Math.max(charIndex, 0), text.length)
+  // Window bounds, snapped to word edges so we never cut mid-word.
+  let start = Math.max(0, idx - Math.floor(WINDOW / 3))
+  if (start > 0) {
+    const sp = text.indexOf(' ', start)
+    start = sp === -1 ? start : sp + 1
+  }
+  let end = Math.min(text.length, start + WINDOW)
+  if (end < text.length) {
+    const sp = text.lastIndexOf(' ', end)
+    end = sp > idx ? sp : end
+  }
+  // Split the visible slice into [before, current word, after].
+  const wordEnd = text.indexOf(' ', idx)
+  const curEnd = wordEnd === -1 || wordEnd > end ? end : wordEnd
+  return (
+    <span>
+      {start > 0 && '… '}
+      <span className="opacity-60">{text.slice(start, idx)}</span>
+      <span className="text-[var(--text)] font-medium">{text.slice(idx, curEnd)}</span>
+      <span className="opacity-60">{text.slice(curEnd, end)}</span>
+      {end < text.length && ' …'}
+    </span>
+  )
+}
+
 export default function VoiceOverlay({ open, onClose, onSend }) {
   const t = useT()
   const LABELS = {
@@ -19,10 +51,15 @@ export default function VoiceOverlay({ open, onClose, onSend }) {
   }
   const [status, setStatus] = useState('idle')
   const [transcript, setTranscript] = useState('')
-  const [reply, setReply] = useState('')
+  // `spoken` is the normalized prose actually sent to TTS (so charIndex aligns);
+  // `charIndex` is how far the speech engine has read into it.
+  const [spoken, setSpoken] = useState('')
+  const [charIndex, setCharIndex] = useState(0)
   const recRef = useRef(null)
   const activeRef = useRef(false)
   const statusRef = useRef('idle')
+  const boundaryRef = useRef(false) // did the engine ever fire onboundary?
+  const fallbackRef = useRef(null)
 
   const set = (s) => {
     statusRef.current = s
@@ -60,11 +97,32 @@ export default function VoiceOverlay({ open, onClose, onSend }) {
     try {
       const ans = await onSend(text)
       if (!activeRef.current) return
-      setReply(ans || '')
+      const prose = plainForSpeech(ans)
+      setSpoken(prose)
+      setCharIndex(0)
+      boundaryRef.current = false
       set('speaking')
-      speak(plainForSpeech(ans), {
+      speak(prose, {
         lang: 'pt-BR',
+        onStart: () => {
+          // If the engine never emits word boundaries (e.g. Safari), advance the
+          // caption on a timer so it still scrolls like a subtitle instead of
+          // freezing. ~0.9 rate ⇒ roughly 14 chars/s of Portuguese prose.
+          clearTimeout(fallbackRef.current)
+          const tick = () => {
+            if (!activeRef.current || boundaryRef.current) return
+            setCharIndex((c) => Math.min(c + 14, prose.length))
+            fallbackRef.current = setTimeout(tick, 1000)
+          }
+          fallbackRef.current = setTimeout(tick, 1000)
+        },
+        onBoundary: (i) => {
+          boundaryRef.current = true
+          clearTimeout(fallbackRef.current)
+          setCharIndex(i)
+        },
         onEnd: () => {
+          clearTimeout(fallbackRef.current)
           if (activeRef.current) startListening()
         },
       })
@@ -76,11 +134,13 @@ export default function VoiceOverlay({ open, onClose, onSend }) {
   useEffect(() => {
     if (open) {
       activeRef.current = true
-      setReply('')
+      setSpoken('')
+      setCharIndex(0)
       setTranscript('')
       startListening()
     } else {
       activeRef.current = false
+      clearTimeout(fallbackRef.current)
       try {
         recRef.current?.stop()
       } catch {}
@@ -89,6 +149,7 @@ export default function VoiceOverlay({ open, onClose, onSend }) {
     }
     return () => {
       activeRef.current = false
+      clearTimeout(fallbackRef.current)
       try {
         recRef.current?.stop()
       } catch {}
@@ -141,7 +202,7 @@ export default function VoiceOverlay({ open, onClose, onSend }) {
       <div className="text-lg font-semibold mb-2">{LABELS[status]}</div>
       <div className="min-h-[3rem] max-w-lg text-center px-6 text-[var(--muted)]">
         {status === 'listening' && transcript}
-        {status === 'speaking' && <span className="text-[var(--text)]">{reply.slice(0, 240)}</span>}
+        {status === 'speaking' && <Caption text={spoken} charIndex={charIndex} />}
       </div>
 
       <div className="flex items-center gap-3 mt-8">

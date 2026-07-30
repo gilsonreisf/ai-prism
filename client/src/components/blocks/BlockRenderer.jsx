@@ -18,7 +18,7 @@ const RENDERERS = {
   document: DocumentBlock,
 }
 
-export default function BlockRenderer({ blocks, msgId, onOpenDeck, onOpenSpreadsheet, onOpenDocument, isLatest, onSubmitAnswers }) {
+export default function BlockRenderer({ blocks, msgId, models, onOpenDeck, onOpenSpreadsheet, onOpenDocument, isLatest, onSubmitAnswers }) {
   if (!blocks?.length) return null
   return (
     <div>
@@ -29,6 +29,7 @@ export default function BlockRenderer({ blocks, msgId, onOpenDeck, onOpenSpreads
             key={i}
             block={b}
             msgId={msgId}
+            models={models}
             onOpenDeck={onOpenDeck}
             onOpenSpreadsheet={onOpenSpreadsheet}
             onOpenDocument={onOpenDocument}

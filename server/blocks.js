@@ -2156,6 +2156,9 @@ function resolveOne(raw, byId, template, imageById) {
       prompt: typeof hit.prompt === 'string' ? hit.prompt.slice(0, 500) : undefined,
       caption: typeof raw.caption === 'string' ? raw.caption.slice(0, 200) : undefined,
       alt: typeof raw.alt === 'string' ? raw.alt.slice(0, 200) : undefined,
+      // generation model + token usage → the block can show a cost estimate
+      model: typeof hit.model === 'string' ? hit.model : undefined,
+      usage: hit.usage || undefined,
     }
   }
   if (raw.type === 'deck') {

@@ -5,6 +5,7 @@ import {
 } from 'recharts'
 import * as Icon from './Icons.jsx'
 import { useT } from '../lib/i18n.jsx'
+import CostBadge from './CostBadge.jsx'
 import { getJSON, postJSON } from '../api.js'
 import { resolveDeckTheme, blend, contrastOn } from '../../../shared/deckTheme.js'
 import { materializeWorkbook, colLetter } from '../lib/sheetEval.js'
@@ -523,6 +524,7 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
   const [tweaking, setTweaking] = useState(false)
   const [lastInstruction, setLastInstruction] = useState('')
   const [flash, setFlash] = useState(false) // brief success flash after a tweak
+  const [tweakCost, setTweakCost] = useState(null) // { usage, model } of the last AI edit
   // selection is a range { r1,c1,r2,c2, ar,ac } in grid coords (ar/ac = active
   // cell). null = nothing selected. Reset when the sheet changes.
   const [sel, setSel] = useState(null)
@@ -620,6 +622,7 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
         setSel(null)
         setFlash(true)
         setTimeout(() => setFlash(false), 1400)
+        if (r.usage) setTweakCost({ usage: r.usage, model: r.model })
       }
     } catch (e) {
       pushToast?.(e.message || t('sheetStudio.tweakError'))
@@ -805,6 +808,9 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
             {flash && !tweaking && (
               <div className="flex items-center gap-1.5 text-xs text-[var(--accent)] animate-fade-in">
                 <Icon.Check size={14} /> {t('sheetStudio.updated')}
+                {tweakCost && (
+                  <CostBadge usage={tweakCost.usage} model={tweakCost.model} models={models} className="text-[11px]" />
+                )}
               </div>
             )}
 

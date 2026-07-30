@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Icon from '../Icons.jsx'
 import Skeleton from '../Skeleton.jsx'
+import CostBadge from '../CostBadge.jsx'
 import { useT } from '../../lib/i18n.jsx'
 
 // Renders a generated `image` block inline in the chat. The bytes live on a UC
@@ -8,7 +9,7 @@ import { useT } from '../../lib/i18n.jsx'
 // them as a blob once, hold the object URL for the block's lifetime, and offer
 // download / copy / open-full-size. Mirrors the DeckBlock/SpreadsheetBlock
 // card styling and the chart block's PNG-download pattern.
-export default function ImageBlock({ block }) {
+export default function ImageBlock({ block, models }) {
   const t = useT()
   const [url, setUrl] = useState(null)
   const [status, setStatus] = useState('loading') // loading | ready | error
@@ -128,10 +129,13 @@ export default function ImageBlock({ block }) {
             href={url}
             target="_blank"
             rel="noreferrer"
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-3)] px-2.5 py-1.5 text-xs font-medium text-[var(--muted)] hover:text-[var(--text)] transition"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-3)] px-2.5 py-1.5 text-xs font-medium text-[var(--muted)] hover:text-[var(--text)] transition"
           >
             <Icon.Expand size={14} /> {t('imageBlock.open')}
           </a>
+          {block.usage && (
+            <CostBadge usage={block.usage} model={block.model} models={models} className="ml-auto text-[11px]" />
+          )}
         </div>
       )}
     </div>

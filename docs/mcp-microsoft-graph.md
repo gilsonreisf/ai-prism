@@ -27,7 +27,7 @@ Entenda o caminho do token **antes** de escolher o design:
 flowchart LR
     U["Usuário no AI Prism"] -->|token OAuth Databricks| P["Proxy MCP gerenciado<br/>/api/2.0/mcp/external/&lt;conn&gt;"]
     P -->|bearer = token Databricks| G["SEU servidor Graph MCP"]
-    G -->|token Microsoft (Entra)| M["Microsoft Graph<br/>/me/messages, /me/events…"]
+    G -->|"token Microsoft (Entra)"| M["Microsoft Graph<br/>/me/messages, /me/events…"]
 ```
 
 O AI Prism **sempre** chama o proxy da Databricks com o **token do Databricks do

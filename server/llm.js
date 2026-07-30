@@ -356,7 +356,12 @@ export async function* streamChat(token, model, messages, opts = {}) {
 }
 
 /** Non-streaming completion (used for title generation). */
-export async function complete(token, model, messages, opts = {}) {
+// Non-streaming completion returning BOTH the text and the token usage the
+// endpoint reported ({ prompt_tokens, completion_tokens } or null). Auxiliary
+// LLM actions (studio tweaks) use this so the UI can show their cost, mirroring
+// the chat's per-message estimate. `complete()` is the text-only wrapper kept for
+// callers that don't care about usage (titles, asset labels).
+export async function completeWithUsage(token, model, messages, opts = {}) {
   const completeBody = {
     model,
     messages,
@@ -375,7 +380,15 @@ export async function complete(token, model, messages, opts = {}) {
     throw new Error(`Endpoint ${model} returned ${res.status}: ${text.slice(0, 300)}`)
   }
   const json = await res.json()
-  return extractContent(json.choices?.[0]?.message?.content)
+  return {
+    text: extractContent(json.choices?.[0]?.message?.content),
+    usage: json.usage || null,
+  }
+}
+
+export async function complete(token, model, messages, opts = {}) {
+  const { text } = await completeWithUsage(token, model, messages, opts)
+  return text
 }
 
 // Pulls every generated image out of a chat/completions message `content`.

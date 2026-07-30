@@ -11,6 +11,7 @@ import { resolveDeckTheme } from '../../../shared/deckTheme.js'
 import { findNode, findParent, updateNode, removeNodes, groupNodes, ungroupNode, alignNodes, distributeNodes, patchNodesStyle } from '../lib/deckTree.js'
 import { getJSON, patchJSON, postJSON } from '../api.js'
 import { useT } from '../lib/i18n.jsx'
+import CostBadge from './CostBadge.jsx'
 
 // "cards[2].heading" → immutable deep set into a slide object — the write
 // half of the canvas' inline text editing (SelBox commits land here).
@@ -292,7 +293,7 @@ function DiagramEditor({ slide, onChange }) {
   )
 }
 
-export default function DeckStudio({ open, deckId, onClose, pushToast, focus = false, onToggleFocus }) {
+export default function DeckStudio({ open, deckId, onClose, pushToast, focus = false, onToggleFocus, models, model }) {
   const t = useT()
   const [deck, setDeck] = useState(null)
   const [template, setTemplate] = useState(null)
@@ -316,6 +317,7 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
   const tweakPreviewRef = useRef(null) // mirror for cleanup on slide switch
   tweakPreviewRef.current = tweakPreview
   const [tweakHistory, setTweakHistory] = useState([]) // [{ label, at }] applied edits
+  const [tweakCost, setTweakCost] = useState(null) // { usage, model } of the last AI edit
   const [presenting, setPresenting] = useState(false)
   // element canvas (freeform slides): selection (multi) + open-group scope +
   // undo/redo history
@@ -399,7 +401,14 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
         audience: deck.audience,
         author: deck.author,
         narrative: deck.narrative,
-      }).catch((e) => pushToast?.(e.message))
+      })
+        // Let the chat's deck card (DeckBlock) know its persisted deck changed so
+        // it can re-fetch and reflect live edits (its block.slides is a snapshot
+        // frozen at generation time). Fire only after the write lands.
+        .then(() =>
+          window.dispatchEvent(new CustomEvent('prism:deck-saved', { detail: { deckId: deck.id } }))
+        )
+        .catch((e) => pushToast?.(e.message))
     }, 500)
     return () => clearTimeout(saveTimer.current)
   }, [deck]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -472,6 +481,7 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
       setTweakPreview({ before: deck, label: label || instruction })
       skipNextSave.current = true // preview never autosaves until accepted
       setDeck(r.deck)
+      if (r.usage) setTweakCost({ usage: r.usage, model: r.model })
       setTweak('')
     } catch (e) {
       pushToast?.(e.message || t('deckStudio.tweakError'))
@@ -1035,6 +1045,9 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
                   <span className="text-xs text-[var(--text)] flex-1 min-w-0 truncate" title={tweakPreview.label}>
                     {t('deckStudio.tweak.previewLabel', { label: tweakPreview.label })}
                   </span>
+                  {tweakCost && (
+                    <CostBadge usage={tweakCost.usage} model={tweakCost.model} models={models} className="text-[11px] shrink-0" />
+                  )}
                   <button onClick={discardTweak} className="rounded-lg border border-[var(--border)] bg-[var(--surface)] hover:brightness-110 text-[var(--muted)] font-semibold text-xs px-2.5 py-1.5 shrink-0">
                     {t('deckStudio.tweak.discard')}
                   </button>
