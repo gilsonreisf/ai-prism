@@ -2314,6 +2314,12 @@ export function extractPrismBlocks(fullText, chartCandidates = [], template, ima
     let after = scanned.end
     const tail = fullText.slice(after).match(/^[ \t]*\r?\n?```/)
     if (tail) after += tail[0].length
+    // Models sometimes emit a stray run of JSON structural punctuation (e.g. an
+    // extra `]}` that over-closes the slides array) right after the fence. Real
+    // prose is never only brackets/braces/commas, so drop such an orphan up to
+    // the next newline — otherwise it leaks into the chat as "]}" (see #12/#13).
+    const orphan = fullText.slice(after).match(/^[ \t]*[\]})\s,]*[\]})][ \t]*(?=\r?\n|$)/)
+    if (orphan) after += orphan[0].length
     cursor = after
 
     if (blocks.length >= MAX_BLOCKS) continue

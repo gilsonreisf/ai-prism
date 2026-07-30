@@ -14,6 +14,7 @@ const LABEL_KEYS = {
   deck: 'loading.deck',
   'deck-questions': 'loading.deckQuestions',
   spreadsheet: 'loading.spreadsheet',
+  document: 'loading.document',
 }
 
 export default function LoadingChip({ blockType }) {

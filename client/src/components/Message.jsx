@@ -82,8 +82,15 @@ function pushProse(segments, s, streaming) {
     segments.push({ kind: 'loading', blockType: sniffFenceKind(fenceText) })
     if (jsonEnd === -1) break // JSON not closed yet — model is still typing it
     // skip past the JSON and an optional closing ``` fence
-    const tail = s.slice(jsonEnd).match(/^[ \t]*\r?\n?```/)
-    i = jsonEnd + (tail ? tail[0].length : 0)
+    let end = jsonEnd
+    const tail = s.slice(end).match(/^[ \t]*\r?\n?```/)
+    if (tail) end += tail[0].length
+    // drop a stray run of JSON structural punctuation (e.g. an over-closing "]}")
+    // the model sometimes appends after the fence — mirrors extractPrismBlocks so
+    // it doesn't flash as prose while streaming.
+    const orphan = s.slice(end).match(/^[ \t]*[\]})\s,]*[\]})][ \t]*(?=\r?\n|$)/)
+    if (orphan) end += orphan[0].length
+    i = end
   }
 }
 
