@@ -18,14 +18,68 @@ import { useT } from '../lib/i18n.jsx'
 
 // ---- specimen card (self-contained HTML from the bundle) --------------------
 
+// Design tokens (--db-*, --font-*, --shadow-*) reconstructed from the template's
+// persisted palette + fontAssets. Cards render inside a sandboxed srcDoc iframe
+// (no same-origin), and some — the Templates group especially — pull their
+// tokens CSS in at RUNTIME via a JS-created <link href="../../colors_and_type.css">
+// (see the bundle's ds-base.js). That relative URL resolves against the app
+// origin inside the iframe and 404s, leaving every var(--db-*) unset: token
+// backgrounds collapse to transparent, so the same slide shows the stage's
+// white canvas when featured but the card's own dark <html> bg as a thumbnail.
+// Injecting this block into every card's <head> defines the tokens regardless,
+// and because it's built from persisted fields it also repairs templates saved
+// before the importer fix — no reimport needed. Built at low precedence (top of
+// <head>) so a card's own inline styles still win.
+function buildTokenStyle(template) {
+  if (!template) return ''
+  const parts = []
+  const fonts = template.fontAssets || []
+  for (const f of fonts) {
+    if (!f?.family || !f?.dataUrl) continue
+    parts.push(
+      `@font-face{font-family:'${f.family.replace(/'/g, '')}';` +
+        `font-weight:${f.weight || 400};font-style:${f.style || 'normal'};` +
+        `font-display:swap;src:url(${f.dataUrl});}`,
+    )
+  }
+  const vars = []
+  for (const t of template.palette || []) {
+    if (t?.varName && typeof t.value === 'string') vars.push(`${t.varName}:${t.value};`)
+  }
+  // Family + shadow tokens the bundle slides reference but the color palette
+  // doesn't carry. Font families point at the (now @font-face'd) brand faces
+  // with sane fallbacks; shadows are static in the source DS.
+  const families = [...new Set(fonts.map((f) => f.family).filter(Boolean))]
+  const heading = template.headingFont || families[0]
+  if (heading) vars.push(`--font-sans:'${heading.replace(/'/g, '')}',system-ui,-apple-system,sans-serif;`)
+  const mono = families.find((f) => /mono/i.test(f))
+  if (mono) vars.push(`--font-mono:'${mono.replace(/'/g, '')}',ui-monospace,'SF Mono',Menlo,monospace;`)
+  vars.push('--shadow-sm:0 1px 2px rgba(27,49,57,.06),0 1px 3px rgba(27,49,57,.08);')
+  vars.push('--shadow-md:0 2px 6px rgba(27,49,57,.08),0 8px 20px rgba(27,49,57,.08);')
+  vars.push('--shadow-lg:0 8px 24px rgba(27,49,57,.10),0 24px 48px rgba(27,49,57,.10);')
+  if (vars.length) parts.push(`:root{${vars.join('')}}`)
+  return parts.join('')
+}
+
+// Prepend the reconstructed token <style> to the top of the card's <head> (or
+// <html>, or the document) so token-driven colors resolve inside the iframe.
+function withTokens(html, tokenStyle) {
+  if (!tokenStyle || typeof html !== 'string') return html
+  const inject = `<style data-ds-tokens>${tokenStyle}</style>`
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (m) => m + inject)
+  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (m) => m + inject)
+  return inject + html
+}
+
 // Sandboxed iframe (scripts allowed for <deck-stage>, but NO same-origin so
 // bundle JS can never touch the app). Slides/templates author at a fixed
 // 1280×720 stage → scaled to fit; free-flowing preview cards get a natural
 // height with internal scrolling.
-function SpecimenFrame({ card }) {
+function SpecimenFrame({ card, tokenStyle }) {
   const isStage = card.group === 'Slides' || card.group === 'Templates' || card.group === 'UI Kit — Website'
   const wrapRef = useRef(null)
   const [scale, setScale] = useState(0.5)
+  const html = useMemo(() => withTokens(card.html, tokenStyle), [card.html, tokenStyle])
   useEffect(() => {
     if (!isStage || !wrapRef.current) return
     const el = wrapRef.current
@@ -42,7 +96,7 @@ function SpecimenFrame({ card }) {
         <iframe
           title={card.title}
           sandbox="allow-scripts"
-          srcDoc={card.html}
+          srcDoc={html}
           className="border-0 origin-top-left"
           style={{ width: 1280, height: 720, transform: `scale(${scale})` }}
         />
@@ -53,7 +107,7 @@ function SpecimenFrame({ card }) {
     <iframe
       title={card.title}
       sandbox="allow-scripts"
-      srcDoc={card.html}
+      srcDoc={html}
       className="w-full border-0 rounded-b-xl bg-white"
       style={{ height: 340 }}
     />
@@ -108,7 +162,7 @@ function Swatch({ name, value, sub }) {
   )
 }
 
-function ColorsSection({ template, cards }) {
+function ColorsSection({ template, cards, tokenStyle }) {
   const t = useT()
   const palette = template.palette || []
   return (
@@ -131,12 +185,12 @@ function ColorsSection({ template, cards }) {
           </div>
         </div>
       )}
-      <CardsList cards={cards} />
+      <CardsList cards={cards} tokenStyle={tokenStyle} />
     </div>
   )
 }
 
-function TypeSection({ template, cards }) {
+function TypeSection({ template, cards, tokenStyle }) {
   const t = useT()
   useTemplateFonts(template)
   const families = [...new Set((template.fontAssets || []).map((f) => f.family))]
@@ -164,7 +218,7 @@ function TypeSection({ template, cards }) {
           {t('templateInspector.fontFilesPrefix', { n: template.fontAssets.length })} {families.join(', ')}{t('templateInspector.fontFilesSuffix')}
         </div>
       )}
-      <CardsList cards={cards} />
+      <CardsList cards={cards} tokenStyle={tokenStyle} />
     </div>
   )
 }
@@ -178,7 +232,7 @@ const brandGroups = (t) => [
   ['watermark', t('templateInspector.brandWatermarks')],
 ]
 
-function BrandSection({ template, cards }) {
+function BrandSection({ template, cards, tokenStyle }) {
   const t = useT()
   const assets = template.iconAssets || []
   const byKind = (k) => assets.filter((a) => (a.kind || 'icon') === k)
@@ -227,18 +281,18 @@ function BrandSection({ template, cards }) {
           </div>
         )
       })}
-      <CardsList cards={cards} />
+      <CardsList cards={cards} tokenStyle={tokenStyle} />
     </div>
   )
 }
 
-function CardsList({ cards }) {
+function CardsList({ cards, tokenStyle }) {
   if (!cards?.length) return null
   return (
     <div className="space-y-4">
       {cards.map((c) => (
         <CardShell key={c.id} title={c.title} description={c.description}>
-          <SpecimenFrame card={c} />
+          <SpecimenFrame card={c} tokenStyle={tokenStyle} />
         </CardShell>
       ))}
     </div>
@@ -344,6 +398,9 @@ export default function DeckTemplateInspector({ template: summary, onClose }) {
     }
     return map
   }, [template])
+  // Reconstructed once per template (fonts are ~1MB of base64) and injected
+  // into every specimen iframe so runtime-loaded token CSS never 404s.
+  const tokenStyle = useMemo(() => buildTokenStyle(template), [template])
 
   const sections = useMemo(() => {
     if (!template) return []
@@ -398,13 +455,13 @@ export default function DeckTemplateInspector({ template: summary, onClose }) {
         </div>
         <div className="flex-1 min-w-0 overflow-y-auto p-6">
           {section === 'readme' && template.readme && <ReadmeSection template={template} />}
-          {section === 'templates' && <CardsList cards={cardsByGroup.get('Templates')} />}
-          {section === 'brand' && <BrandSection template={template} cards={cardsByGroup.get('Brand')} />}
-          {section === 'colors' && <ColorsSection template={template} cards={cardsByGroup.get('Colors')} />}
-          {section === 'components' && <CardsList cards={cardsByGroup.get('Components')} />}
-          {section === 'slides' && <CardsList cards={cardsByGroup.get('Slides')} />}
-          {section === 'type' && <TypeSection template={template} cards={cardsByGroup.get('Type')} />}
-          {section === 'spacing' && <CardsList cards={cardsByGroup.get('Spacing')} />}
+          {section === 'templates' && <CardsList cards={cardsByGroup.get('Templates')} tokenStyle={tokenStyle} />}
+          {section === 'brand' && <BrandSection template={template} cards={cardsByGroup.get('Brand')} tokenStyle={tokenStyle} />}
+          {section === 'colors' && <ColorsSection template={template} cards={cardsByGroup.get('Colors')} tokenStyle={tokenStyle} />}
+          {section === 'components' && <CardsList cards={cardsByGroup.get('Components')} tokenStyle={tokenStyle} />}
+          {section === 'slides' && <CardsList cards={cardsByGroup.get('Slides')} tokenStyle={tokenStyle} />}
+          {section === 'type' && <TypeSection template={template} cards={cardsByGroup.get('Type')} tokenStyle={tokenStyle} />}
+          {section === 'spacing' && <CardsList cards={cardsByGroup.get('Spacing')} tokenStyle={tokenStyle} />}
           {section === 'diagramas' && <DiagramsSection template={template} />}
           {section === 'slides-modelo' && <MinedSlidesSection template={template} />}
         </div>
