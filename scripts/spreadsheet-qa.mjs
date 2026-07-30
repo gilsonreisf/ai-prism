@@ -90,6 +90,34 @@ async function main() {
   expect('D11', 100, 'Diferença Moradia (1600-1500) na própria linha')
   expect('D12', 900, 'Diferença Alimentação (900-0) na própria linha')
 
+  // 1c. LOOKUPS cross-sheet (INDEX/MATCH, VLOOKUP) — the preview evaluator must
+  // resolve them, else lookup cells render blank and dependents show 0 (the
+  // seasonality→revenue bug). Inline spec so it doesn't couple to the golden.
+  {
+    const lookupSpec = sanitizeSpreadsheet({
+      type: 'spreadsheet',
+      title: 'Lookups',
+      sheets: [
+        { name: 'Premissas', blocks: [{ kind: 'table', columns: [{ header: 'Mes' }, { header: 'Pct' }], rows: [['Janeiro', 0.019], ['Fevereiro', 0.04], ['Marco', 0.062]] }] },
+        { name: 'Projecao', blocks: [{ kind: 'table', columns: [{ header: 'Mes' }, { header: 'PctIM' }], rows: [
+          ['Fevereiro', '=INDEX([Premissas!Pct],MATCH([@Mes],[Premissas!Mes],0))'],
+          ['Marco', '=INDEX([Premissas!Pct],MATCH([@Mes],[Premissas!Mes],0))'],
+        ] }] },
+      ],
+    })
+    if (!lookupSpec) fail('sanitize do fixture de lookups falhou')
+    else {
+      const lc = materializeWorkbook(lookupSpec).computed
+      const chk = (addr, want, label) => {
+        const got = lc('Projecao', addr)
+        if (Math.abs(Number(got) - want) < 1e-9) ok(`preview lookup ${addr} = ${want} (${label})`)
+        else fail(`preview lookup ${addr}: esperado ${want} (${label}), obteve ${JSON.stringify(got)}`)
+      }
+      chk('B2', 0.04, 'INDEX/MATCH cross-sheet Fevereiro')
+      chk('B3', 0.062, 'INDEX/MATCH cross-sheet Marco')
+    }
+  }
+
   // 2. render
   const buf = await renderXlsx(spec, TEMPLATE)
   if (!buf?.length) return fail('renderXlsx devolveu buffer vazio')

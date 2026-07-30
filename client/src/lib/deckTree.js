@@ -69,6 +69,21 @@ export function isStackChild(elements, id) {
   return !!parent?.stack
 }
 
+// Merge a style patch into every id in one pass (batch styling on multi-
+// selection). undefined values delete the key. Immutable.
+export function patchNodesStyle(elements, ids, patch) {
+  const set = ids instanceof Set ? ids : new Set(ids)
+  let next = elements
+  for (const id of set) {
+    next = updateNode(next, id, (n) => {
+      const style = { ...(n.style || {}), ...patch }
+      for (const k of Object.keys(style)) if (style[k] === undefined) delete style[k]
+      return { ...n, style }
+    })
+  }
+  return next
+}
+
 function absBoxes(elements, theme) {
   const boxes = new Map()
   flattenElements(elements, theme, { boxes })
@@ -164,6 +179,89 @@ export function cloneWithNewIds(node) {
   const clone = { ...node, id: newElementId(node.type === 'group' ? 'g' : 'e') }
   if (node.children) clone.children = node.children.map(cloneWithNewIds)
   return clone
+}
+
+// --- align / distribute -------------------------------------------------------
+// Operate on the flatten-time ABSOLUTE boxes of the selected nodes, then push
+// the same delta into each node's parent-relative box (abs = parentOrigin +
+// relative, so a shift in absolute space equals the same shift in relative
+// space — no coordinate conversion needed). Stack children skip it (their
+// position is auto-computed). Immutable; returns the new tree.
+const EDGE_AXIS = { left: 'x', hcenter: 'x', right: 'x', top: 'y', vcenter: 'y', bottom: 'y' }
+
+export function alignNodes(elements, ids, edge, theme) {
+  const axis = EDGE_AXIS[edge]
+  if (!axis) return elements
+  const boxes = absBoxes(elements, theme)
+  const movable = (ids || []).filter((id) => !isStackChild(elements, id) && boxes.get(id))
+  if (movable.length < 2) return elements
+  const abs = movable.map((id) => ({ id, b: boxes.get(id) }))
+  const size = (b) => (axis === 'x' ? b.w : b.h)
+  const lo = Math.min(...abs.map(({ b }) => b[axis]))
+  const hi = Math.max(...abs.map(({ b }) => b[axis] + size(b)))
+  const target = (b) => {
+    if (edge === 'left' || edge === 'top') return lo
+    if (edge === 'right' || edge === 'bottom') return hi - size(b)
+    return (lo + hi) / 2 - size(b) / 2 // center
+  }
+  let next = elements
+  for (const { id, b } of abs) {
+    const delta = target(b) - b[axis]
+    if (Math.abs(delta) < 0.001) continue
+    next = updateNode(next, id, (n) => ({ ...n, box: { ...n.box, [axis]: r2((n.box?.[axis] || 0) + delta) } }))
+  }
+  return next
+}
+
+// Equalize the gaps between selected nodes along an axis (Figma "distribute
+// spacing"): the two extreme nodes stay put, the rest slide so consecutive
+// gaps are equal. Needs 3+ movable nodes.
+export function distributeNodes(elements, ids, axis, theme) {
+  if (axis !== 'x' && axis !== 'y') return elements
+  const boxes = absBoxes(elements, theme)
+  const movable = (ids || []).filter((id) => !isStackChild(elements, id) && boxes.get(id))
+  if (movable.length < 3) return elements
+  const size = (b) => (axis === 'x' ? b.w : b.h)
+  const items = movable.map((id) => ({ id, b: boxes.get(id) })).sort((p, q) => p.b[axis] - q.b[axis])
+  const first = items[0].b
+  const last = items[items.length - 1].b
+  const span = last[axis] + size(last) - first[axis]
+  const totalSize = items.reduce((s, { b }) => s + size(b), 0)
+  const gap = (span - totalSize) / (items.length - 1)
+  let cursor = first[axis]
+  let next = elements
+  for (const { id, b } of items) {
+    const delta = cursor - b[axis]
+    if (Math.abs(delta) > 0.001) {
+      next = updateNode(next, id, (n) => ({ ...n, box: { ...n.box, [axis]: r2((n.box?.[axis] || 0) + delta) } }))
+    }
+    cursor += size(b) + gap
+  }
+  return next
+}
+
+// snap targets for a moving node: every OTHER node's left/center/right (and
+// top/middle/bottom) edge in absolute inches, tagged by axis. Consumed by the
+// canvas to draw alignment guides and snap while dragging.
+export function alignmentTargets(elements, theme, excludeIds = []) {
+  const boxes = absBoxes(elements, theme)
+  const skip = excludeIds instanceof Set ? excludeIds : new Set(excludeIds)
+  const x = []
+  const y = []
+  const walk = (list) => {
+    for (const el of list || []) {
+      if (!skip.has(el.id) && !el.hidden) {
+        const b = boxes.get(el.id)
+        if (b) {
+          x.push(b.x, b.x + b.w / 2, b.x + b.w)
+          y.push(b.y, b.y + b.h / 2, b.y + b.h)
+        }
+      }
+      if (el.children) walk(el.children)
+    }
+  }
+  walk(elements)
+  return { x, y }
 }
 
 const TYPE_LABELS = {

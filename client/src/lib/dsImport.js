@@ -220,18 +220,53 @@ function classifyBrandAsset(path) {
   return 'image'
 }
 
-// primary variant filter: skip -alt/-container/-white duplicates when the
-// plain full-color exists — the icon library needs one canonical entry per
-// product, not 6 variants that all label the same
-function isPrimaryVariant(file, kind) {
-  if (kind === 'icon') {
-    // prefix families ship one file per color — keep only the brand-accent
-    // one so the library has one canonical entry per product
-    if (/^(?:primary|secondary)-icon-/.test(file)) return /-orange\.svg$/.test(file)
-    return /-icon-full-color\.svg$/.test(file) || (!/-(alt|container|white)/.test(file) && /icon/.test(file))
-  }
-  if (kind === 'lockup') return !/-(container|alt|navy-alt|white)/.test(file)
-  return true
+// color/variant suffix tokens a family ships one file each of — stripping them
+// yields the product IDENTITY, so all variants of a product collapse to one
+// family key. (Order-independent: we strip every occurrence.)
+const VARIANT_TOKENS = /(?:-(?:full-color|color|full|primary|secondary|navy|orange|white|black|gray|grey|mono|alt|container|no-db|on-(?:light|dark|navy|white|black)|light|dark|inverse|inverted|reverse|solid|outline))+$/gi
+
+// The product family a brand asset belongs to (kind + identity), used to keep
+// exactly ONE canonical asset per family instead of dropping variants by a
+// fixed-suffix rule (which lost whole products that never ship the "expected"
+// suffix — e.g. a lockup that only exists in -white). Repeatedly strips the
+// icon/lockup markers and color/variant tails.
+function familyKey(file, kind) {
+  let base = file.replace(/\.(svg|png|jpe?g|gif|webp)$/i, '').toLowerCase()
+  base = base
+    .replace(/^(?:primary|secondary)-icon-/, '')
+    // prefix-icon families put the COLOR right after the marker
+    // (primary-icon-white-delta-live-tables) — drop a leading color token so
+    // all colors of a product collapse to the same family
+    .replace(/^(?:full-color|color|navy|orange|white|black|gray|grey|mono)-/, '')
+    .replace(/-(icon|lockup|logo|symbol|mark|wordmark)\b/g, '-')
+  // strip trailing color/variant tails until stable
+  let prev
+  do { prev = base; base = base.replace(VARIANT_TOKENS, '') } while (base !== prev)
+  base = base.replace(/[-_]+/g, '-').replace(/^-|-$/g, '')
+  return `${kind}:${base || file.toLowerCase()}`
+}
+
+// A variant made for DARK backgrounds (white/inverse/reverse lockups). We keep
+// one of these PER FAMILY too, tagged tone:'dark', so covers/dividers on a dark
+// plate have the right asset — dropping them entirely (as the first fix did)
+// would leave dark slides with an invisible or wrong-color logo.
+function isDarkVariant(file) {
+  const f = file.toLowerCase()
+  return /-(white|inverse|inverted|reverse|on-(?:dark|navy|black))\b/.test(f) && !/full-color-white/.test(f)
+}
+
+// Canonicality score for a variant — higher wins within its TONE bucket. We
+// prefer full-color, non-container/alt versions (the everyday asset), but ANY
+// variant beats losing the product entirely.
+function variantScore(file) {
+  const f = file.toLowerCase()
+  let s = 0
+  if (/full-color/.test(f)) s += 5
+  if (/-orange\b/.test(f)) s += 3 // brand accent (prefix icon families)
+  if (/-navy\b/.test(f) && !/-navy-alt/.test(f)) s += 2
+  if (!/-(alt|container|no-db)/.test(f)) s += 2
+  if (/-(alt|container)\b/.test(f)) s -= 3
+  return s
 }
 
 function labelFor(file, kind) {
@@ -248,31 +283,62 @@ function labelFor(file, kind) {
 
 // ---- HTML specimen cards ----------------------------------------------------
 
-const CARD_MAX_HTML = 600_000
-const CARDS_TOTAL_BUDGET = 9_000_000
+// After inlining, cards embed their referenced rasters as data-URLs. Rich
+// template/slide specimens (architecture diagrams, event covers) legitimately
+// reference several logos/backgrounds, so the ceiling has to clear a card that
+// inlines a handful of downscaled PNGs — the old 600KB cap silently dropped
+// exactly those richest cards (2 of 4 templates, the lakehouse/arch slides).
+// Heavy rasters are downscaled inline (see inlineCardHtml) so this rarely bites.
+// Matches the server's per-card persistence cap (see validateTemplatePayload).
+// Tokens/fonts are NOT baked per-card — they're reconstructed from the
+// template's palette + fontAssets and injected into each iframe at render time
+// (see DeckTemplateInspector), so a card is just its own markup + inlined art.
+const CARD_MAX_HTML = 2_600_000
+const CARDS_TOTAL_BUDGET = 24_000_000
+// raster (png/jpg) refs inside a card larger than this get downscaled to a
+// screen-resolution JPEG before inlining — a specimen preview never needs a
+// full-res product screenshot, and one 447KB PNG referenced 3× was ~2MB alone.
+// Template/slide backgrounds render on the large featured canvas, so they get a
+// higher width/quality ceiling than incidental product screenshots (the design
+// system has to look crisp — a pixelated cover discredits the whole preview).
+const CARD_IMG_DOWNSCALE_OVER = 60_000
+const CARD_IMG_MAX_W = 900
+const CARD_BG_MAX_W = 1600
+const CARD_BG_QUALITY = 0.9
 
-// Rewrites a specimen card into a fully self-contained document: the tokens
-// CSS is inlined (with @font-face srcs swapped to data-URL fonts and remote
-// @imports dropped — iframes must not depend on network/CSP), relative asset
-// and script references become data URLs / inline scripts.
+// Resolves a relative asset reference (./foo, ../bar) against a directory,
+// walking `../` up the path. Shared by the card HTML and CSS inliners.
+function resolveRelative(dir, ref) {
+  let p = ref.replace(/^\.\//, '')
+  let d = dir
+  while (p.startsWith('../')) {
+    p = p.slice(3)
+    d = d.replace(/[^/]+\/$/, '')
+  }
+  return d + p
+}
+
+// Rewrites a specimen card into a fully self-contained document: static
+// stylesheet links are inlined, scripts are inlined, and relative asset
+// references become data URLs. The design TOKENS are NOT baked in here — some
+// cards (templates, via ds-base.js) load them at runtime through a JS-created
+// <link> this static pass can't see, and inlining the full token CSS + fonts
+// into every one of ~60 cards both bloats each past the persistence limit and
+// duplicates ~1MB of fonts N times. Instead the tokens are reconstructed from
+// the template's palette + fontAssets and injected into each card's iframe at
+// render time (see DeckTemplateInspector), which also repairs templates saved
+// before this fix without a reimport.
 async function inlineCardHtml(html, cardPath, ctx) {
   const dir = cardPath.includes('/') ? cardPath.slice(0, cardPath.lastIndexOf('/') + 1) : ''
-  const resolve = (ref) => {
-    let p = ref.replace(/^\.\//, '')
-    let d = dir
-    while (p.startsWith('../')) {
-      p = p.slice(3)
-      d = d.replace(/[^/]+\/$/, '')
-    }
-    return d + p
-  }
+  const resolve = (ref) => resolveRelative(dir, ref)
 
   let out = html
   // stylesheet links → inline <style>
   out = await replaceAsync(out, /<link[^>]+rel=["']stylesheet["'][^>]*>/gi, async (tag) => {
     const href = /href=["']([^"']+)["']/.exec(tag)?.[1]
     if (!href || /^https?:/.test(href)) return ''
-    const css = ctx.cssByPath.get(resolve(href)) ?? (await ctx.readText(resolve(href)))
+    const resolved = resolve(href)
+    const css = ctx.cssByPath.get(resolved) ?? (await ctx.readText(resolved))
     return css != null ? `<style>${css}</style>` : ''
   })
   // scripts → inline. The HTML parser ends a <script> at the first literal
@@ -286,15 +352,27 @@ async function inlineCardHtml(html, cardPath, ctx) {
     const js = await ctx.readText(resolve(src))
     return js != null ? `<script>${js.replace(/<\/script/gi, '<\\/script')}</script>` : ''
   })
-  // img/src + inline url(...) asset references → data URLs
+  // img/src + inline url(...) asset references → data URLs. Heavy rasters are
+  // downscaled to a screen-res JPEG (cardImageDataUrl) so a specimen embedding
+  // several product screenshots doesn't blow the per-card ceiling; the result
+  // is memoized per path, so the same asset referenced N times inlines once.
   out = await replaceAsync(out, /(src|href)=["']([^"']+\.(?:svg|png|jpe?g|gif|webp))["']/gi, async (m, attr, ref) => {
     if (/^(https?:|data:)/.test(ref)) return m
-    const url = await ctx.readDataUrl(resolve(ref))
+    const url = await ctx.cardImageDataUrl(resolve(ref))
     return url ? `${attr}="${url}"` : m
   })
+  // CSS url() refs are almost always full-bleed backgrounds (cover/section/
+  // industry photos that fill the slide), so inline them at the higher-quality
+  // background tier — a soft, over-compressed cover on the large featured
+  // canvas is exactly the "pixelated → discredits the preview" failure.
   out = await replaceAsync(out, /url\((['"]?)([^'")]+\.(?:svg|png|jpe?g|gif|webp|ttf|otf|woff2?))\1\)/gi, async (m, q, ref) => {
     if (/^(https?:|data:)/.test(ref)) return m
-    const url = await ctx.readDataUrl(resolve(ref))
+    // Fonts must never touch the raster downscaler — embed the bytes verbatim.
+    if (/\.(?:ttf|otf|woff2?)$/i.test(ref)) {
+      const font = await ctx.readDataUrl(resolve(ref))
+      return font ? `url(${font})` : m
+    }
+    const url = await ctx.cardImageDataUrl(resolve(ref), { background: true })
     return url ? `url(${url})` : m
   })
   return out
@@ -439,6 +517,14 @@ export async function importDesignSystemBundle(entries, { onProgress, downscaleI
   if (colorLogo) logoLightDataUrl = (await readDataUrl(colorLogo)) || ''
   if (!logoDataUrl) logoDataUrl = logoLightDataUrl
 
+  // PASS 1 — classify every asset and group by product family, keeping the
+  // best-scored variant PER TONE (light + dark) per family. This replaces the
+  // old fixed-suffix filter that dropped whole products which never shipped the
+  // "expected" variant (the report showed 300+ files lost). We keep the dark
+  // variant too, because covers/dividers on a dark plate need the white/inverse
+  // lockup — but still collapse the 4-6 redundant color/container files to one
+  // canonical per tone, so the library stays clean.
+  const families = new Map() // familyKey → { light?: {…}, dark?: {…} }
   for (const path of assetPaths) {
     const file = path.split('/').pop()
     if (path === whiteLogo || path === colorLogo) continue
@@ -447,10 +533,31 @@ export async function importDesignSystemBundle(entries, { onProgress, downscaleI
       report.skippedAssets.push({ path, reason: 'extensão não suportada' })
       continue
     }
-    if (!isPrimaryVariant(file, kind)) {
-      report.skippedAssets.push({ path, reason: 'variante secundária (-alt/-container/-white)' })
-      continue
+    // illustrations/backgrounds/images are content, not logo variants — each
+    // file is its own family (keep them all, up to the per-kind cap)
+    const grouped = kind === 'icon' || kind === 'lockup'
+    const key = grouped ? familyKey(file, kind) : `${kind}:${file.toLowerCase()}`
+    const tone = grouped && isDarkVariant(file) ? 'dark' : 'light'
+    const score = variantScore(file)
+    const fam = families.get(key) || {}
+    const cur = fam[tone]
+    if (!cur || score > cur.score) {
+      if (cur) report.skippedAssets.push({ path: cur.path, reason: `variante redundante de "${key.split(':')[1]}" (${tone}) — mantida a melhor` })
+      fam[tone] = { path, file, kind, score, tone }
+      families.set(key, fam)
+    } else {
+      report.skippedAssets.push({ path, reason: `variante redundante de "${key.split(':')[1]}" (${tone}) — mantida a melhor` })
     }
+  }
+
+  // PASS 2 — materialize the chosen canonical assets (data URLs, downscaling,
+  // caps). Emit in a stable order (grouped by kind) for a tidy library. A dark
+  // variant carries tone:'dark' so the renderer can pick it on dark plates.
+  const KIND_ORDER = { icon: 0, lockup: 1, illustration: 2, background: 3, image: 4 }
+  const chosen = [...families.values()]
+    .flatMap((fam) => [fam.light, fam.dark].filter(Boolean))
+    .sort((a, b) => (KIND_ORDER[a.kind] - KIND_ORDER[b.kind]) || a.file.localeCompare(b.file))
+  for (const { path, file, kind, tone } of chosen) {
     if (counts[kind] >= ASSET_CAPS[kind]) {
       report.skippedAssets.push({ path, reason: `acima do limite de ${ASSET_CAPS[kind]} por tipo (${kind})` })
       continue
@@ -469,17 +576,42 @@ export async function importDesignSystemBundle(entries, { onProgress, downscaleI
     // 'image' is the catch-all for names no regex recognized — surface these
     // by name so a misnamed icon/background is one glance away from the fix
     if (kind === 'image') report.catchAllImages.push(file)
-    iconAssets.push({ id: nextId(kind), kind, label: labelFor(file, kind), dataUrl: url, sourcePath: path })
+    iconAssets.push({
+      id: nextId(kind), kind, label: labelFor(file, kind), dataUrl: url, sourcePath: path,
+      ...(tone === 'dark' ? { tone: 'dark' } : {}),
+    })
   }
 
   // specimen cards (viewer): manifest groups + templates
   progress('Preparando cartões do design system…')
-  const ctx = { cssByPath, readText, readDataUrl }
+  // card-scoped image resolver: downscales heavy rasters to a screen-res JPEG
+  // (SVGs pass through untouched) and memoizes by path, so a 447KB PNG shared
+  // by several cards is decoded/inlined once. Falls back to the raw data-URL
+  // when no downscaler is available (Node QA) or the image can't be decoded.
+  const cardImgCache = new Map()
+  // `background` refs (full-bleed CSS url() covers/industry photos) fill the
+  // large featured canvas, so they get a higher width/quality ceiling than
+  // incidental <img> screenshots — a 900px/0.8 cover reads as pixelated blown
+  // up on the stage. Cache is keyed by path + tier so the same asset used both
+  // ways keeps each rendition.
+  const cardImageDataUrl = async (p, { background = false } = {}) => {
+    const key = background ? `bg:${p}` : p
+    if (cardImgCache.has(key)) return cardImgCache.get(key)
+    let url = await readDataUrl(p)
+    const maxW = background ? CARD_BG_MAX_W : CARD_IMG_MAX_W
+    const quality = background ? CARD_BG_QUALITY : 0.8
+    if (url && downscaleImage && !url.startsWith('data:image/svg') && url.length > CARD_IMG_DOWNSCALE_OVER) {
+      url = (await downscaleImage(url, maxW, quality)) || url
+    }
+    cardImgCache.set(key, url)
+    return url
+  }
+  const ctx = { cssByPath, readText, readDataUrl, cardImageDataUrl }
   const dsCards = []
   let cardsBudget = CARDS_TOTAL_BUDGET
   const pushCard = async (group, title, path, description = '') => {
     if (cardsBudget <= 0) {
-      report.cardsSkipped.push({ path, reason: 'orçamento total de cartões esgotado (9MB)' })
+      report.cardsSkipped.push({ path, reason: `orçamento total de cartões esgotado (${Math.round(CARDS_TOTAL_BUDGET / 1e6)}MB)` })
       return
     }
     const raw = await readText(path)
@@ -495,7 +627,7 @@ export async function importDesignSystemBundle(entries, { onProgress, downscaleI
       return
     }
     if (html.length > CARD_MAX_HTML || html.length > cardsBudget) {
-      report.cardsSkipped.push({ path, reason: 'cartão acima de 600KB (após inline dos assets)' })
+      report.cardsSkipped.push({ path, reason: `cartão acima de ${(CARD_MAX_HTML / 1e6).toFixed(1)}MB (após inline dos assets)` })
       return
     }
     cardsBudget -= html.length

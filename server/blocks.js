@@ -356,10 +356,13 @@ const SPREADSHEET_POLICY =
   'de linhas da própria tabela (ex.: uma linha "Total"), prefira SUM sobre uma coluna inteira via ' +
   'token OU garanta que só há UMA tabela e conte as linhas com cuidado; na dúvida, use tokens. Cada ' +
   'linha de dados de uma tabela é contígua (sem linhas em branco automáticas entre elas).\n' +
-  'PREFIRA FUNÇÕES CLÁSSICAS E ROBUSTAS (SUM, SUMIF, SUMIFS, IF, ROUND, COUNTIF, AVERAGE, MIN, MAX, ' +
-  'INDEX/MATCH). EVITE funções de matriz dinâmica (XLOOKUP, FILTER, SORT, UNIQUE, SEQUENCE) e ' +
-  'funções muito recentes — resolva o mesmo com INDEX/MATCH ou já deixe os dados prontos. Isso ' +
-  'garante compatibilidade ampla e que o preview do app mostre o valor calculado.\n\n' +
+  'PREFIRA FUNÇÕES CLÁSSICAS E ROBUSTAS (SUM, SUMIF, SUMIFS, IF, ROUND, COUNTIF, COUNTIFS, AVERAGE, ' +
+  'MIN, MAX, INDEX/MATCH, VLOOKUP, HLOOKUP). EVITE funções de matriz dinâmica (XLOOKUP, FILTER, SORT, ' +
+  'UNIQUE, SEQUENCE) e funções muito recentes — resolva o mesmo com INDEX/MATCH ou já deixe os dados ' +
+  'prontos. Isso garante compatibilidade ampla (Excel, Google Sheets, LibreOffice) e que o preview do ' +
+  'app mostre o valor calculado. Para buscar um valor em OUTRA aba (ex.: a % de sazonalidade do mês), ' +
+  'prefira INDEX([Aba!ColunaValor], MATCH([@Chave], [Aba!ColunaChave], 0)) — é o padrão que o preview ' +
+  'resolve com mais confiabilidade.\n\n' +
 
   '=== GRÁFICOS NATIVOS (opcional, por aba) ===\n' +
   '"charts":[{"kind":"bar|line|area|pie","title":"...","tableBlock":IDX,"categoryColumn":C,' +
@@ -624,7 +627,23 @@ function templateComposition(template) {
     '\n\nCOMPLETUDE — cada slide freeform tem que sair CHEIO de conteúdo real (títulos, corpo, ' +
     'cards, diagramas, números com fonte). Um slide com só um título ou só uma placa vazia é uma ' +
     'falha. Se um elemento (ex.: um chart) não tem dados completos, substitua-o por text/shape ' +
-    'com o que você tem — nunca deixe um group/região sem conteúdo.'
+    'com o que você tem — nunca deixe um group/região sem conteúdo.' +
+    '\n\nDENSIDADE (calibre de deck profissional) — abaixo do título, a área de conteúdo (≈ y 1.5 ' +
+    'a 5.0, largura útil ~8.75in) deve ser preenchida com uma COMPOSIÇÃO estruturada, não um bloco ' +
+    'de texto solto. Prefira, conforme o conteúdo:\n' +
+    '  • grade de 2–4 cards (group+stack) cada um com ícone (icon do tema) + rótulo curto (heading) ' +
+    '+ 1 linha de apoio (body) — para benefícios, pilares, capacidades;\n' +
+    '  • faixa de 2–4 métricas grandes (número em fonte heading ~34–44pt + legenda pequena por ' +
+    'baixo) — para resultados/KPIs;\n' +
+    '  • diagrama multi-coluna (2–4 colunas de nodes em stack, com uma coluna central enfatizada e ' +
+    'setas/linhas ligando) — para arquiteturas e fluxos;\n' +
+    '  • matriz de comparação (linhas × colunas com cabeçalho destacado) — para "antes/depois", ' +
+    '"nós vs. eles", trade-offs.\n' +
+    'Distribua os blocos pela largura toda (não empilhe tudo numa coluna estreita à esquerda), ' +
+    'mantenha gaps/paddings consistentes entre os cards (auto-layout do stack) e alinhe as bordas. ' +
+    'Um callout curto (kicker + frase) ancorado num canto fecha a composição. Cada slide de ' +
+    'conteúdo deve ter tipicamente 6–14 elementos reais — poucos elementos num slide vazio é o ' +
+    'sintoma de output pobre que queremos evitar.'
   )
 }
 
@@ -1789,6 +1808,26 @@ function emptyGroupsIn(elements) {
   return bad
 }
 
+// Count content-bearing painted primitives on a freeform slide (text with
+// text, image, chart, icon, heatmap/gantt) — the density signal used to flag
+// sparse content slides (Fase 4). Purely structural; failures count as 0.
+function freeformContentCount(slide, template = null) {
+  if (!slide || slide.layout !== 'freeform') return 0
+  let theme
+  try {
+    theme = resolveDeckTheme(template || {})
+  } catch {
+    theme = null
+  }
+  let flat
+  try {
+    flat = flattenElements(slide.elements || [], theme || {}, {})
+  } catch {
+    return 0
+  }
+  return flat.filter((el) => CONTENT_PRIMITIVE.has(el.type) && (el.type !== 'text' || String(el.text ?? '').trim())).length
+}
+
 // Cheap deterministic post-generation checks (gap analysis §1.7/§5.3) — they
 // flag, never block: visibility into whether prompt/renderer changes are
 // actually reducing the recurring quality symptoms over time.
@@ -1830,6 +1869,16 @@ export function deckQualityWarnings(deck) {
       const emptyGroups = emptyGroupsIn(s.elements)
       if (emptyGroups.length) warnings.push(`${label}: grupo(s) vazio(s) sem conteúdo: ${emptyGroups.join(', ')}`)
       if (freeformSlideIsMateriallyEmpty(s)) warnings.push(`${label}: slide freeform sem conteúdo material (renderiza em branco)`)
+      // sparse-content density (Fase 4): a CONTENT slide (no cover/section
+      // plate → not a divider) with very few painted primitives is the "pobre"
+      // symptom. Flag ≤3 as thin; dividers are legitimately minimal, so skip
+      // slides carrying a plate.
+      if (!s.background?.plate) {
+        const contentCount = freeformContentCount(s)
+        if (contentCount > 0 && contentCount <= 3) {
+          warnings.push(`${label}: freeform com apenas ${contentCount} elemento(s) de conteúdo — slide raso, componha uma grade/diagrama denso`)
+        }
+      }
       const hexes = JSON.stringify(s.elements || []).match(/"#[0-9A-F]{6}"/g)?.length || 0
       if (hexes > 4) warnings.push(`${label}: freeform com ${hexes} cores hex literais — deveria usar tokens @tema`)
     }

@@ -116,7 +116,10 @@ function makeEvaluator(model) {
     return v
   }
 
-  // expand a range ref ("E:E", "B2:B10", "'Aba'!E:E") to an array of raw values
+  // expand a range ref ("E:E", "B2:B10", "'Aba'!E:E") to a FLAT array of raw
+  // values (column-major). Carries non-enumerable shape metadata (__grid rows,
+  // __r1/__c1 origins, __sheet) so 2D lookups (INDEX/VLOOKUP/HLOOKUP/MATCH) can
+  // reconstruct rows/columns without changing the flat contract SUM/etc. rely on.
   function rangeValues(ref) {
     let sheetName = model.defaultSheet
     let a = ref.replace(/\$/g, '')
@@ -131,12 +134,24 @@ function makeEvaluator(model) {
     const c1 = colIndex(m1[1]), c2 = colIndex(m2[1])
     const r1 = m1[2] ? Number(m1[2]) : 1
     const r2 = m2[2] ? Number(m2[2]) : sheet.maxRow
+    const lo = { r: Math.min(r1, r2), c: Math.min(c1, c2) }
+    const hi = { r: Math.max(r1, r2), c: Math.max(c1, c2) }
     const out = []
-    for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
-      for (let rr = Math.min(r1, r2); rr <= Math.max(r1, r2); rr++) {
-        out.push(cellRaw(`'${sheetName}'!${colLetter(c)}${rr}`))
-      }
+    const grid = [] // grid[rowIdx][colIdx] — row-major, for 2D lookups
+    for (let rr = lo.r; rr <= hi.r; rr++) {
+      const row = []
+      for (let c = lo.c; c <= hi.c; c++) row.push(cellRaw(`'${sheetName}'!${colLetter(c)}${rr}`))
+      grid.push(row)
     }
+    // flat array is column-major (what SUM/AVERAGE/SUMIFS already expect)
+    for (let c = lo.c; c <= hi.c; c++) {
+      for (let rr = lo.r; rr <= hi.r; rr++) out.push(cellRaw(`'${sheetName}'!${colLetter(c)}${rr}`))
+    }
+    Object.defineProperties(out, {
+      __grid: { value: grid, enumerable: false },
+      __rows: { value: hi.r - lo.r + 1, enumerable: false },
+      __cols: { value: hi.c - lo.c + 1, enumerable: false },
+    })
     return out
   }
 
@@ -219,6 +234,85 @@ function makeEvaluator(model) {
           if (all) s++
         }
         return s
+      }
+      // ---- lookups (LibreOffice/Excel/Sheets all support these; NOT dynamic-
+      // array). The generator prefers INDEX/MATCH; add VLOOKUP/HLOOKUP too since
+      // a model may emit them. Without these the preview left cross-sheet lookup
+      // cells blank → dependent cells showed 0 (the bug), though the exported
+      // .xlsx computed fine. Approximate-match args default to exact (false),
+      // which is what these financial models use.
+      case 'MATCH': {
+        // MATCH(lookup, range, [type]) → 1-based position; type 0 = exact
+        const lookup = args[0]
+        const range = Array.isArray(args[1]) ? args[1] : [args[1]]
+        const type = args[2] == null ? 1 : num(args[2])
+        if (type === 0) {
+          for (let i = 0; i < range.length; i++) if (matches(range[i], lookup)) return i + 1
+          return ''
+        }
+        // type 1 (default): largest value ≤ lookup, assuming ascending
+        let best = ''
+        for (let i = 0; i < range.length; i++) {
+          const v = num(range[i])
+          if (v <= num(lookup)) best = i + 1
+          else if (type === 1) break
+        }
+        return best
+      }
+      case 'INDEX': {
+        // INDEX(range, rowNum, [colNum]) — 1-based; rowNum 0 with a single
+        // column returns that column. Uses the 2D grid metadata.
+        const range = args[0]
+        const grid = Array.isArray(range) ? range.__grid : null
+        if (!grid) return ''
+        const rows = grid.length
+        const cols = grid[0]?.length || 0
+        const rn = num(args[1])
+        const cn = args[2] != null ? num(args[2]) : (cols === 1 ? 1 : 0)
+        // single row/column vectors let the other index be omitted
+        if (rows === 1 && args[2] == null) { const v = grid[0][rn - 1]; return v == null ? '' : v }
+        if (cols === 1 && (args[2] == null || cn === 1)) { const row = grid[rn - 1]; return row ? (row[0] ?? '') : '' }
+        const row = grid[rn - 1]
+        if (!row) return ''
+        const v = row[cn - 1]
+        return v == null ? '' : v
+      }
+      case 'VLOOKUP': {
+        // VLOOKUP(lookup, table, colIndex, [approx]) — colIndex 1-based within table
+        const lookup = args[0]
+        const table = args[1]
+        const grid = Array.isArray(table) ? table.__grid : null
+        if (!grid) return ''
+        const colIdx = num(args[2])
+        const approx = args[3] === true || (typeof args[3] === 'number' && args[3] !== 0)
+        let hit = -1
+        if (!approx) {
+          for (let i = 0; i < grid.length; i++) if (matches(grid[i][0], lookup)) { hit = i; break }
+        } else {
+          for (let i = 0; i < grid.length; i++) { if (num(grid[i][0]) <= num(lookup)) hit = i; else break }
+        }
+        if (hit < 0) return ''
+        const v = grid[hit][colIdx - 1]
+        return v == null ? '' : v
+      }
+      case 'HLOOKUP': {
+        // HLOOKUP(lookup, table, rowIndex, [approx]) — rowIndex 1-based within table
+        const lookup = args[0]
+        const table = args[1]
+        const grid = Array.isArray(table) ? table.__grid : null
+        if (!grid || !grid.length) return ''
+        const rowIdx = num(args[2])
+        const approx = args[3] === true || (typeof args[3] === 'number' && args[3] !== 0)
+        const header = grid[0]
+        let hit = -1
+        if (!approx) {
+          for (let j = 0; j < header.length; j++) if (matches(header[j], lookup)) { hit = j; break }
+        } else {
+          for (let j = 0; j < header.length; j++) { if (num(header[j]) <= num(lookup)) hit = j; else break }
+        }
+        if (hit < 0) return ''
+        const row = grid[rowIdx - 1]
+        return row ? (row[hit] ?? '') : ''
       }
       default: return ''
     }
