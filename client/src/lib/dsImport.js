@@ -289,36 +289,56 @@ function labelFor(file, kind) {
 // inlines a handful of downscaled PNGs — the old 600KB cap silently dropped
 // exactly those richest cards (2 of 4 templates, the lakehouse/arch slides).
 // Heavy rasters are downscaled inline (see inlineCardHtml) so this rarely bites.
+// Matches the server's per-card persistence cap (see validateTemplatePayload).
+// Tokens/fonts are NOT baked per-card — they're reconstructed from the
+// template's palette + fontAssets and injected into each iframe at render time
+// (see DeckTemplateInspector), so a card is just its own markup + inlined art.
 const CARD_MAX_HTML = 2_600_000
 const CARDS_TOTAL_BUDGET = 24_000_000
 // raster (png/jpg) refs inside a card larger than this get downscaled to a
 // screen-resolution JPEG before inlining — a specimen preview never needs a
-// full-res product screenshot, and one 447KB PNG referenced 3× was ~2MB alone
+// full-res product screenshot, and one 447KB PNG referenced 3× was ~2MB alone.
+// Template/slide backgrounds render on the large featured canvas, so they get a
+// higher width/quality ceiling than incidental product screenshots (the design
+// system has to look crisp — a pixelated cover discredits the whole preview).
 const CARD_IMG_DOWNSCALE_OVER = 60_000
 const CARD_IMG_MAX_W = 900
+const CARD_BG_MAX_W = 1600
+const CARD_BG_QUALITY = 0.9
 
-// Rewrites a specimen card into a fully self-contained document: the tokens
-// CSS is inlined (with @font-face srcs swapped to data-URL fonts and remote
-// @imports dropped — iframes must not depend on network/CSP), relative asset
-// and script references become data URLs / inline scripts.
+// Resolves a relative asset reference (./foo, ../bar) against a directory,
+// walking `../` up the path. Shared by the card HTML and CSS inliners.
+function resolveRelative(dir, ref) {
+  let p = ref.replace(/^\.\//, '')
+  let d = dir
+  while (p.startsWith('../')) {
+    p = p.slice(3)
+    d = d.replace(/[^/]+\/$/, '')
+  }
+  return d + p
+}
+
+// Rewrites a specimen card into a fully self-contained document: static
+// stylesheet links are inlined, scripts are inlined, and relative asset
+// references become data URLs. The design TOKENS are NOT baked in here — some
+// cards (templates, via ds-base.js) load them at runtime through a JS-created
+// <link> this static pass can't see, and inlining the full token CSS + fonts
+// into every one of ~60 cards both bloats each past the persistence limit and
+// duplicates ~1MB of fonts N times. Instead the tokens are reconstructed from
+// the template's palette + fontAssets and injected into each card's iframe at
+// render time (see DeckTemplateInspector), which also repairs templates saved
+// before this fix without a reimport.
 async function inlineCardHtml(html, cardPath, ctx) {
   const dir = cardPath.includes('/') ? cardPath.slice(0, cardPath.lastIndexOf('/') + 1) : ''
-  const resolve = (ref) => {
-    let p = ref.replace(/^\.\//, '')
-    let d = dir
-    while (p.startsWith('../')) {
-      p = p.slice(3)
-      d = d.replace(/[^/]+\/$/, '')
-    }
-    return d + p
-  }
+  const resolve = (ref) => resolveRelative(dir, ref)
 
   let out = html
   // stylesheet links → inline <style>
   out = await replaceAsync(out, /<link[^>]+rel=["']stylesheet["'][^>]*>/gi, async (tag) => {
     const href = /href=["']([^"']+)["']/.exec(tag)?.[1]
     if (!href || /^https?:/.test(href)) return ''
-    const css = ctx.cssByPath.get(resolve(href)) ?? (await ctx.readText(resolve(href)))
+    const resolved = resolve(href)
+    const css = ctx.cssByPath.get(resolved) ?? (await ctx.readText(resolved))
     return css != null ? `<style>${css}</style>` : ''
   })
   // scripts → inline. The HTML parser ends a <script> at the first literal
@@ -341,9 +361,18 @@ async function inlineCardHtml(html, cardPath, ctx) {
     const url = await ctx.cardImageDataUrl(resolve(ref))
     return url ? `${attr}="${url}"` : m
   })
+  // CSS url() refs are almost always full-bleed backgrounds (cover/section/
+  // industry photos that fill the slide), so inline them at the higher-quality
+  // background tier — a soft, over-compressed cover on the large featured
+  // canvas is exactly the "pixelated → discredits the preview" failure.
   out = await replaceAsync(out, /url\((['"]?)([^'")]+\.(?:svg|png|jpe?g|gif|webp|ttf|otf|woff2?))\1\)/gi, async (m, q, ref) => {
     if (/^(https?:|data:)/.test(ref)) return m
-    const url = await ctx.cardImageDataUrl(resolve(ref))
+    // Fonts must never touch the raster downscaler — embed the bytes verbatim.
+    if (/\.(?:ttf|otf|woff2?)$/i.test(ref)) {
+      const font = await ctx.readDataUrl(resolve(ref))
+      return font ? `url(${font})` : m
+    }
+    const url = await ctx.cardImageDataUrl(resolve(ref), { background: true })
     return url ? `url(${url})` : m
   })
   return out
@@ -560,13 +589,21 @@ export async function importDesignSystemBundle(entries, { onProgress, downscaleI
   // by several cards is decoded/inlined once. Falls back to the raw data-URL
   // when no downscaler is available (Node QA) or the image can't be decoded.
   const cardImgCache = new Map()
-  const cardImageDataUrl = async (p) => {
-    if (cardImgCache.has(p)) return cardImgCache.get(p)
+  // `background` refs (full-bleed CSS url() covers/industry photos) fill the
+  // large featured canvas, so they get a higher width/quality ceiling than
+  // incidental <img> screenshots — a 900px/0.8 cover reads as pixelated blown
+  // up on the stage. Cache is keyed by path + tier so the same asset used both
+  // ways keeps each rendition.
+  const cardImageDataUrl = async (p, { background = false } = {}) => {
+    const key = background ? `bg:${p}` : p
+    if (cardImgCache.has(key)) return cardImgCache.get(key)
     let url = await readDataUrl(p)
+    const maxW = background ? CARD_BG_MAX_W : CARD_IMG_MAX_W
+    const quality = background ? CARD_BG_QUALITY : 0.8
     if (url && downscaleImage && !url.startsWith('data:image/svg') && url.length > CARD_IMG_DOWNSCALE_OVER) {
-      url = (await downscaleImage(url, CARD_IMG_MAX_W, 0.8)) || url
+      url = (await downscaleImage(url, maxW, quality)) || url
     }
-    cardImgCache.set(p, url)
+    cardImgCache.set(key, url)
     return url
   }
   const ctx = { cssByPath, readText, readDataUrl, cardImageDataUrl }

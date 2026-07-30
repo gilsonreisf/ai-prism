@@ -1576,10 +1576,15 @@ function validateTemplatePayload(t) {
     if (!ok) bad.push('fontAssets')
   }
   if (t.dsCards !== undefined) {
+    // Per-card ceiling matches the importer's CARD_MAX_HTML (dsImport.js): rich
+    // template/slide specimens legitimately inline several downscaled rasters
+    // (Reference Architecture ~2.1MB), so a 700KB cap here silently 400'd the
+    // very cards the flagship bundle exists to show. The 24MB body limit
+    // (express.json) and 120-card count still bound the total payload.
     const ok =
       Array.isArray(t.dsCards) &&
       t.dsCards.length <= 120 &&
-      t.dsCards.every((c) => c && typeof c.html === 'string' && c.html.length <= 700_000)
+      t.dsCards.every((c) => c && typeof c.html === 'string' && c.html.length <= 2_600_000)
     if (!ok) bad.push('dsCards')
   }
   return bad
