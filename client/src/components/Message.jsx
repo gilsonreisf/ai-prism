@@ -34,6 +34,33 @@ function sniffFenceKind(fenceText) {
   return m ? m[1] : null
 }
 
+// Finds the end of the JSON object that starts at/after `from` by counting
+// braces (respecting string literals + escapes), so a ``` inside the block's
+// JSON (fenced code in a document's markdown) doesn't end the scan early — the
+// same reason the server scans by balance. Returns the index just past the
+// closing `}`, or -1 if the object isn't complete yet (still streaming).
+function jsonObjectEnd(s, from) {
+  let i = from
+  while (i < s.length && s[i] !== '{') i++
+  if (i >= s.length) return -1
+  let depth = 0
+  let inStr = false
+  let escaped = false
+  for (; i < s.length; i++) {
+    const ch = s[i]
+    if (inStr) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') inStr = true
+    else if (ch === '{') depth++
+    else if (ch === '}' && --depth === 0) return i + 1
+  }
+  return -1
+}
+
 function pushProse(segments, s, streaming) {
   if (!streaming) {
     if (s.trim()) segments.push({ kind: 'md', text: s })
@@ -49,11 +76,14 @@ function pushProse(segments, s, streaming) {
     }
     const before = s.slice(i, start)
     if (before.trim()) segments.push({ kind: 'md', text: before })
-    const end = s.indexOf('```', start + FENCE_START.length)
-    const fenceText = s.slice(start, end === -1 ? undefined : end)
+    // Locate the JSON object's real end by brace balance (``` -agnostic).
+    const jsonEnd = jsonObjectEnd(s, start + FENCE_START.length)
+    const fenceText = s.slice(start, jsonEnd === -1 ? undefined : jsonEnd)
     segments.push({ kind: 'loading', blockType: sniffFenceKind(fenceText) })
-    if (end === -1) break // fence still open — model is still typing it
-    i = end + 3
+    if (jsonEnd === -1) break // JSON not closed yet — model is still typing it
+    // skip past the JSON and an optional closing ``` fence
+    const tail = s.slice(jsonEnd).match(/^[ \t]*\r?\n?```/)
+    i = jsonEnd + (tail ? tail[0].length : 0)
   }
 }
 
