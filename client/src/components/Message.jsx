@@ -9,6 +9,7 @@ import LoadingChip from './blocks/LoadingChip.jsx'
 import { exportMessageToPdf } from '../pdfExport.js'
 import { useT, useI18n } from '../lib/i18n.jsx'
 import { shortMessageDate } from '../lib/date.js'
+import CostBadge, { fmtCost, estimateCost } from './CostBadge.jsx'
 
 const MARKER = '\n\n--- ANEXOS ---'
 const FENCE_START = '```prism-block'
@@ -144,6 +145,43 @@ function ThinkingIndicator({ compact = false, hint }) {
   )
 }
 
+// Collapsible view of the model's native reasoning/thinking tokens. While the
+// model is still reasoning (no answer prose yet) it stays open so the user sees
+// the chain of thought live; once the answer starts streaming it auto-collapses
+// to a single line (reopenable). Reasoning is never persisted, so this only
+// appears on the message currently streaming.
+function ReasoningTrace({ text, hasAnswer }) {
+  const t = useT()
+  const [manual, setManual] = useState(null) // null = follow auto; true/false = user override
+  const open = manual == null ? !hasAnswer : manual
+  const bodyRef = useRef(null)
+  // keep the newest reasoning in view while it streams and stays open
+  useEffect(() => {
+    if (open && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight
+  }, [text, open])
+  if (!text) return null
+  return (
+    <div className="mb-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/50 overflow-hidden">
+      <button
+        onClick={() => setManual(!open)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--text)]"
+      >
+        <Icon.Sparkle size={12} className={hasAnswer ? '' : 'animate-pulse text-[var(--accent)]'} />
+        <span className="font-medium">{hasAnswer ? t('reasoning.done') : t('reasoning.thinking')}</span>
+        <Icon.ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div
+          ref={bodyRef}
+          className="px-3 pb-2 max-h-48 overflow-y-auto text-xs leading-relaxed text-[var(--muted)] whitespace-pre-wrap"
+        >
+          {text}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ToolCallChip({ tc }) {
   const t = useT()
   const [open, setOpen] = useState(false)
@@ -265,11 +303,6 @@ function ToolCallChip({ tc }) {
   )
 }
 
-function fmtCost(c) {
-  if (c < 0.01) return '<$0.01'
-  return '$' + c.toFixed(c < 1 ? 3 : 2)
-}
-
 function CopyBtn({ text, label }) {
   const t = useT()
   const [done, setDone] = useState(false)
@@ -381,12 +414,9 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
   const meta = models.find((m) => m.id === msg.model)
   const pt = msg.prompt_tokens
   const ct = msg.completion_tokens
-  let cost = null
   // only estimate when the model actually has list prices — an uncurated,
   // unpriced endpoint has meta.in/out undefined, which would render "$NaN".
-  if (meta && (pt || ct) && Number.isFinite(meta.in) && Number.isFinite(meta.out)) {
-    cost = ((pt || 0) / 1e6) * meta.in + ((ct || 0) / 1e6) * meta.out
-  }
+  const cost = estimateCost({ prompt_tokens: pt, completion_tokens: ct }, meta)
 
   if (isUser) {
     const commitEdit = () => {
@@ -521,6 +551,11 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
               ))}
             </div>
           )}
+          {/* Native reasoning trace — only while streaming (reasoning isn't
+              persisted). Auto-collapses once the answer prose starts. */}
+          {streaming && msg.reasoning && (
+            <ReasoningTrace text={msg.reasoning} hasAnswer={segments.some((s) => s.kind === 'md')} />
+          )}
           <div className="prose-chat">
             {segments.length ? (
               segments.map((seg, i) => {
@@ -536,7 +571,7 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
                     </Markdown>
                   )
                 }
-                if (seg.kind === 'block') return <BlockRenderer key={i} blocks={[seg.block]} msgId={msg.id} onOpenDeck={onOpenDeck} onOpenSpreadsheet={onOpenSpreadsheet} onOpenDocument={onOpenDocument} isLatest={isLatest} onSubmitAnswers={onSubmitAnswers} />
+                if (seg.kind === 'block') return <BlockRenderer key={i} blocks={[seg.block]} msgId={msg.id} models={models} onOpenDeck={onOpenDeck} onOpenSpreadsheet={onOpenSpreadsheet} onOpenDocument={onOpenDocument} isLatest={isLatest} onSubmitAnswers={onSubmitAnswers} />
                 if (seg.kind === 'toolcall') return <ToolCallChip key={i} tc={seg.tc} />
                 if (seg.kind === 'loading') return <LoadingChip key={i} blockType={seg.blockType} />
                 return null
@@ -641,6 +676,12 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
               {t('message.mediaProcessedBy', {
                 model: models.find((m) => m.id === msg.media_processing.model)?.label || 'Gemini',
               })}
+              {msg.media_processing.usage && (
+                <>
+                  {' · '}
+                  <CostBadge usage={msg.media_processing.usage} model={msg.media_processing.model} models={models} />
+                </>
+              )}
             </span>
           )}
           </div>

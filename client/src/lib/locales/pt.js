@@ -94,7 +94,7 @@ export default {
   'settings.tab.personal': 'Preferências',
   'settings.tab.tone': 'Tom & prompt',
   'settings.tab.skills': 'Skills',
-  'settings.tab.templates': 'Modelos de apresentação',
+  'settings.tab.templates': 'Design system',
   'settings.tab.mcp': 'Conexões MCP',
   'settings.tab.models': 'Modelos (LLM)',
   'settings.tab.tools': 'Ferramentas',
@@ -230,6 +230,8 @@ export default {
 
   // message / tool trace
   'message.thinking': 'Pensando…',
+  'reasoning.thinking': 'Raciocinando…',
+  'reasoning.done': 'Raciocínio',
   'message.question': 'Pergunta',
   'message.error': 'Erro',
   'message.result': 'Resultado',
@@ -469,8 +471,8 @@ export default {
   'templates.previewBullet1': 'Primeiro ponto',
   'templates.previewBullet2': 'Segundo ponto',
   'templates.copySuffix': '(cópia)',
-  'templates.heading': 'Modelos de apresentação',
-  'templates.intro': 'Design systems para os decks (.pptx) que a IA cria a partir das suas conversas — o modelo selecionado aplica automaticamente cores (HEX), fontes, logo, ícones, fotos e diagramas. Importe quantos arquivos quiser (.pptx da marca, logos e ícones avulsos): tudo é opcional, mas quanto mais completo o design system, maior a aderência do resultado.',
+  'templates.heading': 'Design system',
+  'templates.intro': 'Cores, fontes, logo, ícones e regras da marca aplicados aos slides, planilhas e apps que a IA cria a partir das suas conversas — o design system selecionado é aplicado automaticamente ao resultado. Importe quantos arquivos quiser (.pptx da marca, logos e ícones avulsos): tudo é opcional, mas quanto mais completo o design system, maior a aderência do resultado.',
   'templates.untitled': 'Sem título',
   'templates.unnamed': 'Sem nome',
   'templates.orgDefault': 'Padrão da organização',

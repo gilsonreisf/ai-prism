@@ -3,6 +3,7 @@ import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import * as Icon from './Icons.jsx'
 import { useT } from '../lib/i18n.jsx'
+import CostBadge from './CostBadge.jsx'
 import { getJSON, postJSON, patchJSON } from '../api.js'
 
 // Full-screen studio for a generated `document` — the prose sibling of Deck/
@@ -30,7 +31,7 @@ function TweakOverlay({ instruction }) {
   )
 }
 
-export default function DocumentStudio({ open, documentId, onClose, pushToast, model }) {
+export default function DocumentStudio({ open, documentId, onClose, pushToast, models, model }) {
   const t = useT()
   const [doc, setDoc] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -40,6 +41,7 @@ export default function DocumentStudio({ open, documentId, onClose, pushToast, m
   const [saving, setSaving] = useState(false)
   const [tweak, setTweak] = useState('')
   const [tweaking, setTweaking] = useState(false)
+  const [tweakCost, setTweakCost] = useState(null) // { usage, model } of the last AI edit
   const [lastInstruction, setLastInstruction] = useState('')
   const [exporting, setExporting] = useState(false)
   const printRef = useRef(null)
@@ -79,6 +81,7 @@ export default function DocumentStudio({ open, documentId, onClose, pushToast, m
         setDoc(r.document)
         setDraft(r.document.markdown || '')
         setTweak('')
+        if (r.usage) setTweakCost({ usage: r.usage, model: r.model })
       }
     } catch (e) {
       pushToast?.(e.message || t('docStudio.tweakError'))
@@ -219,6 +222,11 @@ export default function DocumentStudio({ open, documentId, onClose, pushToast, m
             >
               <Icon.Wand size={15} /> {t('docStudio.apply')}
             </button>
+            {tweakCost && !tweaking && (
+              <div className="text-[11px] text-[var(--faint)] text-right">
+                <CostBadge usage={tweakCost.usage} model={tweakCost.model} models={models} />
+              </div>
+            )}
           </div>
         )}
       </div>

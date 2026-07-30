@@ -91,7 +91,7 @@ export default {
   'settings.tab.personal': 'Preferences',
   'settings.tab.tone': 'Tone & prompt',
   'settings.tab.skills': 'Skills',
-  'settings.tab.templates': 'Presentation templates',
+  'settings.tab.templates': 'Design system',
   'settings.tab.mcp': 'MCP connections',
   'settings.tab.models': 'Models (LLM)',
   'settings.tab.tools': 'Tools',
@@ -227,6 +227,8 @@ export default {
 
   // message / tool trace
   'message.thinking': 'Thinking…',
+  'reasoning.thinking': 'Reasoning…',
+  'reasoning.done': 'Reasoning',
   'message.question': 'Question',
   'message.error': 'Error',
   'message.result': 'Result',
@@ -466,8 +468,8 @@ export default {
   'templates.previewBullet1': 'First point',
   'templates.previewBullet2': 'Second point',
   'templates.copySuffix': '(copy)',
-  'templates.heading': 'Presentation templates',
-  'templates.intro': 'Design systems for the decks (.pptx) the AI creates from your conversations — the selected template automatically applies colors (HEX), fonts, logo, icons, photos and diagrams. Import as many files as you like (brand .pptx, loose logos and icons): everything is optional, but the more complete the design system, the closer the result matches.',
+  'templates.heading': 'Design system',
+  'templates.intro': 'Colors, fonts, logo, icons and brand rules applied to the slides, spreadsheets and apps the AI creates from your conversations — the selected design system is applied automatically to the result. Import as many files as you like (brand .pptx, loose logos and icons): everything is optional, but the more complete the design system, the closer the result matches.',
   'templates.untitled': 'Untitled',
   'templates.unnamed': 'Unnamed',
   'templates.orgDefault': 'Organization default',

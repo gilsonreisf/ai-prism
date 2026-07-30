@@ -72,7 +72,7 @@ import {
   setToolPolicy,
 } from './db.js'
 import { isAdmin, isOwner, ownerEmail, groupCheckStatus, invalidateAdminsCache, appAccessCandidates, isAppAccessPrincipal } from './authz.js'
-import { MODELS, modelById, streamChat, complete, generateTitle, embed, cosineSim, labelDesignAssets, DEFAULT_IMAGE_MODEL } from './llm.js'
+import { MODELS, modelById, streamChat, complete, completeWithUsage, generateTitle, embed, cosineSim, labelDesignAssets, DEFAULT_IMAGE_MODEL } from './llm.js'
 import { extractText, SUPPORTED_EXTENSIONS } from './files.js'
 import { transcribe, isMediaFile, transcriptionEnabled, MEDIA_EXTENSIONS, TranscriptionError, mediaModelName } from './transcribe.js'
 import { ingestPptx, pptxDeckToBrief } from './pptxIngest.js'
@@ -118,12 +118,17 @@ const ATTACH_MARKER = '\n\n--- ANEXOS ---\n\n'
 // two differ, return { model, files } so the UI can attribute the media hop;
 // null when nothing was media-processed or the same model did both. Chunk names
 // ("… (parte K de N).wav" from browser segmentation) collapse to their source.
-function computeMediaProcessing(mediaProcessedFiles, answeringModel) {
+function computeMediaProcessing(mediaProcessedFiles, answeringModel, usageTotal) {
   if (!mediaProcessedFiles?.length) return null
   const mm = mediaModelName()
   if (!mm || mm === answeringModel) return null
   const files = [...new Set(mediaProcessedFiles.map((n) => n.replace(/ \(parte \d+ de \d+\)\.wav$/, '')))]
-  return { model: mm, files }
+  const out = { model: mm, files }
+  // token usage of the media-understanding step, so the UI can show its cost
+  if (usageTotal?.any) {
+    out.usage = { prompt_tokens: usageTotal.prompt_tokens, completion_tokens: usageTotal.completion_tokens }
+  }
+  return out
 }
 
 // Max prior messages replayed to the model per turn (see the window in
@@ -1892,7 +1897,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         `Instrução: ${instruction}\n\nTexto novo:`
       await getUserModels(req)
     const model = resolveModelId(req.body?.model)
-      const raw = await complete(req.token, model, [
+      const { text: raw, usage: fieldUsage } = await completeWithUsage(req.token, model, [
         { role: 'system', content: fieldSystem },
         { role: 'user', content: fieldUser },
       ], { maxTokens: 2000, temperature: 0.2 })
@@ -1912,7 +1917,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         const meta = { audience: updated.audience, author: updated.author, narrative: updated.narrative }
         await updateDeckSlides(req.email, req.token, req.params.id, updated.title, updated.slides, meta)
       }
-      return res.json({ deck: updated, preview })
+      return res.json({ deck: updated, preview, usage: fieldUsage, model })
     }
     // freeform layer scoping: with a selected element the model answers with
     // the JSON of THAT element only and the server splices it back into the
@@ -1980,7 +1985,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
 
     await getUserModels(req)
     const model = resolveModelId(req.body?.model)
-    const out = await complete(req.token, model, [
+    const { text: out, usage: tweakUsage } = await completeWithUsage(req.token, model, [
       { role: 'system', content: system },
       { role: 'user', content: user },
     ], { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.2 })
@@ -2031,7 +2036,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
       const meta = { audience: updated.audience, author: updated.author, narrative: updated.narrative }
       await updateDeckSlides(req.email, req.token, req.params.id, updated.title, updated.slides, meta)
     }
-    res.json({ deck: updated, preview })
+    res.json({ deck: updated, preview, usage: tweakUsage, model })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -2152,7 +2157,7 @@ app.post('/api/spreadsheets/:id/tweak', auth, async (req, res) => {
 
     await getUserModels(req)
     const model = resolveModelId(req.body?.model)
-    const out = await complete(req.token, model, [
+    const { text: out, usage: ssUsage } = await completeWithUsage(req.token, model, [
       { role: 'system', content: system },
       { role: 'user', content: user },
     ], { maxTokens: SS_TWEAK_MAX_TOKENS, temperature: 0.2 })
@@ -2173,7 +2178,7 @@ app.post('/api/spreadsheets/:id/tweak', auth, async (req, res) => {
     const spec = { title: revalidated.title, sheets: revalidated.sheets }
     if (revalidated.instructions) spec.instructions = revalidated.instructions
     await updateSpreadsheet(req.email, req.token, req.params.id, revalidated.title, spec)
-    res.json({ spreadsheet: { id: String(req.params.id), ...spec } })
+    res.json({ spreadsheet: { id: String(req.params.id), ...spec }, usage: ssUsage, model })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -2231,7 +2236,7 @@ app.post('/api/documents/:id/tweak', auth, async (req, res) => {
 
     await getUserModels(req)
     const model = resolveModelId(req.body?.model)
-    const out = await complete(req.token, model, [
+    const { text: out, usage: docUsage } = await completeWithUsage(req.token, model, [
       { role: 'system', content: system },
       { role: 'user', content: user },
     ], { maxTokens: DOC_TWEAK_MAX_TOKENS, temperature: 0.3 })
@@ -2241,7 +2246,7 @@ app.post('/api/documents/:id/tweak', auth, async (req, res) => {
     const sanitized = sanitizeDocument({ type: 'document', title: parsed.title || doc.title, markdown: parsed.markdown })
     if (!sanitized) return res.status(422).json({ error: 'a edição resultou em um documento inválido' })
     await updateDocument(req.email, req.token, req.params.id, sanitized.title, sanitized.markdown)
-    res.json({ document: { id: String(req.params.id), title: sanitized.title, markdown: sanitized.markdown } })
+    res.json({ document: { id: String(req.params.id), title: sanitized.title, markdown: sanitized.markdown }, usage: docUsage, model })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -2315,6 +2320,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // audio/video files whose content was read by the multimodal media model
     // (Gemini) — recorded so the answer can disclose the two-model pipeline
     const mediaProcessedFiles = []
+    const mediaUsageTotal = { prompt_tokens: 0, completion_tokens: 0, any: false }
     let fileCandidates = []
     let pptxDeckBrief = null // structured slides from an attached .pptx, if any
     for (const f of req.files || []) {
@@ -2340,8 +2346,13 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
       if (isMediaFile(name, f.mimetype)) {
         attachNames.push(name)
         try {
-          const transcript = await transcribe(req.token, name, f.buffer, f.mimetype)
+          const { text: transcript, usage: mediaUsage } = await transcribe(req.token, name, f.buffer, f.mimetype)
           mediaProcessedFiles.push(name)
+          if (mediaUsage) {
+            mediaUsageTotal.prompt_tokens += mediaUsage.prompt_tokens || 0
+            mediaUsageTotal.completion_tokens += mediaUsage.completion_tokens || 0
+            mediaUsageTotal.any = true
+          }
           attachBlocks.push(
             `### Transcrição de ${name}\n(gerada automaticamente a partir do áudio/vídeo anexado)\n\n${transcript}`
           )
@@ -2549,7 +2560,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
       promptTokens: hadUsage ? usage.prompt_tokens : null,
       completionTokens: hadUsage ? usage.completion_tokens : null,
       blocks: blocks.length ? blocks : null,
-      mediaProcessing: computeMediaProcessing(mediaProcessedFiles, model),
+      mediaProcessing: computeMediaProcessing(mediaProcessedFiles, model, mediaUsageTotal),
     })
     if (toolTrace.length) await addToolCalls(req.email, req.token, assistantMsg.id, toolTrace)
 

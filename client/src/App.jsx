@@ -72,11 +72,12 @@ function makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, onMeta,
         setTarget({ prompt_tokens: ev.usage.prompt_tokens, completion_tokens: ev.usage.completion_tokens })
         break
       case 'reasoning':
-        // live "what the model is working on" during the silent gap before it
-        // narrates its next step — shown by the thinking indicator, never
-        // persisted into the answer. Keep only a rolling tail (the indicator
-        // shows one short line, and unbounded accumulation is pointless).
-        setTarget((m) => ({ ...m, reasoning: ((m.reasoning || '') + ev.value).slice(-600) }))
+        // native reasoning/thinking tokens streamed by the model — shown live in
+        // a collapsible trace (ReasoningTrace) and as the thinking indicator's
+        // tail, never persisted into the answer (gone on reload). Keep a generous
+        // rolling window so the trace reads as a chain of thought, while still
+        // bounding memory for very long reasoning runs.
+        setTarget((m) => ({ ...m, reasoning: ((m.reasoning || '') + ev.value).slice(-8000) }))
         break
       case 'skill_active':
         // ephemeral: which authored skills the router activated this turn. Shown
@@ -1042,6 +1043,8 @@ export default function App({ uiLang, setUiLang }) {
         pushToast={pushToast}
         focus={deckFocus}
         onToggleFocus={() => setDeckFocus((f) => !f)}
+        models={models}
+        model={model}
       />
 
       <SpreadsheetStudio
@@ -1058,6 +1061,7 @@ export default function App({ uiLang, setUiLang }) {
         documentId={documentStudioId}
         onClose={() => setDocumentStudioId(null)}
         pushToast={pushToast}
+        models={models}
         model={model}
       />
 

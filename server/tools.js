@@ -490,7 +490,7 @@ export async function invokeTool(token, resolver, args, ctx = {}) {
       // baseImages (data-URLs of images the user attached/pasted this turn) turn
       // this into an EDIT/img2img call — the model transforms the given image(s)
       // per the prompt instead of generating from scratch.
-      const { dataUrls } = await generateImage(token, model, {
+      const { dataUrls, usage } = await generateImage(token, model, {
         prompt: args.prompt || '',
         baseImages: Array.isArray(baseImages) ? baseImages.map((b) => b.dataUrl || b).filter(Boolean) : [],
       })
@@ -506,7 +506,18 @@ export async function invokeTool(token, resolver, args, ctx = {}) {
           volumePath,
           contentType,
         })
-        imageRefs.push({ ref: `img_${id}`, imageId: id, prompt: args.prompt || '' })
+        // Attach the generation model + usage so the image block can show its
+        // cost estimate (usage covers the whole call; split evenly if the model
+        // returned several images so the per-block numbers still sum correctly).
+        const perImage =
+          usage && dataUrls.length > 1
+            ? {
+                prompt_tokens: Math.round((usage.prompt_tokens || 0) / dataUrls.length),
+                completion_tokens: Math.round((usage.completion_tokens || 0) / dataUrls.length),
+                image_output_tokens: Math.round((usage.image_output_tokens || 0) / dataUrls.length),
+              }
+            : usage
+        imageRefs.push({ ref: `img_${id}`, imageId: id, prompt: args.prompt || '', model, usage: perImage || null })
       }
       const resultText =
         imageRefs.length === 1

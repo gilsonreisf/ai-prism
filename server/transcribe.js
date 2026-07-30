@@ -152,9 +152,10 @@ const DEFAULT_PROMPT =
   'for relevante. Responda apenas com a transcrição/descrição, sem comentários seus.'
 
 /**
- * Understand an audio/video buffer via a multimodal LLM. Returns a text
- * transcript/description. Throws TranscriptionError on any failure so the caller
- * can degrade to a note.
+ * Understand an audio/video buffer via a multimodal LLM. Returns
+ * { text, usage, model } — the transcript/description plus the token usage and
+ * media model, so the caller can disclose the media step's cost. Throws
+ * TranscriptionError on any failure so the caller can degrade to a note.
  *
  * @param {string} token    the user's forwarded bearer (on-behalf-of auth)
  * @param {string} filename original filename (for MIME + errors)
@@ -222,9 +223,13 @@ export async function transcribe(token, filename, buffer, mimetype = 'applicatio
     throw new TranscriptionError(`o modelo multimodal respondeu HTTP ${res.status}: ${detail}`)
   }
 
-  const text = extractContent(await res.json().catch(() => ({})))
+  const json = await res.json().catch(() => ({}))
+  const text = extractContent(json)
   if (!text) {
     throw new TranscriptionError('o modelo não retornou texto (mídia vazia, sem fala, ou formato não suportado?)')
   }
-  return text
+  // Return the token usage too so the chat can show the media step's cost (the
+  // media model differs from the answering model). Callers that only want the
+  // transcript can read `.text`.
+  return { text, usage: json.usage || null, model: mediaModel() }
 }
