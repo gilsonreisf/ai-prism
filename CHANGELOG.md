@@ -5,6 +5,10 @@ Todas as mudanças relevantes deste projeto são documentadas aqui.
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
 e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+<!-- Adicione aqui as mudanças ainda não lançadas, em Added / Changed / Fixed / Removed. -->
+
 ## [1.0.0] - 2026-07-30
 
 Primeira versão consolidada: chat multimodelo com artefatos e ferramentas sobre o
@@ -45,4 +49,5 @@ Databricks AI Gateway, deployável via Asset Bundle em qualquer cloud.
 - Fluidez de streaming e melhor TTFT; pooling de conexões do Lakebase; disclosure
   progressiva de capacidades para reduzir tokens.
 
+[Unreleased]: https://github.com/pedrotramos/ai-prism/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/pedrotramos/ai-prism/releases/tag/v1.0.0

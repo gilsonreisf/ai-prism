@@ -97,7 +97,11 @@ quando fizer sentido, contra um workspace real via `bundle deploy`.
 - Descreva **o quê** e **por quê**, não só o *como*.
 - Liste como testou (QA, dev local, deploy num workspace).
 - PRs pequenos e focados são revisados mais rápido.
-- CI/QA verde e pelo menos uma aprovação antes do merge.
+- O [CI](.github/workflows/ci.yml) (build + `npm run qa`) precisa estar verde, com pelo
+  menos uma aprovação antes do merge.
+- O CI também exige que o `CHANGELOG.md` tenha sido atualizado. Se a mudança não for
+  relevante para quem usa/deploya (docs, chore, ajustes de CI), aplique a label
+  `skip-changelog` no PR para dispensar essa checagem.
 
 ## Reportando bugs e sugerindo features
 

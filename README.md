@@ -15,7 +15,7 @@ e chama ferramentas nativas do workspace (Genie, Python, Vector Search, UC Funct
 ## Visão geral
 
 - **Frontend**: SPA em React 18 + Vite + Tailwind CSS.
-- **Backend**: servidor Express (Node 18+) que faz proxy autenticado para o AI Gateway e
+- **Backend**: servidor Express (Node 22+) que faz proxy autenticado para o AI Gateway e
   persiste sessões/mensagens no Postgres.
 - **Modelos**: acessados via endpoint OpenAI-compatible do AI Gateway
   (`/serving-endpoints/chat/completions` e `/serving-endpoints/embeddings`), sem SDKs de
