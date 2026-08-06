@@ -4,6 +4,19 @@
   "private": true,
   "description": "AI Prism — multi-model LLM workspace on Databricks AI Gateway",
   "type": "module",
+  "license": "Apache-2.0",
+  "author": "Pedro Ramos",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedrotramos/ai-prism.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pedrotramos/ai-prism/issues"
+  },
+  "homepage": "https://github.com/pedrotramos/ai-prism#readme",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev:client": "vite",
     "build:client": "vite build",

@@ -1,0 +1,48 @@
+# Changelog
+
+Todas as mudanças relevantes deste projeto são documentadas aqui.
+
+O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
+e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
+
+## [1.0.0] - 2026-07-30
+
+Primeira versão consolidada: chat multimodelo com artefatos e ferramentas sobre o
+Databricks AI Gateway, deployável via Asset Bundle em qualquer cloud.
+
+### Added
+
+- **Chat multimodelo** sobre o Databricks AI Gateway, com streaming de respostas e
+  reasoning nativo.
+- **Sessões e histórico** persistidos no Lakebase, com **busca semântica** via pgvector
+  (flag `HISTORY_RETRIEVAL`).
+- **Anexos multimodais**: documentos, imagens e **áudio/vídeo** (transcrição/entendimento
+  via Gemini no gateway, com segmentação de gravações longas no browser).
+- **Mensagens estruturadas e gráficos interativos** (prism-blocks), incluindo blocos de
+  gráfico com série em linha.
+- **Ferramentas nativas do workspace** (tool calling): UC Functions e UDF Python embutida.
+- **Estúdios de artefato**: Slides (decks), Planilhas (.xlsx) e Documentos de texto, com
+  fluxo bloco → tabela → estúdio → tweak → export.
+- **Geração e edição de imagens** via modelos de imagem do gateway.
+- **Voz**, personalização, i18n da UI e diretiva de idioma de resposta.
+- **Skill "Ajuste de apresentação"**: .pptx anexado vira deck no design system.
+- **Conexão a MCPs externos** via UC connections, com UX nas configurações.
+- **Painel de administração e autorização** app-level (isolamento por `user_email`).
+- **Dashboard de custos de IA** (AI/BI, system tables) publicado no deploy.
+- **Deploy via Databricks Asset Bundle** que provisiona a stack completa (Lakebase
+  serverless, Serverless SQL Warehouse, a App e o dashboard), com job pós-deploy de
+  auto-configuração (role PG do service principal, UDF, volume de imagens, admin bootstrap).
+- **Documentação**: README, onboarding/deploy, custos e posicionamento, conexão de MCPs
+  e Microsoft 365 via Microsoft Graph.
+
+### Changed
+
+- Deploy **100% cloud-agnóstico** (AWS/Azure/GCP): sem host hardcoded — o workspace vem
+  do profile do CLI; Lakebase e warehouse entregues como **recursos da App**.
+
+### Performance
+
+- Fluidez de streaming e melhor TTFT; pooling de conexões do Lakebase; disclosure
+  progressiva de capacidades para reduzir tokens.
+
+[1.0.0]: https://github.com/pedrotramos/ai-prism/releases/tag/v1.0.0

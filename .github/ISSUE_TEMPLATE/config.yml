@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Vulnerabilidade de segurança
+    url: https://github.com/pedrotramos/ai-prism/security/advisories/new
+    about: Reporte vulnerabilidades de forma privada — não abra uma issue pública (veja SECURITY.md).
+  - name: Dúvidas e discussões
+    url: https://github.com/pedrotramos/ai-prism/discussions
+    about: Perguntas de uso, ideias e dúvidas de deploy.

@@ -1,0 +1,5 @@
+# CODEOWNERS — revisão automática de PRs.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositories-permissions/about-code-owners
+
+# Owner padrão de todo o repositório.
+*       @pedrotramos

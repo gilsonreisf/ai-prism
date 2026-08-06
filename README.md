@@ -1,5 +1,9 @@
 # AI Prism
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](.nvmrc)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 Ambiente de chat multimodelo construído como **Databricks App**, que expõe uma interface
 única para conversar com diversos LLMs (Anthropic, OpenAI, Google, Meta, Alibaba, Zhipu)
 servidos pelo **Databricks AI Gateway**, com histórico persistido em **Lakebase (Postgres)**
@@ -384,3 +388,15 @@ npm run qa   # deck-elements + deck-composition + mine-pptx + spreadsheet QA
 > **Nota.** O AI Prism não é um produto oficial da Databricks e não possui SLA. É um
 > acelerador de solução open-source para você deployar e customizar no seu próprio
 > workspace; seus dados permanecem na sua conta e não são usados para treinar modelos.
+
+## Contribuindo
+
+Contribuições são bem-vindas! Veja o **[CONTRIBUTING.md](CONTRIBUTING.md)** para o fluxo
+de desenvolvimento, padrões de commit e QA. Ao participar, você concorda com o
+[Código de Conduta](CODE_OF_CONDUCT.md). Vulnerabilidades devem ser reportadas de forma
+privada — veja a [política de segurança](SECURITY.md). O histórico de mudanças fica no
+[CHANGELOG.md](CHANGELOG.md).
+
+## Licença
+
+Distribuído sob a licença **[Apache 2.0](LICENSE)**.
