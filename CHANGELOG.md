@@ -9,7 +9,7 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 <!-- Adicione aqui as mudanças ainda não lançadas, em Added / Changed / Fixed / Removed. -->
 
-## [1.0.0] - 2026-07-30
+## [1.0.0] - 2026-07-29
 
 Primeira versão consolidada: chat multimodelo com artefatos e ferramentas sobre o
 Databricks AI Gateway, deployável via Asset Bundle em qualquer cloud.
