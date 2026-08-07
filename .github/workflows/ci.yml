@@ -30,7 +30,10 @@ jobs:
         # projeto vive em devDependencies, então o CI precisa incluí-las.
         # --ignore-scripts: pula o postinstall do esbuild (baixa binário da rede); o
         # binário já vem do pacote optional @esbuild/linux-x64 no lockfile.
-        run: npm ci --include=dev --ignore-scripts
+        # --maxsockets 1: o `npm ci` deadlocka em silêncio neste runner (roda em 4s
+        # localmente). Serializar as conexões evita o deadlock do pool de sockets do
+        # npm em CI. --loglevel=silly deixa o progresso visível se ainda travar.
+        run: npm ci --include=dev --ignore-scripts --maxsockets 1 --loglevel=silly
 
       - name: QA (checagens offline de deck/planilha/documento)
         run: npm run qa
