@@ -10,16 +10,27 @@ jobs:
   build-and-qa:
     name: Build & QA
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # Usa o registry público (registry-url acima): fora da VPN da Databricks o
+        # proxy interno (npm-proxy.cloud.databricks.com) é inalcançável e o `npm ci`
+        # pendura em silêncio. As URLs do package-lock.json apontam para o registry
+        # público; localmente, o `~/.npmrc` + replace-registry-host as reescrevem
+        # transparentemente para o proxy interno.
+        # --include=dev: o .npmrc do repo tem omit=dev (o app deployado roda
+        # pré-compilado), mas TODO o toolchain vive em devDependencies.
+        # --ignore-scripts: pula o postinstall do esbuild (baixa binário da rede); o
+        # binário já vem do pacote optional @esbuild/linux-x64 no lockfile.
+        run: npm ci --include=dev --ignore-scripts
 
       - name: QA (checagens offline de deck/planilha/documento)
         run: npm run qa
@@ -33,7 +44,7 @@ jobs:
     # Só em PRs; pulável com a label "skip-changelog" para mudanças que não exigem entrada.
     if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
