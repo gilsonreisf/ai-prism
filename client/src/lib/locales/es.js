@@ -308,6 +308,8 @@ export default {
   'docStudio.loading': 'Cargando documento…',
   'docStudio.loadError': 'No se pudo cargar el documento',
   'docStudio.editMarkdown': 'Editar Markdown',
+  'docStudio.markdownSource': 'Markdown',
+  'docStudio.livePreview': 'Vista previa en texto enriquecido',
   'docStudio.save': 'Guardar',
   'docStudio.saveError': 'No se pudo guardar',
   'docStudio.exportDocx': 'Exportar DOCX',

@@ -19,6 +19,13 @@
   },
   "scripts": {
     "dev:client": "vite",
+    "dev:server:local": "node --env-file=.env.local --watch server/index.js",
+    "dev:local": "concurrently -k \"npm:dev:client\" \"npm:dev:server:local\"",
+    "local:up": "bash scripts/local-postgres.sh up",
+    "local:down": "bash scripts/local-postgres.sh down",
+    "local:status": "bash scripts/local-postgres.sh status",
+    "local:reset": "bash scripts/local-postgres.sh reset",
+    "local:seed": "node --env-file=.env.local scripts/seed-local.mjs",
     "build:client": "vite build",
     "build:server": "esbuild server/index.js --bundle --platform=node --format=cjs --target=node18 --outfile=server-dist/index.cjs --external:pg-native --external:pg-cloudflare --minify",
     "bundle": "npm run build:client && npm run build:server",

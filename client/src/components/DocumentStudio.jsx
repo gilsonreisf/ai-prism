@@ -172,13 +172,29 @@ export default function DocumentStudio({ open, documentId, onClose, pushToast, m
           {tweaking && <TweakOverlay instruction={lastInstruction} />}
           {doc && !loading && (
             editing ? (
-              <div className="max-w-3xl mx-auto p-6 md:p-10">
-                <textarea
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  spellCheck={false}
-                  className="w-full h-[60vh] rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-4 text-sm font-mono leading-relaxed outline-none focus:border-[var(--accent)] resize-none"
-                />
+              <div className="max-w-6xl mx-auto p-4 md:p-8">
+                <div className="grid min-h-[60vh] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] lg:grid-cols-2">
+                  <div className="flex min-h-[50vh] flex-col border-b border-[var(--border)] lg:border-b-0 lg:border-r">
+                    <div className="shrink-0 border-b border-[var(--border-soft)] px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--faint)]">
+                      {t('docStudio.markdownSource')}
+                    </div>
+                    <textarea
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      spellCheck
+                      autoFocus
+                      className="min-h-[50vh] flex-1 resize-none bg-transparent p-4 font-mono text-sm leading-relaxed outline-none"
+                    />
+                  </div>
+                  <div className="min-h-[50vh] bg-[var(--bg)]">
+                    <div className="sticky top-0 z-[1] border-b border-[var(--border-soft)] bg-[var(--bg)]/90 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--faint)] backdrop-blur">
+                      {t('docStudio.livePreview')}
+                    </div>
+                    <div className="prose-chat prose-doc p-5 md:p-7" aria-live="polite">
+                      <Markdown remarkPlugins={[remarkGfm]}>{draft}</Markdown>
+                    </div>
+                  </div>
+                </div>
                 <div className="mt-3 flex items-center gap-2 justify-end">
                   <button onClick={() => { setDraft(doc.markdown || ''); setEditing(false) }} className="px-3 py-1.5 rounded-lg text-sm text-[var(--muted)] hover:bg-[var(--surface-3)]">
                     {t('common.cancel')}

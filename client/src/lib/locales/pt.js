@@ -311,6 +311,8 @@ export default {
   'docStudio.loading': 'Carregando documento…',
   'docStudio.loadError': 'Falha ao carregar o documento',
   'docStudio.editMarkdown': 'Editar Markdown',
+  'docStudio.markdownSource': 'Markdown',
+  'docStudio.livePreview': 'Visualização em rich text',
   'docStudio.save': 'Salvar',
   'docStudio.saveError': 'Falha ao salvar',
   'docStudio.exportDocx': 'Exportar DOCX',
