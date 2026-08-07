@@ -952,9 +952,28 @@ export function buildBlocksInstruction(candidates, template, caps) {
   if (c.spreadsheet) out += SPREADSHEET_POLICY
   if (c.image) out += IMAGE_POLICY
   if (c.document) out += DOCUMENT_POLICY
+  // Grounding: a deck or document with wrong figures loses all credibility no
+  // matter how polished. When one of those is in play, reinforce that any
+  // current/factual number must come from web_search (when available) and carry
+  // its source — appended after the policies so it's the freshest instruction.
+  if (c.deck || c.document) out += GROUNDING_DIRECTIVE
   if (c.deck) out += templateHint(template)
   return out
 }
+
+// Reinforces grounding for the artifacts where a wrong number is most damaging.
+// The web_search tool (when an admin configured WEB_SEARCH_CONNECTION) is
+// offered on every turn; this makes its use non-optional for time-sensitive or
+// factual figures inside a deck/document, and requires a cited source.
+const GROUNDING_DIRECTIVE =
+  '\n\n=== DADOS REAIS E FONTES (apresentações e documentos) ===\n' +
+  'Este artefato precisa ser factualmente correto. Para QUALQUER número, estatística, cotação, ' +
+  'data ou fato que dependa do mundo real atual (ex.: taxas, índices, resultados, market share, ' +
+  'notícias recentes), NÃO estime de memória: use a tool `web_search` para obter o valor atual e ' +
+  'cite a fonte e a data ao lado do dado (ex.: em uma nota de rodapé do slide, na legenda de um ' +
+  'gráfico, ou entre parênteses no texto). Se a tool de busca não estiver disponível e você não ' +
+  'tiver como confirmar um número, diga explicitamente que é uma estimativa/ordem de grandeza em ' +
+  'vez de apresentá-lo como fato — nunca invente precisão que você não tem.'
 
 function candidatesText(candidates) {
   return candidates.map((c) => `- ${c.id} (${c.chartType}): "${c.title}"`).join('\n')

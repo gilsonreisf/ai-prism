@@ -105,6 +105,8 @@ export default {
   'toolsAdmin.genieOne.desc': 'Queries workspace data (Genie Agents + Unity Catalog).',
   'toolsAdmin.imageGen.name': 'Image Generator',
   'toolsAdmin.imageGen.desc': 'Image generation from a description (text-to-image).',
+  'toolsAdmin.webSearch.name': 'Web Search',
+  'toolsAdmin.webSearch.desc': 'Live web grounding for current facts (requires a configured connection).',
   'toolsAdmin.genie.name': 'Genie Agents',
   'toolsAdmin.genie.desc': 'Specific Genie rooms the user attaches.',
   'toolsAdmin.uc.name': 'Unity Catalog Functions',

@@ -49,6 +49,17 @@ function pythonFqName() {
 
 export const PYTHON_TOOL_FN_NAME = 'execute_python'
 export const IMAGE_TOOL_FN_NAME = 'generate_image'
+export const WEB_SEARCH_TOOL_FN_NAME = 'web_search'
+
+// Web grounding is offered as ONE clean, stable tool (`web_search`) regardless
+// of which web-search MCP server backs it. The backend is a Unity Catalog
+// external-MCP connection an admin registered (same governed path as any other
+// external MCP) — its name comes from WEB_SEARCH_CONNECTION. Absent that env
+// var, the tool is never offered and generation degrades to un-grounded (the
+// pre-existing behavior), so nothing breaks in a workspace that hasn't set it up.
+export function webSearchConnectionName() {
+  return (process.env.WEB_SEARCH_CONNECTION || '').trim()
+}
 
 // Localized strings for the image tool's success/error result text — this text
 // is shown in the tool chip AND fed back to the model, so it should match the
@@ -157,6 +168,33 @@ function imageToolDef() {
           },
         },
         required: ['prompt'],
+      },
+    },
+  }
+}
+
+function webSearchToolDef() {
+  return {
+    type: 'function',
+    function: {
+      name: WEB_SEARCH_TOOL_FN_NAME,
+      description:
+        'Busca informações públicas e ATUAIS na web (fatos recentes, cotações, indicadores, ' +
+        'eventos, lançamentos, dados que mudam com o tempo ou que sejam posteriores ao seu ' +
+        'conhecimento). Use SEMPRE que precisar de um número ou fato que deva refletir o mundo ' +
+        'real hoje — em vez de estimar de memória — em qualquer tipo de resposta (conversa, ' +
+        'apresentação ou documento). Cada resultado traz uma URL de fonte: cite a fonte e a data ' +
+        'ao usar o dado. Prefira várias buscas específicas a uma genérica.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description:
+              'Consulta de busca, específica e no idioma do assunto. Ex.: "taxa Selic Copom decisão agosto 2026".',
+          },
+        },
+        required: ['query'],
       },
     },
   }
@@ -312,13 +350,13 @@ async function listMcpToolsCached(url, token, email) {
 // Canonical tool GROUP keys the org policy toggles (see app_tool_policy). Each
 // built-in/attachable tool maps to one of these; a policy value of false hides
 // the whole group from users and blocks it server-side.
-export const TOOL_GROUP_KEYS = ['python', 'genie-one', 'image-gen', 'genie', 'vector-search', 'uc', 'mcp-external']
+export const TOOL_GROUP_KEYS = ['python', 'genie-one', 'image-gen', 'web-search', 'genie', 'vector-search', 'uc', 'mcp-external']
 
 export async function buildToolDefs(
   enabledRefs,
   token,
   email,
-  { includePython = true, includeImage = false, toolPolicy = {} } = {}
+  { includePython = true, includeImage = false, includeWebSearch = true, toolPolicy = {} } = {}
 ) {
   const tools = []
   const resolvers = new Map()
@@ -335,6 +373,20 @@ export async function buildToolDefs(
   if (includeImage && allowed('image-gen')) {
     tools.push(imageToolDef())
     resolvers.set(IMAGE_TOOL_FN_NAME, { kind: 'image-gen' })
+  }
+  // Web grounding: offered on EVERY turn (includeWebSearch defaults on) so any
+  // interaction can be grounded in current facts — the model decides when a
+  // question actually needs the live web from the tool description. Still gated
+  // by the org policy and by an admin having configured a backing connection;
+  // a missing connection → silently skipped (un-grounded, the prior behavior).
+  const webSearchConn = webSearchConnectionName()
+  if (includeWebSearch && allowed('web-search') && webSearchConn) {
+    tools.push(webSearchToolDef())
+    resolvers.set(WEB_SEARCH_TOOL_FN_NAME, {
+      kind: 'web-search',
+      connectionName: webSearchConn,
+      url: externalMcpUrl(webSearchConn),
+    })
   }
 
   for (const ref of enabledRefs || []) {
@@ -589,6 +641,24 @@ export async function invokeTool(token, resolver, args, ctx = {}) {
 
   if (resolver.kind === 'mcp-external') {
     const { text } = await callMcpTool(resolver.url, token, resolver.mcpToolName, args)
+    return { resultText: text, chartCandidates: [] }
+  }
+
+  if (resolver.kind === 'web-search') {
+    // The backing MCP server exposes its own tool name(s); resolve the one that
+    // actually does a search at call time (cheap, cached) so any web-search MCP
+    // works behind the single clean `web_search` tool the model sees. The arg
+    // key can differ per server too, so pass the query under the common aliases.
+    const mcpTools = await listMcpToolsCached(resolver.url, token, ctx.email).catch(() => [])
+    const searchTool =
+      mcpTools.find((t) => /web[_-]?search/i.test(t.name)) ||
+      mcpTools.find((t) => /search/i.test(t.name)) ||
+      mcpTools[0]
+    if (!searchTool) {
+      return { resultText: 'ERROR: nenhuma tool de busca disponível na conexão de web search configurada.', chartCandidates: [] }
+    }
+    const q = args.query || args.q || ''
+    const { text } = await callMcpTool(resolver.url, token, searchTool.name, { query: q, q, ...args })
     return { resultText: text, chartCandidates: [] }
   }
 
