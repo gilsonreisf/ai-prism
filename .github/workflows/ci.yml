@@ -19,14 +19,17 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      - name: Upgrade npm
+        # O npm 10.9.x que vem com o Node 22 pendura o `npm ci` no runner e morre com
+        # "Exit handler never called!" (bug do próprio npm). O npm 11 corrige.
+        run: npm install -g npm@11
+
       - name: Install dependencies
         # --include=dev: o .npmrc define omit=dev (o app deployado roda pré-compilado
         # e não precisa de pacotes no install da Databricks), mas TODO o toolchain do
         # projeto vive em devDependencies, então o CI precisa incluí-las.
-        # --ignore-scripts: o postinstall do esbuild (`node install.js`) baixa o binário
-        # da rede e pendura no runner ("Exit handler never called!"). O binário já vem
-        # do pacote optional @esbuild/linux-x64 no lockfile, então o postinstall é
-        # dispensável — pulá-lo evita o travamento sem afetar o build.
+        # --ignore-scripts: pula o postinstall do esbuild (baixa binário da rede); o
+        # binário já vem do pacote optional @esbuild/linux-x64 no lockfile.
         run: npm ci --include=dev --ignore-scripts
 
       - name: QA (checagens offline de deck/planilha/documento)
