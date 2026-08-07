@@ -11,6 +11,19 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ### Added
 
+- **Substrato HTML para decks** (fundação de render de alta fidelidade, paridade com o Claude
+  Design), derivado da MESMA árvore semântica que alimenta o `.pptx` nativo — não é um trade-off:
+  - `shared/deckHtml.js`: gerador de HTML auto-contido a partir dos slides, com os design tokens
+    do tema como CSS custom properties (re-tematiza junto com o `.pptx` ao trocar de Design System).
+  - Renderiza slides freeform percorrendo os elementos posicionados (texto, shape, line, ícone,
+    imagem, chart) via `flattenElements` — logo herda o motor de layout endurecido; charts como SVG
+    (bar/barH/line/area/pie/doughnut/scatter com `chartPalette(theme)`), ícones via `DECK_ICONS`,
+    imagens `<img>` resolvendo ilustrações do DS por `imageAssetId` (mesmo caminho do renderer da
+    árvore), e camada de z-index que mantém texto sempre legível.
+  - `client/HtmlDeckPreview.jsx`: componente de preview em iframe sandbox (alvo de render interno).
+  - O HTML é um artefato **derivado on-demand**, não persistido no bloco nem exposto como escolha
+    de substrato ao usuário — a árvore semântica segue como fonte de verdade única, alimentando
+    preview DOM, HTML de alta fidelidade (para futuro export PDF/PNG) e `.pptx` nativo (`pptxgenjs`).
 - **Ambiente de desenvolvimento 100% local** sem Lakebase/OAuth: PostgreSQL 17 + pgvector
   do Homebrew (`scripts/local-postgres.sh`, `.env.local.example`, `scripts/seed-local.mjs`)
   e scripts npm `local:up|down|status|reset|seed` + `dev:local`.

@@ -2242,8 +2242,13 @@ function resolveOne(raw, byId, template, imageById) {
     const deck = sanitizeDeck(raw, byId, template)
     if (!deck) return null
     // spread keeps deck-level metadata (audience/author/narrative) that
-    // persistDeckBlocks stores in chat_decks.meta
-    return { type: 'deck', ...deck }
+    // persistDeckBlocks stores in chat_decks.meta. The self-contained HTML
+    // substrate (shared/deckHtml.js) is NOT persisted onto the block — it is a
+    // ~100KB derived artifact regenerated on demand at export time (PDF/PNG),
+    // the same way renderPptx derives the .pptx. The chat card renders the
+    // semantic tree preview; the HTML is an internal render target.
+    const block = { type: 'deck', ...deck }
+    return block
   }
   if (raw.type === 'deck-questions') {
     const dq = sanitizeDeckQuestions(raw)
