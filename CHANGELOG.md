@@ -27,6 +27,12 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 - `server/db.js`: `PGSSLMODE` respeitado (permite Postgres local sem SSL) e `PGUSER` desacopla
   o role do banco do e-mail app-level; fallback de embeddings sem a extensão `vector` no modo local.
+- **Logo do Design System nos decks**: o renderer agora escolhe a variante de logo que contrasta
+  com o fundo do slide (branca em fundo escuro, colorida em fundo claro), então o logo não fica
+  mais invisível; além disso um logo discreto passa a aparecer nos slides de conteúdo (chrome de
+  marca ao longo do deck, não só na capa).
+- **Studio não persiste entre conversas**: abrir uma nova conversa ou trocar de sessão agora fecha
+  o Deck/Planilha/Documento Studio aberto (antes ele "grudava" na conversa nova).
 
 ## [1.0.0] - 2026-07-29
 
