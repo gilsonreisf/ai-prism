@@ -90,6 +90,7 @@ import {
   sanitizeDocument,
   sanitizeQuestionAnswers,
   usableIconAssets,
+  reviewDeckBlock,
 } from './blocks.js'
 import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool, TOOL_GROUP_KEYS } from './tools.js'
 import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
@@ -822,6 +823,87 @@ async function persistDeckBlocks(req, sessionId, blocks) {
       // persist the markdown so the Document Studio can reload/edit/export it
       b.documentId = await createDocument(req.email, req.token, sessionId, b.title, b.markdown)
     }
+  }
+}
+
+// Visual self-review loop for a freshly generated deck. Mirrors what Claude
+// Design does when it "checks the design for issues" — except the inspection is
+// deterministic geometry (shared/deckReview via reviewDeckBlock) rather than a
+// screenshot+vision pass, because the app runtime has no rasterizer (the only
+// one, pptx-to-png.sh, drives macOS PowerPoint). We inspect the SAME paint
+// geometry both renderers use, hand the model a precise defect list, and ask it
+// to repair — the exact class of defect the benchmark caught (a clipped title,
+// off-canvas element, low contrast) but exact and instant.
+//
+// Returns the (possibly repaired) blocks. Bounded to MAX_REVIEW_ROUNDS repair
+// attempts so a stubborn defect never stalls the turn; if it can't be fixed we
+// deliver the best version rather than block. Best-effort: any failure logs and
+// returns the original blocks unchanged (a review must never break a turn).
+const MAX_REVIEW_ROUNDS = 1
+async function reviewAndRepairDeckBlocks({ req, model, blocks, template, apiMessages, answer, send, chartState, imageRefs }) {
+  const hasDeck = blocks.some((b) => b.type === 'deck')
+  if (!hasDeck) return { blocks, usage: null }
+  let current = blocks
+  let repairUsage = null
+  for (let round = 0; round < MAX_REVIEW_ROUNDS; round++) {
+    // collect defects across every deck block this turn
+    const reviews = current
+      .map((b, i) => (b.type === 'deck' ? { i, review: reviewDeckBlock(b, template) } : null))
+      .filter((r) => r && !r.review.clean)
+    if (!reviews.length) return { blocks: current, usage: repairUsage }
+
+    // signal the pass to the client (same ephemeral badge decks/skills use)
+    emitActiveSkills(send, [{ name: 'deck-review', title: 'Revisão visual do deck', description: 'Conferindo o layout dos slides' }])
+
+    const defectText = reviews
+      .map((r) => reviewDeckBlock(current[r.i], template).text)
+      .filter(Boolean)
+      .join('\n\n')
+    const repairSystem =
+      'Você acabou de gerar um deck (bloco ```prism-block``` do tipo "deck") e uma revisão automática de ' +
+      'layout encontrou os problemas visuais abaixo. Gere NOVAMENTE o mesmo deck, íntegro, corrigindo ' +
+      'APENAS esses problemas (reposicione/redimensione caixas, ajuste cores para contraste, encurte ' +
+      'textos que estouram a caixa) e preservando todo o conteúdo, dados e a intenção. Responda SOMENTE ' +
+      'com o bloco ```prism-block``` do deck corrigido — sem texto fora do bloco. NUNCA invente dados novos.'
+    const repairUser = `Problemas encontrados na revisão de layout:\n${defectText}`
+    let repaired
+    try {
+      const { text, usage } = await completeWithUsage(
+        req.token,
+        model,
+        [
+          ...apiMessages,
+          { role: 'assistant', content: answer },
+          { role: 'system', content: repairSystem },
+          { role: 'user', content: repairUser },
+        ],
+        { maxTokens: modelById(model).maxOut || 8192, temperature: 0.2 }
+      )
+      repaired = text
+      repairUsage = mergeUsage(repairUsage, usage)
+    } catch (e) {
+      console.warn('deck visual review: repair call failed (delivering original):', e.message)
+      return { blocks: current, usage: repairUsage }
+    }
+    // re-extract the repaired deck through the same validated path
+    const { blocks: newBlocks } = extractPrismBlocks(repaired, chartState.items, template, imageRefs)
+    const newDeck = newBlocks.find((b) => b.type === 'deck')
+    if (!newDeck) return { blocks: current, usage: repairUsage } // model didn't return a usable deck — keep what we had
+    // splice the repaired deck back in, preserving any non-deck blocks
+    current = current.map((b) => (b.type === 'deck' ? newDeck : b))
+  }
+  return { blocks: current, usage: repairUsage }
+}
+
+// Adds two token-usage objects (either may be null). Used to fold a repair
+// round's cost into the turn's reported usage.
+function mergeUsage(a, b) {
+  if (!a) return b || null
+  if (!b) return a
+  return {
+    prompt_tokens: (a.prompt_tokens || 0) + (b.prompt_tokens || 0),
+    completion_tokens: (a.completion_tokens || 0) + (b.completion_tokens || 0),
+    total_tokens: (a.total_tokens || 0) + (b.total_tokens || 0),
   }
 }
 
@@ -2551,6 +2633,23 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // placeholder right where the model put it, so the frontend renders it inline.
     // imageRefs resolve `image` fences against images the tool generated this turn.
     let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
+    // Visual self-review: inspect the generated deck's paint geometry and, if a
+    // slide has a layout defect (clipped text, off-canvas, low contrast), ask
+    // the model to repair before we persist. Splices the fixed deck back into
+    // `blocks` at its original position, so `finalContent`'s block placeholder
+    // still resolves to it. Best-effort — never blocks the turn.
+    {
+      const reviewed = await reviewAndRepairDeckBlocks({
+        req, model, blocks, template: selectedTemplate, apiMessages, answer, send, chartState, imageRefs,
+      })
+      blocks = reviewed.blocks
+      // fold the repair round's tokens into the turn's reported usage (cost stays honest)
+      if (reviewed.usage && hadUsage && usage) {
+        usage.prompt_tokens = (usage.prompt_tokens || 0) + (reviewed.usage.prompt_tokens || 0)
+        usage.completion_tokens = (usage.completion_tokens || 0) + (reviewed.usage.completion_tokens || 0)
+        if (usage.total_tokens != null) usage.total_tokens += reviewed.usage.total_tokens || 0
+      }
+    }
     finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
     finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)
@@ -2759,6 +2858,23 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
     })
 
     let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
+    // Visual self-review: inspect the generated deck's paint geometry and, if a
+    // slide has a layout defect (clipped text, off-canvas, low contrast), ask
+    // the model to repair before we persist. Splices the fixed deck back into
+    // `blocks` at its original position, so `finalContent`'s block placeholder
+    // still resolves to it. Best-effort — never blocks the turn.
+    {
+      const reviewed = await reviewAndRepairDeckBlocks({
+        req, model, blocks, template: selectedTemplate, apiMessages, answer, send, chartState, imageRefs,
+      })
+      blocks = reviewed.blocks
+      // fold the repair round's tokens into the turn's reported usage (cost stays honest)
+      if (reviewed.usage && hadUsage && usage) {
+        usage.prompt_tokens = (usage.prompt_tokens || 0) + (reviewed.usage.prompt_tokens || 0)
+        usage.completion_tokens = (usage.completion_tokens || 0) + (reviewed.usage.completion_tokens || 0)
+        if (usage.total_tokens != null) usage.total_tokens += reviewed.usage.total_tokens || 0
+      }
+    }
     finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
     finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)
@@ -2881,6 +2997,23 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
     })
 
     let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
+    // Visual self-review: inspect the generated deck's paint geometry and, if a
+    // slide has a layout defect (clipped text, off-canvas, low contrast), ask
+    // the model to repair before we persist. Splices the fixed deck back into
+    // `blocks` at its original position, so `finalContent`'s block placeholder
+    // still resolves to it. Best-effort — never blocks the turn.
+    {
+      const reviewed = await reviewAndRepairDeckBlocks({
+        req, model, blocks, template: selectedTemplate, apiMessages, answer, send, chartState, imageRefs,
+      })
+      blocks = reviewed.blocks
+      // fold the repair round's tokens into the turn's reported usage (cost stays honest)
+      if (reviewed.usage && hadUsage && usage) {
+        usage.prompt_tokens = (usage.prompt_tokens || 0) + (reviewed.usage.prompt_tokens || 0)
+        usage.completion_tokens = (usage.completion_tokens || 0) + (reviewed.usage.completion_tokens || 0)
+        if (usage.total_tokens != null) usage.total_tokens += reviewed.usage.total_tokens || 0
+      }
+    }
     finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
     finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)

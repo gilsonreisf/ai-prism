@@ -1,6 +1,7 @@
 import { DECK_ICON_NAMES } from '../shared/deckIcons.js'
 import { ELEMENT_TYPES, SHAPE_KINDS, BOX_LIMITS, MAX_ELEMENTS_PER_SLIDE, CHART_KINDS, MAX_GROUP_DEPTH, SLIDE_W, SLIDE_H, textHeightIn, TEXT_INSETS, flattenElements } from '../shared/deckLayout.js'
 import { THEME_COLOR_TOKENS, resolveDeckTheme } from '../shared/deckTheme.js'
+import { reviewDeck as reviewDeckGeometry, formatReviewForModel } from '../shared/deckReview.js'
 
 // Structured message blocks: charts/tables/insights woven directly into the
 // model's markdown answer. The model marks *where* a block belongs with an
@@ -1821,6 +1822,23 @@ export function freeformSlideIsMateriallyEmpty(slide, template = null) {
   return !flat.some(
     (el) => CONTENT_PRIMITIVE.has(el.type) && (el.type !== 'text' || String(el.text ?? '').trim())
   )
+}
+
+// Visual self-review of a generated deck: resolves the template's theme and
+// inspects each slide's real paint geometry (shared/deckReview.js) for the
+// defects the benchmark caught — clipped/illegible text, off-canvas elements,
+// low contrast, overlaps. Returns { clean, slides:[{index,title,findings}] }
+// plus a `text` rendering ready to hand back to the model for repair. Pure and
+// LLM-free (the repair round itself is orchestrated in index.js).
+export function reviewDeckBlock(deck, template) {
+  let theme
+  try {
+    theme = resolveDeckTheme(template || {})
+  } catch {
+    return { clean: true, slides: [], text: '' }
+  }
+  const review = reviewDeckGeometry(deck, theme)
+  return { ...review, text: formatReviewForModel(review) }
 }
 
 // Recursively: does this element subtree contain any content-bearing node?
