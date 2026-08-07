@@ -1,6 +1,6 @@
 import PptxGenJS from 'pptxgenjs'
 import { deckIconSvg } from '../shared/deckIcons.js'
-import { resolveDeckTheme, pickDeckIllustration, resolveThemeColor, luminance as themeLuminance, blend as themeBlend, contrastOn } from '../shared/deckTheme.js'
+import { resolveDeckTheme, pickDeckIllustration, resolveThemeColor, luminance as themeLuminance, blend as themeBlend, contrastOn, pickLogoForBg } from '../shared/deckTheme.js'
 
 // grid/type-scale/fit math live in shared/deckLayout.js (one source for both
 // renderers — see the element-canvas architecture note there)
@@ -140,10 +140,14 @@ function addCoverArt(s, theme, { variant = 'cover', seed = 0 } = {}) {
 // --- server-side text fitting: shared engine (shared/deckLayout.js) ------
 
 function addLogo(slide, theme, opts = {}) {
-  if (!theme.logoDataUrl) return
-  const { x = GRID.margin, y = 0.42, h = 0.34 } = opts
+  // pick the variant that contrasts with the slide bg: dark slides (the cover/
+  // closing default) → white lockup; light content slides → full-color lockup.
+  // `bg` defaults to theme.primary (the dark master), matching the legacy callers.
+  const { x = GRID.margin, y = 0.42, h = 0.34, bg = theme.primary } = opts
+  const data = pickLogoForBg(theme, bg)
+  if (!data) return
   try {
-    slide.addImage({ data: theme.logoDataUrl, x, y, w: h * 2.6, h, sizing: { type: 'contain', w: h * 2.6, h } })
+    slide.addImage({ data, x, y, w: h * 2.6, h, sizing: { type: 'contain', w: h * 2.6, h } })
   } catch {
     // malformed/unsupported data URL — skip the logo rather than fail the export
   }
@@ -356,6 +360,21 @@ function slideChrome(s, slide, theme, deck, ctx) {
       x: SLIDE_W - GRID.margin - 0.5, y: GRID.footerY, w: 0.5, h: 0.3, align: 'right',
       fontFace: theme.bodyFont, fontSize: TYPE.footer, color: theme.faintTextColor,
     })
+  }
+  // subtle brand footer logo on content slides (bottom-left, next to the meta):
+  // gives the deck brand presence throughout, not just on the cover/closing —
+  // the "chrome de marca" gap vs. Claude Design. bg is the light content
+  // surface, so pickLogoForBg returns the full-color lockup (never invisible).
+  const contentBg = theme.background || '#FFFFFF'
+  const footerLogo = pickLogoForBg(theme, contentBg)
+  if (footerLogo && !footerMeta(deck)) {
+    // only when the footer-left meta slot is free, so we never overlap it
+    try {
+      const lh = 0.22
+      s.addImage({ data: footerLogo, x: GRID.margin, y: GRID.footerY + 0.02, w: lh * 2.6, h: lh, sizing: { type: 'contain', w: lh * 2.6, h: lh } })
+    } catch {
+      // malformed logo → skip, never fail the export
+    }
   }
 
   let bottom = GRID.bodyBottom

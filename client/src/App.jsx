@@ -398,6 +398,16 @@ export default function App({ uiLang, setUiLang }) {
 
   // pure state transitions — no URL side effects, safe to call from the
   // popstate handler (which must never push a *new* history entry back)
+  // An open artifact Studio (deck/spreadsheet/document) is scoped to the
+  // conversation it was opened from — it must NOT bleed into a new chat or a
+  // different session the user switches to. Close all three whenever the active
+  // conversation changes.
+  const closeStudios = () => {
+    setDeckStudioId(null)
+    setSpreadsheetStudioId(null)
+    setDocumentStudioId(null)
+  }
+
   const resetToNewChat = () => {
     if (streaming) return
     setCurrentId(null)
@@ -407,6 +417,7 @@ export default function App({ uiLang, setUiLang }) {
     setInput('')
     setFiles([])
     setSidebarOpen(false)
+    closeStudios()
     setView('chat')
   }
 
@@ -417,6 +428,7 @@ export default function App({ uiLang, setUiLang }) {
     if (id === currentId) return
     setCurrentId(id)
     setMessages([])
+    closeStudios() // a Studio from the previous session must not carry over
     setLoadingSession(true)
     try {
       const r = await getJSON(`/api/sessions/${id}/messages`)
