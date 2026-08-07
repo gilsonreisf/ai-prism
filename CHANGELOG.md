@@ -29,6 +29,18 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ### Fixed
 
+- **Robustez do motor de layout de decks** (`shared/deckLayout.js`, transversal a preview e
+  `.pptx` nativo): corrige as classes de defeito de composição em slides densos —
+  (1) texto embrulhando palavra-a-palavra em colunas estreitíssimas (piso de compressão
+  0.6→0.7× + truncagem legível com reticências quando a coluna ficaria abaixo de 1.2in);
+  (2) conteúdo transbordando o card/rodapé (clamp de altura efetiva quando a caixa é
+  desproporcional ao texto); (3) ícones irmãos com tamanhos diferentes (normalização do
+  tamanho entre cards de um mesmo stack); e piso de fonte 7→8pt. Como o motor é fonte única
+  para os dois renderizadores, o `.pptx` exportado herda a mesma robustez.
+- **Labels de eixo de gráfico sobrepostos** no preview: quando os slots ficam estreitos, os
+  rótulos rotacionam 45° (colisão moderada) ou omitem alternados (colisão severa).
+- **Auto-revisão visual** (`shared/deckReview.js`) ganha duas detecções novas: embrulho
+  excessivo de texto em caixa estreita e ícones irmãos com tamanhos desiguais.
 - `server/db.js`: `PGSSLMODE` respeitado (permite Postgres local sem SSL) e `PGUSER` desacopla
   o role do banco do e-mail app-level; fallback de embeddings sem a extensão `vector` no modo local.
 - **Logo do Design System nos decks**: o renderer agora escolhe a variante de logo que contrasta

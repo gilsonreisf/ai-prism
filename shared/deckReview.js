@@ -12,7 +12,7 @@
 //
 // This is the single source of truth: scripts/deck-composition-qa.mjs asserts
 // against these same findings so CI and the runtime loop never drift.
-import { flattenElements, SLIDE_W, SLIDE_H, GRID } from './deckLayout.js'
+import { flattenElements, SLIDE_W, SLIDE_H, GRID, estimateLines, TEXT_INSETS, CHAR_W } from './deckLayout.js'
 import { resolveThemeColor, luminance } from './deckTheme.js'
 
 // WCAG-ish contrast floor via luminance delta — matches the mined-plate logic
@@ -121,6 +121,40 @@ export function reviewSlide(slide, theme) {
       }
     }
   }
+
+  // (6) excessive text wrapping in narrow boxes (cross-axis issue).
+  // Texts with very narrow boxes (< 0.9in) that wrap excessively are hard to read.
+  for (const el of texts) {
+    const b = el.box
+    const boxW = Math.max(b.w - TEXT_INSETS, 0.1)
+    if (boxW < 0.9) {
+      const sz = el.style?.fontSize || 13
+      const lines = estimateLines(String(el.text || ''), sz, boxW)
+      if (lines > 6) {
+        findings.push(`o texto "${snippet(el.text)}" embrulha em ${lines} linhas em caixa estreita (${boxW.toFixed(2)}in); aumente a largura ou reduza o conteúdo.`)
+      }
+    }
+  }
+
+  // (7) sibling icons with different sizes (normalization failure).
+  // Group children that are all icons should have uniform size.
+  const iconsByParent = new Map()
+  for (const el of flat) {
+    if (el.type === 'icon' && el.srcId) {
+      if (!iconsByParent.has(el.srcId)) iconsByParent.set(el.srcId, [])
+      iconsByParent.get(el.srcId).push(el)
+    }
+  }
+  for (const [parentId, icons] of iconsByParent.entries()) {
+    if (icons.length > 1) {
+      const sizes = icons.map((ic) => `${ic.box.w.toFixed(2)}×${ic.box.h.toFixed(2)}`)
+      const unique = [...new Set(sizes)]
+      if (unique.length > 1) {
+        findings.push(`ícones irmãos têm tamanhos diferentes (${unique.join(', ')}); normalize-os.`)
+      }
+    }
+  }
+
   return findings
 }
 
