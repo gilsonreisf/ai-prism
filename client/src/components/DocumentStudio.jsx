@@ -4,13 +4,15 @@ import remarkGfm from 'remark-gfm'
 import * as Icon from './Icons.jsx'
 import { useT } from '../lib/i18n.jsx'
 import CostBadge from './CostBadge.jsx'
+import RichTextEditor from './RichTextEditor.jsx'
 import { getJSON, postJSON, patchJSON } from '../api.js'
 
 // Full-screen studio for a generated `document` — the prose sibling of Deck/
 // Spreadsheet Studio. The model writes markdown; the Studio renders it as rich
 // text (react-markdown), lets the user tweak it with AI (content OR style) via
-// POST /api/documents/:id/tweak, edit the markdown by hand, and export to DOCX,
-// Markdown, or PDF (PDF = browser print of the rendered document).
+// POST /api/documents/:id/tweak, edit by hand — either in a WYSIWYG rich-text
+// editor (default, for non-technical users) or in raw markdown (advanced) — and
+// export to DOCX, Markdown, or PDF (PDF = browser print of the rendered document).
 
 function TweakOverlay({ instruction }) {
   const t = useT()
@@ -36,7 +38,8 @@ export default function DocumentStudio({ open, documentId, onClose, pushToast, m
   const [doc, setDoc] = useState(null)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(null)
-  const [editing, setEditing] = useState(false) // hand-edit markdown mode
+  const [editing, setEditing] = useState(false) // hand-edit mode (WYSIWYG or raw)
+  const [rawMode, setRawMode] = useState(false) // within editing: raw markdown (advanced) vs WYSIWYG
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
   const [tweak, setTweak] = useState('')
@@ -143,13 +146,13 @@ export default function DocumentStudio({ open, documentId, onClose, pushToast, m
         {/* export menu */}
         <div className="flex items-center gap-1.5">
           <button
-            onClick={() => setEditing((e) => !e)}
+            onClick={() => { setDraft(doc?.markdown || ''); setRawMode(false); setEditing((e) => !e) }}
             className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium transition ${
               editing ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'hover:bg-[var(--surface-3)] text-[var(--muted)]'
             }`}
-            title={t('docStudio.editMarkdown')}
+            title={t('docStudio.edit')}
           >
-            <Icon.Edit size={15} /> <span className="hidden md:inline">Markdown</span>
+            <Icon.Edit size={15} /> <span className="hidden md:inline">{t('docStudio.edit')}</span>
           </button>
           <button onClick={() => download('docx')} disabled={exporting} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium hover:bg-[var(--surface-3)] text-[var(--muted)] disabled:opacity-50" title={t('docStudio.exportDocx')}>
             <Icon.Download size={15} /> DOCX
@@ -173,35 +176,53 @@ export default function DocumentStudio({ open, documentId, onClose, pushToast, m
           {doc && !loading && (
             editing ? (
               <div className="max-w-6xl mx-auto p-4 md:p-8">
-                <div className="grid min-h-[60vh] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] lg:grid-cols-2">
-                  <div className="flex min-h-[50vh] flex-col border-b border-[var(--border)] lg:border-b-0 lg:border-r">
-                    <div className="shrink-0 border-b border-[var(--border-soft)] px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--faint)]">
-                      {t('docStudio.markdownSource')}
+                <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+                  {rawMode ? (
+                    // advanced: raw markdown source + live preview, side by side
+                    <div className="grid min-h-[60vh] lg:grid-cols-2">
+                      <div className="flex min-h-[50vh] flex-col border-b border-[var(--border)] lg:border-b-0 lg:border-r">
+                        <div className="shrink-0 border-b border-[var(--border-soft)] px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--faint)]">
+                          {t('docStudio.markdownSource')}
+                        </div>
+                        <textarea
+                          value={draft}
+                          onChange={(e) => setDraft(e.target.value)}
+                          spellCheck
+                          autoFocus
+                          className="min-h-[50vh] flex-1 resize-none bg-transparent p-4 font-mono text-sm leading-relaxed outline-none"
+                        />
+                      </div>
+                      <div className="min-h-[50vh] bg-[var(--bg)]">
+                        <div className="sticky top-0 z-[1] border-b border-[var(--border-soft)] bg-[var(--bg)]/90 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--faint)] backdrop-blur">
+                          {t('docStudio.livePreview')}
+                        </div>
+                        <div className="prose-chat prose-doc p-5 md:p-7" aria-live="polite">
+                          <Markdown remarkPlugins={[remarkGfm]}>{draft}</Markdown>
+                        </div>
+                      </div>
                     </div>
-                    <textarea
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      spellCheck
-                      autoFocus
-                      className="min-h-[50vh] flex-1 resize-none bg-transparent p-4 font-mono text-sm leading-relaxed outline-none"
-                    />
-                  </div>
-                  <div className="min-h-[50vh] bg-[var(--bg)]">
-                    <div className="sticky top-0 z-[1] border-b border-[var(--border-soft)] bg-[var(--bg)]/90 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--faint)] backdrop-blur">
-                      {t('docStudio.livePreview')}
-                    </div>
-                    <div className="prose-chat prose-doc p-5 md:p-7" aria-live="polite">
-                      <Markdown remarkPlugins={[remarkGfm]}>{draft}</Markdown>
-                    </div>
-                  </div>
+                  ) : (
+                    // default: WYSIWYG rich-text editor (click-and-type)
+                    <RichTextEditor markdown={draft} onChange={setDraft} />
+                  )}
                 </div>
-                <div className="mt-3 flex items-center gap-2 justify-end">
-                  <button onClick={() => { setDraft(doc.markdown || ''); setEditing(false) }} className="px-3 py-1.5 rounded-lg text-sm text-[var(--muted)] hover:bg-[var(--surface-3)]">
-                    {t('common.cancel')}
+                <div className="mt-3 flex items-center gap-2 justify-between">
+                  <button
+                    onClick={() => setRawMode((r) => !r)}
+                    className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--muted)] hover:bg-[var(--surface-3)]"
+                    title={t('docStudio.toggleRawHint')}
+                  >
+                    <Icon.Edit size={14} />
+                    {rawMode ? t('docStudio.switchToRich') : t('docStudio.switchToMarkdown')}
                   </button>
-                  <button onClick={saveEdit} disabled={saving} className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-[var(--accent)] text-white hover:brightness-110 disabled:opacity-50">
-                    {saving ? t('common.saving') : t('docStudio.save')}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => { setDraft(doc.markdown || ''); setEditing(false) }} className="px-3 py-1.5 rounded-lg text-sm text-[var(--muted)] hover:bg-[var(--surface-3)]">
+                      {t('common.cancel')}
+                    </button>
+                    <button onClick={saveEdit} disabled={saving} className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-[var(--accent)] text-white hover:brightness-110 disabled:opacity-50">
+                      {saving ? t('common.saving') : t('docStudio.save')}
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : (

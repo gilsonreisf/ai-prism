@@ -14,6 +14,10 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 - **Ambiente de desenvolvimento 100% local** sem Lakebase/OAuth: PostgreSQL 17 + pgvector
   do Homebrew (`scripts/local-postgres.sh`, `.env.local.example`, `scripts/seed-local.mjs`)
   e scripts npm `local:up|down|status|reset|seed` + `dev:local`.
+- **Editor WYSIWYG no Document Studio**: edição visual (clique-e-digite) de documentos
+  com barra de formatação (títulos, negrito/itálico/tachado, listas, citação, link),
+  mantendo o Markdown puro como modo avançado. Fecha o gap de edição manual só-Markdown
+  apontado no benchmark vs. Claude.
 
 ### Changed
 
