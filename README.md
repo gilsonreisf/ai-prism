@@ -327,16 +327,45 @@ Além de markdown, uma resposta do assistente pode carregar **blocos estruturado
 
 ## Rodando localmente
 
+### Ambiente isolado, sem tokens Lakebase
+
+O modo recomendado usa PostgreSQL 17 + pgvector nativos do Homebrew. Não há
+container, Lakebase ou OAuth para persistir e editar fixtures.
+
 ```bash
 npm install
-npm run dev        # client (Vite, :5173) + servidor (Node --watch, :8000) em paralelo
+cp .env.local.example .env.local
+npm run local:up       # inicializa e sobe o Postgres privado em .local/postgres
+npm run dev:local      # Vite :5173 + Express :8000
 ```
 
-O Vite faz proxy de `/api` para `http://localhost:8000`. Fora do runtime da Databricks App,
-defina no ambiente: `DATABRICKS_HOST`, `DATABRICKS_USER_EMAIL` e `DATABRICKS_USER_TOKEN`
-(para o AI Gateway e demais tools), `SQL_WAREHOUSE_ID` (para as UC Functions / UDF Python)
-e, para o Lakebase, `PGHOST` + `PGPASSWORD` (uma credencial de banco dedicada — o token de
-CLI do workspace não é aceito pelo Lakebase).
+Em outro terminal, com o app já aberto:
+
+```bash
+npm run local:seed     # cria um documento e um slide próprios para testar os Studios
+```
+
+A conversa **Ambiente local de demonstração** permite testar o preview rich text,
+salvamento de documentos e zoom de slides. O chat e tools que invocam AI Gateway,
+Genie, UC ou Vector Search continuam exigindo credenciais reais; basta preenchê-las
+opcionalmente em `.env.local` quando quiser testar a integração híbrida.
+
+```bash
+npm run local:down     # para o banco, preservando os dados
+npm run local:status   # mostra se o banco está ativo
+npm run local:reset    # arquiva o banco atual; local:up cria outro vazio
+```
+
+O Postgres só escuta em `127.0.0.1:55432`; dados e logs ficam em `.local/`, que é
+ignorado pelo Git. O schema usa `vector(1024)` e índice HNSW como no Lakebase.
+O Vite mantém o proxy de `/api` para `http://localhost:8000`.
+
+As dependências locais são `brew install postgresql@17 pgvector`. Não é necessário
+iniciar um serviço global do Homebrew; `local:up` usa os binários versionados diretamente.
+Gerar embeddings ainda requer `DATABRICKS_HOST` e um token válido do workspace.
+
+Para desenvolver diretamente contra recursos Databricks, o fluxo anterior permanece
+disponível via `.env.example` + `npm run dev`.
 
 ## Build e deploy
 

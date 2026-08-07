@@ -707,6 +707,7 @@ export default function ElementCanvas({
   const creating = !!tool
 
   return (
+    <div className="w-full">
     <div
       ref={clipRef}
       tabIndex={0}
@@ -727,7 +728,7 @@ export default function ElementCanvas({
         }
         select([])
       }}
-      className={`relative aspect-video overflow-hidden rounded-md shadow-sm outline-none bg-[var(--surface-2)] ${className}`}
+      className={`relative aspect-video overflow-hidden rounded-md outline-none bg-[var(--surface-2)] ${className}`}
       style={{ touchAction: 'none', cursor: panning ? 'grab' : creating ? 'crosshair' : 'default' }}
     >
       {/* the transformed stage: everything slide-space lives here so zoom/pan
@@ -899,15 +900,6 @@ export default function ElementCanvas({
         )}
       </div>
 
-      {/* zoom control (clip-space, fixed to the corner regardless of pan) */}
-      <div className="absolute bottom-2 right-2 flex items-center gap-0.5 rounded-lg bg-[var(--surface)]/90 backdrop-blur border border-[var(--border)] shadow-sm px-0.5 py-0.5 text-[var(--muted)] select-none">
-        <button className="w-6 h-6 rounded grid place-items-center hover:bg-[var(--surface-3)] text-sm" onClick={() => zoomTo(zoom - 0.25, null)} title="Zoom −">−</button>
-        <button className="px-1.5 h-6 rounded hover:bg-[var(--surface-3)] text-[11px] tabular-nums min-w-[3rem]" onClick={resetView} title="Ajustar (100%)">
-          {Math.round(zoom * 100)}%
-        </button>
-        <button className="w-6 h-6 rounded grid place-items-center hover:bg-[var(--surface-3)] text-sm" onClick={() => zoomTo(zoom + 0.25, null)} title="Zoom +">+</button>
-      </div>
-
       {/* right-click context menu */}
       {menu && <CanvasMenu menu={menu} onClose={() => setMenu(null)} actions={{
         hasSelection: selectedIds.length > 0,
@@ -926,6 +918,17 @@ export default function ElementCanvas({
         backward: () => reorderSelection(-1),
         remove: () => { onChangeElements(removeNodes(elements, selectedIds), { commit: true }); select([]) },
       }} />}
+    </div>
+      {/* Keep controls outside the slide so they never cover slide content. */}
+      <div className="mt-2 flex justify-end" aria-label="Zoom do slide">
+        <div className="flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-0.5 py-0.5 text-[var(--muted)] shadow-sm select-none">
+          <button className="grid h-7 w-7 place-items-center rounded hover:bg-[var(--surface-3)] text-sm" onClick={() => zoomTo(zoom - 0.25, null)} title="Zoom −" aria-label="Diminuir zoom">−</button>
+          <button className="h-7 min-w-[3.25rem] rounded px-1.5 text-[11px] tabular-nums hover:bg-[var(--surface-3)]" onClick={resetView} title="Ajustar (100%)" aria-label="Redefinir zoom para 100%">
+            {Math.round(zoom * 100)}%
+          </button>
+          <button className="grid h-7 w-7 place-items-center rounded hover:bg-[var(--surface-3)] text-sm" onClick={() => zoomTo(zoom + 0.25, null)} title="Zoom +" aria-label="Aumentar zoom">+</button>
+        </div>
+      </div>
     </div>
   )
 }

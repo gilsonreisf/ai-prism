@@ -33,7 +33,7 @@
 // aplicando estes overrides por padrão de nome) torna esta lista automática.
 export const MODELS = [
   { id: 'databricks-claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'Anthropic', blurb: 'Equilibrado e rápido — ótimo padrão para agentes', in: 2, out: 10, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
-  { id: 'databricks-claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'Anthropic', blurb: 'Máxima capacidade de raciocínio e análise', in: 5, out: 25, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
+  { id: 'databricks-claude-opus-5', label: 'Claude Opus 5', provider: 'Anthropic', blurb: 'Máxima capacidade para agentes, código e análise longa', in: 5, out: 25, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
   { id: 'databricks-claude-fable-5', label: 'Claude Fable 5', provider: 'Anthropic', blurb: 'Família Claude 5, geração criativa e ágil', in: 10, out: 50, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768, promptCache: true },
   { id: 'databricks-claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'Anthropic', blurb: 'Rápido e econômico', in: 1, out: 5, vision: true, streamUsage: true, tools: true, maxOut: 32768, promptCache: true },
   // GPT-5.6 family — three tiers of the same generation (sondado ao vivo: os três
@@ -43,7 +43,8 @@ export const MODELS = [
   { id: 'databricks-gpt-5-6-luna', label: 'GPT-5.6 Luna', provider: 'OpenAI', blurb: 'O mais rápido e econômico da família 5.6', in: 1, out: 6, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
   { id: 'databricks-gpt-5-6-terra', label: 'GPT-5.6 Terra', provider: 'OpenAI', blurb: 'Equilíbrio de custo e capacidade para o dia a dia', in: 2.5, out: 15, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
   { id: 'databricks-gpt-5-6-sol', label: 'GPT-5.6 Sol', provider: 'OpenAI', blurb: 'O topo da família: agentes, código e raciocínio longo', in: 5, out: 30, vision: true, streamUsage: true, noTemperature: true, tools: true, maxOut: 32768 },
-  { id: 'databricks-gemini-3-5-flash', label: 'Gemini 3.5 Flash', provider: 'Google', blurb: 'Muito rápido, contexto longo', in: 1.875, out: 11.25, vision: true, streamUsage: false, tools: true, maxOut: 32768 },
+  { id: 'databricks-gemini-3-6-flash', label: 'Gemini 3.6 Flash', provider: 'Google', blurb: 'Multimodal, rápido e eficiente para alto volume', in: 1.875, out: 9.375, vision: true, streamUsage: false, tools: true, maxOut: 32768 },
+  { id: 'databricks-kimi-k3', label: 'Kimi K3', provider: 'Moonshot AI', blurb: 'Contexto longo, multimodal e forte em trabalho agentivo', in: 0.5, out: 2.5, vision: true, streamUsage: false, noTemperature: true, tools: true, maxOut: 32768 },
   { id: 'databricks-llama-4-maverick', label: 'Llama 4 Maverick', provider: 'Meta', blurb: 'Pesos abertos, modelo geral robusto', in: 0.5, out: 1.5, vision: false, streamUsage: false, tools: true, maxOut: 8192 },
   { id: 'databricks-glm-5-2', label: 'GLM-5.2', provider: 'Zhipu AI', blurb: 'Aberto, forte em raciocínio e código', in: 1.4, out: 4.4, vision: false, streamUsage: true, tools: true, maxOut: 32768 },
   { id: 'databricks-qwen35-122b-a10b', label: 'Qwen3.5 122B', provider: 'Alibaba', blurb: 'Aberto e eficiente, raciocínio MoE', in: 0.22, out: 2.2, vision: false, streamUsage: true, tools: true, maxOut: 8192 },

@@ -98,13 +98,14 @@ export async function appServiceToken() {
 }
 
 async function connInfo(user, password) {
+  const sslMode = String(process.env.PGSSLMODE || 'require').toLowerCase()
   return {
     host: await lakebaseHost(),
     port: parseInt(process.env.PGPORT || '5432', 10),
     database: process.env.PGDATABASE || 'databricks_postgres',
     user,
     password,
-    ssl: { rejectUnauthorized: false },
+    ssl: ['disable', 'disabled', 'false', '0'].includes(sslMode) ? false : { rejectUnauthorized: false },
     // keep the handshake snappy; fail loud if Lakebase is unreachable
     connectionTimeoutMillis: 15000,
     // 60s: the Settings template list ships whole mined asset libraries (MBs
@@ -160,7 +161,10 @@ const userPools = new Map()
 async function getUserPool(userEmail, password) {
   let p = userPools.get(userEmail)
   if (!p) {
-    p = new Pool({ ...(await connInfo(userEmail, password)), ...POOL_OPTS })
+    // A normal local Postgres role is stable and deliberately independent of
+    // the app-level test email. Lakebase keeps the historical email-as-role
+    // behavior when PGUSER is absent.
+    p = new Pool({ ...(await connInfo(process.env.PGUSER || userEmail, password)), ...POOL_OPTS })
     p.on('error', (e) => console.warn(`lakebase user pool (${userEmail}): idle client error (dropped):`, e.message))
     userPools.set(userEmail, p)
   }
@@ -555,21 +559,33 @@ async function runSchemaDdl(c) {
     // an HNSW index needs (a DOUBLE PRECISION[] can't be indexed). Dimension is
     // the qwen3-embedding-0-6b output width (probed: 1024). Isolation stays
     // app-level: every query JOINs back to chat_sessions on user_email.
-    await c.query(`CREATE EXTENSION IF NOT EXISTS vector;`)
-    await c.query(`
-      CREATE TABLE IF NOT EXISTS chat_message_embeddings (
-        message_id BIGINT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
-        session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-        embedding vector(1024),
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );`)
-    // partial index by session for the per-session retrieval filter, plus an
-    // HNSW index for cosine ANN search (vector_cosine_ops matches the <=>
-    // operator we query with). HNSW builds incrementally, fine for our volume.
-    await c.query(`CREATE INDEX IF NOT EXISTS idx_msg_emb_session ON chat_message_embeddings(session_id);`)
-    await c.query(
-      `CREATE INDEX IF NOT EXISTS idx_msg_emb_hnsw ON chat_message_embeddings USING hnsw (embedding vector_cosine_ops);`
-    )
+    if (process.env.LOCAL_DEV_MODE === '1' && process.env.LOCAL_PGVECTOR !== '1') {
+      // Homebrew Postgres is enough for UI/Studio development. Avoid requiring
+      // a separately compiled pgvector extension; semantic retrieval is off in
+      // .env.local and this compatible table keeps the schema probes current.
+      await c.query(`
+        CREATE TABLE IF NOT EXISTS chat_message_embeddings (
+          message_id BIGINT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+          session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+          embedding DOUBLE PRECISION[],
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );`)
+      await c.query(`CREATE INDEX IF NOT EXISTS idx_msg_emb_session ON chat_message_embeddings(session_id);`)
+    } else {
+      await c.query(`CREATE EXTENSION IF NOT EXISTS vector;`)
+      await c.query(`
+        CREATE TABLE IF NOT EXISTS chat_message_embeddings (
+          message_id BIGINT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+          session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+          embedding vector(1024),
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );`)
+      // HNSW uses vector_cosine_ops, matching the <=> queries below.
+      await c.query(`CREATE INDEX IF NOT EXISTS idx_msg_emb_session ON chat_message_embeddings(session_id);`)
+      await c.query(
+        `CREATE INDEX IF NOT EXISTS idx_msg_emb_hnsw ON chat_message_embeddings USING hnsw (embedding vector_cosine_ops);`
+      )
+    }
     // ---- per-user image-generation model selection -----------------------
     // mirrors user_template_selection: one row per user naming the image model
     // their turns use (NULL/no row → the org default). Not on chat_sessions

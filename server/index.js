@@ -276,7 +276,11 @@ function userEmail(req) {
   )
 }
 function userToken(req) {
-  return req.headers['x-forwarded-access-token'] || process.env.DATABRICKS_USER_TOKEN || null
+  return (
+    req.headers['x-forwarded-access-token'] ||
+    process.env.DATABRICKS_USER_TOKEN ||
+    (process.env.LOCAL_DEV_MODE === '1' ? 'local-dev-token' : null)
+  )
 }
 
 function auth(req, res, next) {

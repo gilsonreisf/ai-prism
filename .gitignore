@@ -1,16 +1,15 @@
 node_modules/
 npm-debug.log*
 .env
+.env.local
+.local/
 .databricks/
 .DS_Store
 *.swp
 .idea/
 .vscode/
 .claude/
-
-# Scratch de decks: fixtures pesadas + material real minerado (pptx/pdf/png) —
-# não versionado (dados potencialmente de cliente, ~26MB)
-scratch-decks/
+.isaac/
 
 # Documentos internos de design/roadmap — não versionados no repo público
 sandbox/

@@ -27,6 +27,7 @@ você concorda em manter as interações respeitosas e acolhedoras.
 ## Pré-requisitos
 
 - **Node.js 22+** (veja [`.nvmrc`](.nvmrc) — `nvm use` seleciona a versão certa).
+- **PostgreSQL 17 + pgvector** (`brew install postgresql@17 pgvector`); não requer Docker.
 - **Databricks CLI ≥ 1.8** para deploy e para rodar o app contra um workspace real.
 - Acesso a um workspace Databricks com AI Gateway, Serverless SQL e Lakebase habilitados,
   caso queira exercitar o fluxo completo (o QA offline não precisa de workspace).
@@ -36,13 +37,16 @@ você concorda em manter as interações respeitosas e acolhedoras.
 ```bash
 nvm use                 # Node da versão do .nvmrc
 npm install
-cp .env.example .env     # preencha as variáveis para dev local (veja comentários no arquivo)
-npm run dev              # client (Vite, :5173) + servidor (Node --watch, :8000)
+cp .env.local.example .env.local
+npm run local:up
+npm run dev:local
+# em outro terminal: npm run local:seed
 ```
 
 O Vite faz proxy de `/api` para `http://localhost:8000`. Fora do runtime da Databricks App,
-as variáveis de ambiente do [`.env.example`](.env.example) suprem o que o runtime injetaria
-(host do workspace, warehouse, Lakebase etc.).
+o modo local usa Postgres nativo em `127.0.0.1:55432` e não requer tokens Lakebase.
+Use [`.env.example`](.env.example) + `npm run dev` apenas para desenvolvimento híbrido
+contra recursos reais do workspace.
 
 ## Fluxo de desenvolvimento
 

@@ -9,7 +9,7 @@
 //   - the model can follow the user's own instruction directly on the media
 //     (summary, action items, decisions, a follow-up email — never hardcoded),
 //   - no separate ASR endpoint to provision.
-// Verified live (e2-demo-field-eng): databricks-gemini-3-5-flash returns a
+// Verified live (e2-demo-field-eng): the Gemini Flash endpoint returns a
 // correct transcript for an `audio_url` data URI; request bodies up to ~20MB are
 // accepted (raw media ~15MB), well past the 4MB foundation-model cap because the
 // gateway's external-model route is more generous.
@@ -52,7 +52,7 @@ const MAX_MEDIA_BYTES = 15 * 1024 * 1024 // 15MB raw → ~20MB base64 body, unde
 
 // The multimodal model used for media understanding. Gemini is the family that
 // accepts audio/video on Databricks; overridable per workspace.
-const DEFAULT_MEDIA_MODEL = 'databricks-gemini-3-5-flash'
+const DEFAULT_MEDIA_MODEL = 'databricks-gemini-3-6-flash'
 
 function ext(name) {
   const i = name.lastIndexOf('.')

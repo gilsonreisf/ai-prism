@@ -9,6 +9,25 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 <!-- Adicione aqui as mudanças ainda não lançadas, em Added / Changed / Fixed / Removed. -->
 
+### Added
+
+- **Ambiente de desenvolvimento 100% local** sem Lakebase/OAuth: PostgreSQL 17 + pgvector
+  do Homebrew (`scripts/local-postgres.sh`, `.env.local.example`, `scripts/seed-local.mjs`)
+  e scripts npm `local:up|down|status|reset|seed` + `dev:local`.
+
+### Changed
+
+- **Catálogo de modelos** atualizado (sondado no gateway): Claude Opus 4.8 → **Opus 5**,
+  Gemini 3.5 Flash → **3.6 Flash** e novo **Kimi K3** (Moonshot AI); modelo de mídia padrão
+  passa a `gemini-3-6-flash`.
+- **Document Studio**: o editor de markdown ganha split-pane com **preview rich text ao vivo**.
+- **Editor de slides**: os controles de zoom saíram de cima do slide (não cobrem mais o conteúdo).
+
+### Fixed
+
+- `server/db.js`: `PGSSLMODE` respeitado (permite Postgres local sem SSL) e `PGUSER` desacopla
+  o role do banco do e-mail app-level; fallback de embeddings sem a extensão `vector` no modo local.
+
 ## [1.0.0] - 2026-07-29
 
 Primeira versão consolidada: chat multimodelo com artefatos e ferramentas sobre o

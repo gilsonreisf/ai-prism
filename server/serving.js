@@ -66,6 +66,7 @@ const FAMILY_PROVIDER = [
   [/gpt/, 'OpenAI'],
   [/claude/, 'Anthropic'],
   [/gemini/, 'Google'],
+  [/kimi/, 'Moonshot AI'],
   [/llama/, 'Meta'],
   [/qwen/, 'Alibaba'],
   [/glm/, 'Zhipu AI'],
@@ -98,6 +99,7 @@ const FAMILY_PRICE_BOOK = [
   [/gpt/, [1.25, 10]], // frontier GPT default
   [/gemini.*flash/, [0.3, 2.5]],
   [/gemini/, [1.25, 10]], // Gemini Pro-class default
+  [/kimi.*k3/, [0.5, 2.5]],
   [/llama/, [0.5, 1.5]],
   [/qwen/, [0.4, 1.2]],
   [/glm/, [0.6, 2]],
@@ -112,7 +114,7 @@ export function derivePrice(id) {
   return null
 }
 
-const FAMILY_LABEL = { gpt: 'GPT', claude: 'Claude', gemini: 'Gemini', llama: 'Llama', qwen: 'Qwen', glm: 'GLM' }
+const FAMILY_LABEL = { gpt: 'GPT', claude: 'Claude', gemini: 'Gemini', kimi: 'Kimi', llama: 'Llama', qwen: 'Qwen', glm: 'GLM' }
 
 // databricks-gpt-5-6-terra -> "GPT 5.6 Terra". Strips the databricks- prefix,
 // maps the family token to its display form, joins adjacent numbers with a dot
