@@ -17,7 +17,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: npm
+          # Sem `cache: npm`: o cache do setup-node interage mal com o `.npmrc omit=dev`
+          # deste repo e pendura o `npm ci` no runner. O install é rápido (~poucos
+          # segundos, 23 devDeps) e não precisa de cache.
 
       - name: Install dependencies
         # O .npmrc define omit=dev (o app deployado roda pré-compilado e não precisa
