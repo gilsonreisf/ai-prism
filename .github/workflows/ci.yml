@@ -10,6 +10,7 @@ jobs:
   build-and-qa:
     name: Build & QA
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +23,20 @@ jobs:
         # O .npmrc define omit=dev (o app deployado roda pré-compilado e não precisa
         # de pacotes no install da Databricks). Mas TODAS as deps do projeto vivem em
         # devDependencies, então o CI precisa de --include=dev para rodar QA e build.
-        run: npm ci --include=dev
+        # Com timeout + 1 retry: o install já pendurou em silêncio no runner
+        # ("Exit handler never called!"), um bug transitório do npm; o retry recupera.
+        run: |
+          for attempt in 1 2; do
+            echo "::group::npm ci (tentativa $attempt)"
+            if timeout 300 npm ci --include=dev --foreground-scripts; then
+              echo "::endgroup::"; exit 0
+            fi
+            echo "::endgroup::"
+            echo "npm ci falhou/pendurou na tentativa $attempt; limpando e tentando de novo."
+            rm -rf node_modules
+          done
+          echo "::error::npm ci falhou após 2 tentativas."
+          exit 1
 
       - name: QA (checagens offline de deck/planilha/documento)
         run: npm run qa
