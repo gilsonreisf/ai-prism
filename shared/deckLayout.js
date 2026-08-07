@@ -286,8 +286,44 @@ function layoutStack(group, frame, theme, depth, measuring = false) {
   const innerMain = Math.max(frame[main] - pad * 2, 0.05)
   const kids = (group.children || []).filter((c) => c && !c.hidden)
   const avail = dir === 'column' ? { w: innerCross, h: innerMain } : { w: innerMain, h: innerCross }
+
+  // icon normalization: if multiple children are groups with icons, measure all
+  // and find the max icon size — then force all to that size for visual consistency
+  let iconNorm = null
+  const childGroups = kids.filter((c) => c.type === 'group')
+  if (childGroups.length > 1) {
+    const groupsWithIcons = childGroups.filter((g) => {
+      const anyIcon = (g.children || []).some((c) => c.type === 'icon')
+      return anyIcon
+    })
+    if (groupsWithIcons.length > 1) {
+      // collect the icons and find the largest
+      const icons = []
+      for (const g of groupsWithIcons) {
+        for (const c of g.children || []) {
+          if (c.type === 'icon') icons.push(c)
+        }
+      }
+      if (icons.length > 1) {
+        const maxSize = Math.max(...icons.map((ic) => Math.min(ic.box?.w || 0.4, ic.box?.h || 0.4)))
+        iconNorm = { size: maxSize, groupIds: new Set(groupsWithIcons.map((g) => g.id)) }
+      }
+    }
+  }
+
   const measures = kids.map((el) => {
-    const m = measureNode(el, avail, theme, depth + 1)
+    let m = measureNode(el, avail, theme, depth + 1)
+    // if this child is a group with icons and we have a norm, adjust the measured
+    // cross-size to reflect the normalized icon
+    if (iconNorm && el.type === 'group' && iconNorm.groupIds.has(el.id)) {
+      const hasIcon = (el.children || []).some((c) => c.type === 'icon')
+      if (hasIcon && dir === 'row') {
+        // in a row, icon normalization affects the cross-size (height)
+        m = { ...m, cross: iconNorm.size }
+      } else if (hasIcon && dir === 'column') {
+        // in a column, it might affect the main-size; we'll handle in flattenElements
+      }
+    }
     // flex-basis:0 semantics — a grow child without an explicit main size is
     // sized purely by distribution (grow:1 on three cards = three equal
     // cards, whatever their content), never by its measured content
@@ -328,11 +364,12 @@ function layoutStack(group, frame, theme, depth, measuring = false) {
             if (total <= budget + 0.005 || texts.every((m) => m.fontFit <= 7)) break
           }
         } else if (texts.length) {
-          // row stacks: squeeze text widths (floor 60%) — the flatten-time
-          // fit then shrinks each font to its narrowed box
+          // row stacks: squeeze text widths (floor 0.7 — was 0.6 which broke legibility).
+          // The flatten-time fitTextStyle will protect against absurd wrapping by
+          // truncating if needed, so we can be somewhat aggressive here.
           const textTotal = texts.reduce((a, m) => a + m.main, 0)
           if (textTotal > 0.01) {
-            const factor = Math.max((textTotal + leftover) / textTotal, 0.6)
+            const factor = Math.max((textTotal + leftover) / textTotal, 0.7)
             for (const m of texts) m.main *= factor
           }
         }
@@ -357,6 +394,8 @@ function layoutStack(group, frame, theme, depth, measuring = false) {
     else if (j === 'end') cursor += leftover
     else if (j === 'between' && kids.length > 1) extraGap = leftover / (kids.length - 1)
   }
+
+
   const align = s.align || 'stretch'
   const placed = measures.map((m) => {
     // icons/images keep their intrinsic cross size (stretching distorts art)
@@ -571,7 +610,17 @@ export function flattenElements(elements, theme, { boxes = null, background = nu
       return
     }
     const style = el.type === 'text' ? fitTextStyle(el, box, theme, fontFit) : resolveStyleTokens(el.style, theme)
-    out.push({ ...el, box, style, srcId: el.id })
+
+    // if fitTextStyle returned a modified text, update it on the output
+    let outEl = { ...el, box, style, srcId: el.id }
+    if (style.text && style.text !== el.text) {
+      outEl.text = style.text
+      // delete the text override from style (it was only used to return it here)
+      const { text, ...cleanStyle } = style
+      outEl.style = cleanStyle
+    }
+
+    out.push(outEl)
   }
   for (const el of elements || []) walk(el, 0, 0, null, 0)
   return out
@@ -579,27 +628,59 @@ export function flattenElements(elements, theme, { boxes = null, background = nu
 
 // Freeform text auto-fit (same philosophy as the semantic engine's fitFont
 // everywhere): the authored fontSize is a MAXIMUM — when the wrapped text
-// would overflow its box, the paint size shrinks until it fits (floor 7pt).
+// would overflow its box, the paint size shrinks until it fits (floor 8pt).
 // This is what keeps LLM-authored freeform slides from ever painting a title
 // over the subtitle below it, and it composes with layoutStack's stage-2
 // overflow compression (smaller frame → smaller font).
+//
+// HARDENING: two scenarios are now protected:
+// 1. If a box is SO narrow that text would wrap excessively (>6 lines at current size),
+//    truncate/ellipsize to avoid illegible wrapping.
+// 2. If a box is too tall relative to width (content could sprawl vertically forever),
+//    cap the effective box height to prevent runaway layouts. This handles freeform
+//    slides where LLM-authored boxes have absurd dimensions.
 function fitTextStyle(el, box, theme, stackFit = null) {
   const st = resolveStyleTokens(el.style, theme)
   const size = st.fontSize || TYPE.body
+  if (!box || box.h < 0.08 || box.w < 0.2) return st
+  const raw = String(el.text || '')
+  const text = st.uppercase ? raw.toUpperCase() : raw
+
+  // PROTECTION 1: unreasonable narrowness leading to absurd wrapping.
+  // This check comes BEFORE the stackFit early return so it catches even
+  // texts that were pre-fitted by layoutStack's overflow stage 2.
+  const boxW = Math.max(box.w - TEXT_INSETS, 0.15)
+  const estLines = estimateLines(text, size, boxW)
+  if (estLines > 6 && boxW < 1.2) {
+    // box is too narrow for legible wrapping; truncate to fit 1-2 lines max
+    const charW = CHAR_W + (st.bold ? 0.05 : 0) + (st.letterSpacing > 1 ? 0.05 : 0)
+    const charsPerLine = Math.max(Math.floor(boxW / ((size / 72) * charW)), 3)
+    const truncated = text.slice(0, charsPerLine * 2).trimEnd() + (text.length > charsPerLine * 2 ? '…' : '')
+    return { ...st, fontSize: size, text: truncated }
+  }
+
   // a column stack that ran uniform overflow scaling already measured this
   // box at exactly `stackFit` — paint that size; re-fitting per box would
   // re-introduce the per-sibling quantization the shared scale removed
   if (stackFit) return stackFit < size ? { ...st, fontSize: stackFit } : st
-  if (!box || box.h < 0.08 || box.w < 0.2) return st
-  const raw = String(el.text || '')
-  const text = st.uppercase ? raw.toUpperCase() : raw
+
+  // PROTECTION 2: unreasonable tallness. If box.h is way larger than needed
+  // for the text (e.g., 2.6in for a label), clamp it to prevent the flatten-time
+  // fitFont from creating a legitimate 2.6in tall rendered text (which breaks layout)
+  let effectiveBoxH = box.h
+  const estimatedH = textHeightIn(text, size, boxW, st.lineHeight || 1)
+  if (estimatedH > 0 && effectiveBoxH / estimatedH > 3.5) {
+    // box is way taller than needed; use a more reasonable height (~2× text height)
+    effectiveBoxH = Math.max(estimatedH * 2, 0.4)
+  }
+
   let fitted
   if (st.bullet) {
-    fitted = fitListFont(text.split('\n').filter(Boolean), box.w, box.h, size, { lineSpacing: st.lineHeight || 1.12, min: 7 })
+    fitted = fitListFont(text.split('\n').filter(Boolean), box.w, effectiveBoxH, size, { lineSpacing: st.lineHeight || 1.12, min: 8 })
   } else {
     // bold/tracked type runs wider than the average glyph advance
     const charW = CHAR_W + (st.bold ? 0.05 : 0) + (st.letterSpacing > 1 ? 0.05 : 0)
-    fitted = fitFont(text, box.w, box.h + 0.02, size, { lineSpacing: st.lineHeight || 1, min: 7, charW })
+    fitted = fitFont(text, box.w, effectiveBoxH + 0.02, size, { lineSpacing: st.lineHeight || 1, min: 8, charW })
   }
   return fitted < size ? { ...st, fontSize: fitted } : st
 }

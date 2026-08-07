@@ -649,9 +649,38 @@ export function ChartElView({ el, theme }) {
         body.push(<polyline key={`s${si}`} points={pts.join(' ')} fill="none" stroke={palette[si % palette.length]} strokeWidth="1.75" strokeLinejoin="round" />)
       })
     }
-    cats.forEach((cat, ci) => {
-      body.push(label(plot.x + ci * slot + slot / 2, plot.y + plot.h + 8.5, String(cat), 'middle', 7.5))
-    })
+    // anti-overlap logic for category labels: if slots are too narrow, rotate labels
+    // or omit alternating ones to prevent collision.
+    const labelW = Math.max(...cats.map((c) => String(c).length)) * 4.2 // rough char width at 7.5pt
+    if (labelW > slot * 0.9 && cats.length > 4) {
+      // labels won't fit side-by-side — rotate and show all, or omit every other
+      if (labelW > slot * 1.5) {
+        // severe collision: omit every other label
+        cats.forEach((cat, ci) => {
+          if (ci % 2 === 0) {
+            body.push(label(plot.x + ci * slot + slot / 2, plot.y + plot.h + 8.5, String(cat), 'middle', 7.5))
+          }
+        })
+      } else {
+        // moderate collision: rotate labels 45° to save space
+        cats.forEach((cat, ci) => {
+          const x = plot.x + ci * slot + slot / 2
+          const y = plot.y + plot.h + 8.5
+          body.push(
+            <g key={`l_rotate_${ci}`} transform={`translate(${x},${y}) rotate(45)`}>
+              <text x="0" y="0" fontSize="6.5" fill={theme.muted} textAnchor="start" fontFamily={theme.bodyFont}>
+                {String(cat).slice(0, 16)}
+              </text>
+            </g>
+          )
+        })
+      }
+    } else {
+      // labels fit normally
+      cats.forEach((cat, ci) => {
+        body.push(label(plot.x + ci * slot + slot / 2, plot.y + plot.h + 8.5, String(cat), 'middle', 7.5))
+      })
+    }
   }
   if (showLegend) {
     const itemW = Math.min(legendItems.length ? (W - 8) / legendItems.length : W, 90)
