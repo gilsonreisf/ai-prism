@@ -564,6 +564,8 @@ function toolCallLabel(resolver, args, fallbackName) {
       return withParts('Genie One', intent)
     case 'vector-search':
       return withParts('Vector Search', intent, resolver.ref?.indexName)
+    case 'web-search':
+      return withParts('Web Search', intent)
     case 'mcp-external':
       return withParts(resolver.ref?.connectionName || 'MCP', resolver.mcpToolName)
     case 'mcp-external-error':
