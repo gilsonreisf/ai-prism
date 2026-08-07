@@ -162,6 +162,22 @@ export const History = (p) => (
 export const Presentation = (p) => (
   <svg {...s(p)}><rect x="2" y="3" width="20" height="13" rx="1.5" /><path d="M8 21h8M12 16v5M6 8h4M6 11h7" /></svg>
 )
+// rich-text editor toolbar glyphs (lucide-standard paths)
+export const List = (p) => (
+  <svg {...s(p)}><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></svg>
+)
+export const ListOrdered = (p) => (
+  <svg {...s(p)}><path d="M10 6h11M10 12h11M10 18h11M4 6h1v4M4 10h2M6 18H4c0-1 2-2 2-3s-1-1.5-2-1" /></svg>
+)
+export const Quote = (p) => (
+  <svg {...s(p)}><path d="M6 17h3l2-4V7H5v6h3zM14 17h3l2-4V7h-6v6h3z" /></svg>
+)
+export const Link = (p) => (
+  <svg {...s(p)}><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5" /><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5" /></svg>
+)
+export const Eraser = (p) => (
+  <svg {...s(p)}><path d="M7 21h10M5 13l6-6 7 7-5 5H8z" /></svg>
+)
 export const Eye = (p) => (
   <svg {...s(p)}><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" /><circle cx="12" cy="12" r="3" /></svg>
 )

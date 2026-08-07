@@ -45,6 +45,7 @@
     "jszip": "^3.10.1",
     "lucide-static": "^1.22.0",
     "mammoth": "^1.8.0",
+    "marked": "^18.0.7",
     "multer": "^2.0.1",
     "pdf-parse": "^1.1.1",
     "pg": "^8.13.1",
@@ -57,6 +58,8 @@
     "rehype-highlight": "^7.0.1",
     "remark-gfm": "^4.0.0",
     "tailwindcss": "^3.4.17",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2",
     "vite": "^6.0.5",
     "xlsx": "^0.18.5"
   }
