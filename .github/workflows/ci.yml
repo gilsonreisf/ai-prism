@@ -17,23 +17,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
           cache: npm
 
-      - name: Upgrade npm
-        # O npm 10.9.x que vem com o Node 22 pendura o `npm ci` no runner e morre com
-        # "Exit handler never called!" (bug do próprio npm). O npm 11 corrige.
-        run: npm install -g npm@11
-
       - name: Install dependencies
-        # --include=dev: o .npmrc define omit=dev (o app deployado roda pré-compilado
-        # e não precisa de pacotes no install da Databricks), mas TODO o toolchain do
-        # projeto vive em devDependencies, então o CI precisa incluí-las.
+        # Usa o registry público (registry-url acima): fora da VPN da Databricks o
+        # proxy interno (npm-proxy.cloud.databricks.com) é inalcançável e o `npm ci`
+        # pendura em silêncio. As URLs do package-lock.json apontam para o registry
+        # público; localmente, o `~/.npmrc` + replace-registry-host as reescrevem
+        # transparentemente para o proxy interno.
+        # --include=dev: o .npmrc do repo tem omit=dev (o app deployado roda
+        # pré-compilado), mas TODO o toolchain vive em devDependencies.
         # --ignore-scripts: pula o postinstall do esbuild (baixa binário da rede); o
         # binário já vem do pacote optional @esbuild/linux-x64 no lockfile.
-        # --maxsockets 1: o `npm ci` deadlocka em silêncio neste runner (roda em 4s
-        # localmente). Serializar as conexões evita o deadlock do pool de sockets do
-        # npm em CI. --loglevel=silly deixa o progresso visível se ainda travar.
-        run: npm ci --include=dev --ignore-scripts --maxsockets 1 --loglevel=silly
+        run: npm ci --include=dev --ignore-scripts
 
       - name: QA (checagens offline de deck/planilha/documento)
         run: npm run qa
