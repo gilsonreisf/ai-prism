@@ -258,6 +258,7 @@ export default {
   'loading.deck': 'Preparando apresentação…',
   'loading.deckQuestions': 'Preparando perguntas…',
   'loading.spreadsheet': 'Preparando planilha…',
+  'loading.document': 'Preparando documento…',
   'loading.fallback': 'Preparando visualização…',
 
   // deck questions block

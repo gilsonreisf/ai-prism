@@ -9,9 +9,49 @@ import { THEME_COLOR_TOKENS, resolveDeckTheme } from '../shared/deckTheme.js'
 // `{{block:N}}` placeholder the frontend renders in place, and stores the
 // resolved block in a parallel `blocks` array. Chart/table data always comes
 // from deterministic candidates (see analysis.js), never invented by the model.
-const FENCE_RE = /```prism-block\s*([\s\S]*?)```/g
-const TRAILING_UNCLOSED_RE = /```prism-block[\s\S]*$/
+// Opener of a prism-block fence. We deliberately DON'T match the closing ``` in
+// this regex: a block's JSON body can itself contain ``` (a `document`'s markdown
+// may embed fenced code, an insight may quote code), and a lazy `...```/ closes
+// on that inner fence, truncating the JSON so it fails to parse and the raw
+// escaped JSON leaks into the chat. Instead we locate the opener, then scan the
+// JSON object by brace balance (see scanJsonObject), which is ``` -agnostic.
+const FENCE_OPEN_RE = /```prism-block[ \t]*\r?\n?/g
 const MAX_BLOCKS = 12
+
+// From `text` starting at `start` (which must be at/near the JSON), find the
+// first `{` and return { json, end } where `json` is the balanced object string
+// and `end` is the index just past its closing `}`. Brace counting respects
+// string literals and escapes so braces inside strings don't miscount. Returns
+// null if no balanced object is found (truncated / malformed).
+function scanJsonObject(text, start) {
+  let i = start
+  while (i < text.length && text[i] !== '{') {
+    // only whitespace may precede the object; anything else means no block here
+    if (!/\s/.test(text[i])) return null
+    i++
+  }
+  if (i >= text.length) return null
+  const objStart = i
+  let depth = 0
+  let inStr = false
+  let escaped = false
+  for (; i < text.length; i++) {
+    const ch = text[i]
+    if (inStr) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') inStr = true
+    else if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return { json: text.slice(objStart, i + 1), end: i + 1 }
+    }
+  }
+  return null // never balanced — truncated mid-generation
+}
 
 const ALLOWED_TYPES = new Set(['chart', 'table', 'insight', 'deck', 'deck-questions', 'spreadsheet', 'image', 'document'])
 
@@ -2250,26 +2290,53 @@ export function extractPrismBlocks(fullText, chartCandidates = [], template, ima
   }
   const blocks = []
 
-  let content = fullText.replace(FENCE_RE, (_match, jsonStr) => {
-    if (blocks.length >= MAX_BLOCKS) return ''
+  // Walk the text, replacing each prism-block fence with a {{block:N}} marker.
+  // For each opener we scan the JSON by brace balance (``` -agnostic), then skip
+  // past the JSON and its optional closing ``` fence. Rebuilt as a string so a
+  // block's own ``` (fenced code inside a document's markdown) can't truncate it.
+  let out = ''
+  let cursor = 0
+  FENCE_OPEN_RE.lastIndex = 0
+  let m
+  while ((m = FENCE_OPEN_RE.exec(fullText)) !== null) {
+    const scanned = scanJsonObject(fullText, m.index + m[0].length)
+    // no balanced object after the opener (truncated / malformed): drop from the
+    // opener to the end of text so raw JSON never leaks, and stop.
+    if (!scanned) {
+      out += fullText.slice(cursor, m.index)
+      cursor = fullText.length
+      break
+    }
+    // text before this fence is kept as-is
+    out += fullText.slice(cursor, m.index)
+    // advance past the JSON, then past an optional closing ``` (with surrounding
+    // whitespace/newlines) so the fence's tail doesn't linger in the output
+    let after = scanned.end
+    const tail = fullText.slice(after).match(/^[ \t]*\r?\n?```/)
+    if (tail) after += tail[0].length
+    // Models sometimes emit a stray run of JSON structural punctuation (e.g. an
+    // extra `]}` that over-closes the slides array) right after the fence. Real
+    // prose is never only brackets/braces/commas, so drop such an orphan up to
+    // the next newline — otherwise it leaks into the chat as "]}" (see #12/#13).
+    const orphan = fullText.slice(after).match(/^[ \t]*[\]})\s,]*[\]})][ \t]*(?=\r?\n|$)/)
+    if (orphan) after += orphan[0].length
+    cursor = after
+
+    if (blocks.length >= MAX_BLOCKS) continue
     let parsed
     try {
-      parsed = JSON.parse(jsonStr)
+      parsed = JSON.parse(scanned.json)
     } catch {
-      return '' // malformed fence — degrade to plain text, no block
+      continue // malformed JSON — degrade to plain text, no block
     }
     const resolved = resolveOne(parsed, byId, template, imageById)
-    if (!resolved) return ''
+    if (!resolved) continue
     blocks.push(resolved)
-    return `\n\n{{block:${blocks.length - 1}}}\n\n`
-  })
+    out += `\n\n{{block:${blocks.length - 1}}}\n\n`
+  }
+  out += fullText.slice(cursor)
 
-  // a fence truncated mid-generation (e.g. hit max_tokens) never got a
-  // closing ``` and so never matched above — strip it so raw JSON never leaks
-  content = content
-    .replace(TRAILING_UNCLOSED_RE, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  const content = out.replace(/\n{3,}/g, '\n\n').trim()
 
   return { content, blocks }
 }
