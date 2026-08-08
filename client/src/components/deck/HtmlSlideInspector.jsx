@@ -115,14 +115,42 @@ function TreeRow({ node, depth, selectedPaths, onSelect, expanded, toggle }) {
   )
 }
 
-function Field({ label, children, dot }) {
+// The override marker to the left of a property label. Claude Design parity:
+// a small dot when the property is set on THIS element, which becomes an × on
+// hover to unset it (falls back to the ← inherited value). No override → an
+// inert placeholder that keeps labels aligned. Replaces the old trailing eraser.
+function Marker({ dot, onUnset }) {
+  if (dot && onUnset) {
+    return (
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          onUnset()
+        }}
+        title="Remover (voltar ao herdado)"
+        className="group/mk w-3 h-3 shrink-0 grid place-items-center -ml-0.5"
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] group-hover/mk:hidden" />
+        <svg viewBox="0 0 12 12" width="10" height="10" className="hidden group-hover/mk:block text-[var(--accent)]" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+          <path d="M3 3l6 6M9 3l-6 6" />
+        </svg>
+      </button>
+    )
+  }
+  return <span className="w-3 shrink-0" aria-hidden />
+}
+
+// A property row. Label sits at the TOP-left (not vertically centered against a
+// multi-line control), matching Claude Design; the control area fills the rest
+// and can stack (`column`) for wide segmented controls that would overflow.
+function Field({ label, children, dot, onUnset, column = false }) {
   return (
-    <div className="flex items-center gap-2 min-h-8">
-      <label className="text-[11px] text-[var(--muted)] w-[4.5rem] shrink-0 flex items-center gap-1">
-        {dot && <span className="w-1 h-1 rounded-full bg-[var(--accent)] shrink-0" title="Definido neste elemento" />}
+    <div className={`flex gap-2 min-h-8 ${column ? 'flex-col !gap-1' : 'items-start'}`}>
+      <label className={`text-[11px] text-[var(--muted)] flex items-center gap-1 pt-1.5 ${column ? '' : 'w-[4.5rem] shrink-0'}`}>
+        <Marker dot={dot} onUnset={onUnset} />
         {label}
       </label>
-      <div className="flex-1 flex items-center gap-1.5 min-w-0 flex-wrap">{children}</div>
+      <div className={`flex items-center gap-1.5 min-w-0 flex-wrap ${column ? 'w-full' : 'flex-1'}`}>{children}</div>
     </div>
   )
 }
@@ -139,15 +167,17 @@ function SectionHead({ children, onReset }) {
   )
 }
 const inputCls = 'min-w-0 text-[12px] rounded-md bg-[var(--surface)] border border-[var(--border)] px-2 py-1 outline-none focus:border-[var(--accent)]'
-// a small segmented toggle (Hug/Fixed/Fill, None/All/…)
-function Seg({ options, value, onChange }) {
+// a small segmented toggle (Hug/Fixed/Fill, None/All/…). `fill` makes every
+// option flex-1 so a 4-way control (e.g. Position modes) spans the row without
+// clipping the last label.
+function Seg({ options, value, onChange, fill = false }) {
   return (
-    <div className="flex rounded-md border border-[var(--border)] overflow-hidden text-[11px]">
+    <div className={`flex rounded-md border border-[var(--border)] overflow-hidden text-[11px] ${fill ? 'w-full' : ''}`}>
       {options.map((o, i) => (
         <button
           key={o.value}
           onClick={() => onChange(o.value)}
-          className={`px-2 h-6 whitespace-nowrap ${i ? 'border-l border-[var(--border)]' : ''} ${
+          className={`px-2 h-6 whitespace-nowrap ${fill ? 'flex-1' : ''} ${i ? 'border-l border-[var(--border)]' : ''} ${
             value === o.value ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--muted)] hover:text-[var(--text)]'
           }`}
         >
@@ -171,8 +201,9 @@ function BoxEdit({ label, prop, mode, c, inl, set, t }) {
   const num = 'min-w-0 w-full text-[12px] rounded-md bg-[var(--surface)] border border-[var(--border)] px-1.5 py-1 outline-none focus:border-[var(--accent)]'
   return (
     <div className="space-y-1">
-      <Field label={label} dot={inl}>
+      <Field label={label} dot={inl} onUnset={() => set({ [prop]: null })} column>
         <Seg
+          fill
           options={[
             { value: 'none', label: t('deckStudio.htmlEdit.none') },
             { value: 'all', label: t('deckStudio.htmlEdit.all') },
@@ -189,18 +220,18 @@ function BoxEdit({ label, prop, mode, c, inl, set, t }) {
         />
       </Field>
       {mode === 'all' && (
-        <div className="pl-[4.5rem]">
+        <div>
           <input type="number" min={0} value={T} onChange={(e) => set({ [prop]: `${e.target.value || 0}px` })} className={`${num} !w-16`} />
         </div>
       )}
       {mode === 'xy' && (
-        <div className="pl-[4.5rem] grid grid-cols-2 gap-1.5">
+        <div className="grid grid-cols-2 gap-1.5">
           <label className="flex items-center gap-1 text-[10px] text-[var(--muted)]">Y<input type="number" value={T} onChange={(e) => write(e.target.value || 0, R, e.target.value || 0, L)} className={num} /></label>
           <label className="flex items-center gap-1 text-[10px] text-[var(--muted)]">X<input type="number" value={R} onChange={(e) => write(T, e.target.value || 0, B, e.target.value || 0)} className={num} /></label>
         </div>
       )}
       {mode === 'individual' && (
-        <div className="pl-[4.5rem] grid grid-cols-4 gap-1">
+        <div className="grid grid-cols-4 gap-1">
           {[['T', T, (v) => write(v, R, B, L)], ['R', R, (v) => write(T, v, B, L)], ['B', B, (v) => write(T, R, v, L)], ['L', L, (v) => write(T, R, B, v)]].map(([lbl, val, on]) => (
             <label key={lbl} className="flex flex-col items-center gap-0.5 text-[9px] text-[var(--faint)]">
               {lbl}
@@ -349,18 +380,15 @@ export default function HtmlSlideInspector({
             {info.textLeaf && (
               <section className="space-y-1">
                 <SectionHead>{t('deckStudio.htmlEdit.typography')}</SectionHead>
-                <Field label={t('deckStudio.htmlEdit.size')} dot={inl.fontSize}>
+                <Field label={t('deckStudio.htmlEdit.size')} dot={inl.fontSize} onUnset={() => set({ fontSize: null })}>
                   <input type="number" min={6} max={200} value={c.fontSize ?? ''} onChange={(e) => set({ fontSize: e.target.value === '' ? null : `${e.target.value}px` })} className={`${inputCls} w-16`} />
                   <span className="text-[10px] text-[var(--faint)]">px</span>
-                  <button onClick={() => set({ fontSize: null })} className="ml-auto text-[10px] text-[var(--faint)] hover:text-[var(--text)]" title={t('deckStudio.htmlEdit.reset')}>
-                    <Icon.Eraser size={12} />
-                  </button>
                 </Field>
-                <Field label={t('deckStudio.htmlEdit.color')} dot={inl.color}>
+                <Field label={t('deckStudio.htmlEdit.color')} dot={inl.color} onUnset={() => set({ color: null })}>
                   <input type="color" value={toHex(c.color)} onChange={(e) => set({ color: e.target.value.toUpperCase() })} className="w-6 h-6 rounded cursor-pointer border border-[var(--border)] bg-transparent shrink-0" />
                   <input value={toHex(c.color).toUpperCase()} onChange={(e) => /^#[0-9a-fA-F]{6}$/.test(e.target.value) && set({ color: e.target.value.toUpperCase() })} className={`${inputCls} w-24 font-mono`} />
                 </Field>
-                <Field label={t('deckStudio.htmlEdit.weight')} dot={inl.fontWeight || inl.fontStyle || inl.textDecoration}>
+                <Field label={t('deckStudio.htmlEdit.weight')} dot={inl.fontWeight || inl.fontStyle || inl.textDecoration} onUnset={() => set({ fontWeight: null, fontStyle: null, textDecoration: null })}>
                   <div className="flex rounded-md border border-[var(--border)] overflow-hidden">
                     <button onClick={() => set({ fontWeight: isBold ? '400' : '700' })} className={`w-7 h-6 grid place-items-center font-bold text-[12px] ${isBold ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--muted)]'}`} title={t('deckStudio.htmlEdit.bold')}>
                       B
@@ -383,7 +411,7 @@ export default function HtmlSlideInspector({
                   </select>
                 </Field>
                 {/* full weight scale (Claude Design parity: Thin→Black) */}
-                <Field label={t('deckStudio.htmlEdit.weightScale')} dot={inl.fontWeight}>
+                <Field label={t('deckStudio.htmlEdit.weightScale')} dot={inl.fontWeight} onUnset={() => set({ fontWeight: null })}>
                   <select value={WEIGHTS.includes(String(parseInt(c.fontWeight, 10))) ? String(parseInt(c.fontWeight, 10)) : ''} onChange={(e) => set({ fontWeight: e.target.value || null })} className={inputCls}>
                     <option value="">—</option>
                     <option value="100">Thin</option>
@@ -397,7 +425,7 @@ export default function HtmlSlideInspector({
                     <option value="900">Black</option>
                   </select>
                 </Field>
-                <Field label={t('deckStudio.htmlEdit.align')} dot={inl.textAlign}>
+                <Field label={t('deckStudio.htmlEdit.align')} dot={inl.textAlign} onUnset={() => set({ textAlign: null })}>
                   <div className="flex rounded-md border border-[var(--border)] overflow-hidden">
                     {['left', 'center', 'right', 'justify'].map((al) => (
                       <button key={al} onClick={() => set({ textAlign: al })} className={`px-2 h-6 text-[12px] ${al !== 'left' ? 'border-l border-[var(--border)]' : ''} ${c.textAlign === al ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--muted)]'}`} title={al}>
@@ -406,7 +434,7 @@ export default function HtmlSlideInspector({
                     ))}
                   </div>
                 </Field>
-                <Field label={t('deckStudio.htmlEdit.spacing')} dot={inl.letterSpacing || inl.lineHeight}>
+                <Field label={t('deckStudio.htmlEdit.spacing')} dot={inl.letterSpacing || inl.lineHeight} onUnset={() => set({ letterSpacing: null, lineHeight: null })}>
                   <input type="number" step={0.1} value={c.letterSpacing ?? 0} onChange={(e) => set({ letterSpacing: e.target.value === '' ? null : `${e.target.value}px` })} className={`${inputCls} w-14`} title={t('deckStudio.htmlEdit.letterSpacing')} />
                   <span className="text-[10px] text-[var(--faint)]">ls</span>
                   <input type="number" step={0.05} min={0.7} max={3} value={c.lineHeight ?? ''} placeholder="auto" onChange={(e) => set({ lineHeight: e.target.value === '' ? null : e.target.value })} className={`${inputCls} w-14 ml-1`} title={t('deckStudio.htmlEdit.lineHeight')} />
@@ -418,11 +446,11 @@ export default function HtmlSlideInspector({
             {/* sizing */}
             <section className="space-y-1">
               <SectionHead onReset={() => set({ width: null, height: null, flexGrow: null, alignSelf: null })}>{t('deckStudio.htmlEdit.sizing')}</SectionHead>
-              <Field label={t('deckStudio.htmlEdit.width')} dot={inl.width}>
+              <Field label={t('deckStudio.htmlEdit.width')} dot={inl.width} onUnset={() => set({ width: null })}>
                 <input type="number" value={Math.round(c.width) || ''} onChange={(e) => set({ width: e.target.value === '' ? null : `${e.target.value}px` })} className={`${inputCls} w-16`} disabled={sz.width === 'hug'} />
                 <Seg options={sizingSeg} value={sz.width} onChange={setWidth} />
               </Field>
-              <Field label={t('deckStudio.htmlEdit.height')} dot={inl.height}>
+              <Field label={t('deckStudio.htmlEdit.height')} dot={inl.height} onUnset={() => set({ height: null })}>
                 <input type="number" value={Math.round(c.height) || ''} onChange={(e) => set({ height: e.target.value === '' ? null : `${e.target.value}px` })} className={`${inputCls} w-16`} disabled={sz.height === 'hug'} />
                 <Seg options={sizingSeg} value={sz.height} onChange={setHeight} />
               </Field>
@@ -431,8 +459,9 @@ export default function HtmlSlideInspector({
             {/* position */}
             <section className="space-y-1">
               <SectionHead>{t('deckStudio.htmlEdit.position')}</SectionHead>
-              <Field label={t('deckStudio.htmlEdit.mode')} dot={inl.position}>
+              <Field label={t('deckStudio.htmlEdit.mode')} dot={inl.position} onUnset={() => set({ position: null })} column>
                 <Seg
+                  fill
                   options={[
                     { value: 'static', label: t('deckStudio.htmlEdit.inline') },
                     { value: 'absolute', label: 'Absolute' },
@@ -463,7 +492,7 @@ export default function HtmlSlideInspector({
                       <input type="number" value={parseFloat(c.bottom) || ''} placeholder="auto" onChange={(e) => set({ bottom: e.target.value === '' ? null : `${e.target.value}px` })} className={`${inputCls} flex-1`} />
                     </label>
                   </div>
-                  <Field label="Z-index" dot={inl.zIndex}>
+                  <Field label="Z-index" dot={inl.zIndex} onUnset={() => set({ zIndex: null })}>
                     <input type="number" value={c.zIndex || ''} placeholder="auto" onChange={(e) => set({ zIndex: e.target.value === '' ? null : e.target.value })} className={`${inputCls} w-16`} />
                   </Field>
                 </>
@@ -480,14 +509,11 @@ export default function HtmlSlideInspector({
             {/* appearance */}
             <section className="space-y-1">
               <SectionHead onReset={() => set({ background: null, borderRadius: null, opacity: null, boxShadow: null, overflow: null })}>{t('deckStudio.htmlEdit.appearance')}</SectionHead>
-              <Field label={t('deckStudio.htmlEdit.background')} dot={inl.background}>
+              <Field label={t('deckStudio.htmlEdit.background')} dot={inl.background} onUnset={() => set({ background: null })}>
                 {hasBg(c.backgroundColor) ? (
                   <>
                     <input type="color" value={toHex(c.backgroundColor)} onChange={(e) => set({ background: e.target.value.toUpperCase() })} className="w-6 h-6 rounded cursor-pointer border border-[var(--border)] bg-transparent shrink-0" />
                     <input value={toHex(c.backgroundColor).toUpperCase()} onChange={(e) => /^#[0-9a-fA-F]{6}$/.test(e.target.value) && set({ background: e.target.value.toUpperCase() })} className={`${inputCls} w-24 font-mono`} />
-                    <button onClick={() => set({ background: null })} className="ml-auto text-[10px] text-[var(--faint)] hover:text-[var(--text)]" title={t('deckStudio.htmlEdit.reset')}>
-                      <Icon.Eraser size={12} />
-                    </button>
                   </>
                 ) : (
                   <button onClick={() => set({ background: '#FFFFFF' })} className="text-[11px] text-[var(--accent)] hover:brightness-110 flex items-center gap-1">
@@ -495,26 +521,24 @@ export default function HtmlSlideInspector({
                   </button>
                 )}
               </Field>
-              <Field label={t('deckStudio.htmlEdit.radius')} dot={inl.borderRadius}>
+              <Field label={t('deckStudio.htmlEdit.radius')} dot={inl.borderRadius} onUnset={() => set({ borderRadius: null })}>
                 <input type="number" min={0} max={400} value={c.borderRadius ?? 0} onChange={(e) => set({ borderRadius: e.target.value === '' ? null : `${e.target.value}px` })} className={`${inputCls} w-16`} />
                 <span className="text-[10px] text-[var(--faint)]">px</span>
               </Field>
-              <Field label={t('deckStudio.htmlEdit.overflow')} dot={inl.overflow}>
+              <Field label={t('deckStudio.htmlEdit.overflow')} dot={inl.overflow} onUnset={() => set({ overflow: null })}>
                 <select value={c.overflow || 'visible'} onChange={(e) => set({ overflow: e.target.value })} className={inputCls}>
                   <option value="visible">visible</option>
                   <option value="hidden">hidden</option>
                   <option value="auto">auto</option>
                 </select>
               </Field>
-              <Field label={t('deckStudio.htmlEdit.opacity')} dot={inl.opacity}>
+              <Field label={t('deckStudio.htmlEdit.opacity')} dot={inl.opacity} onUnset={() => set({ opacity: null })}>
                 <input type="range" min={0} max={1} step={0.05} value={parseFloat(c.opacity ?? 1)} onChange={(e) => set({ opacity: e.target.value })} className="flex-1 accent-[var(--accent)]" />
                 <span className="text-[10px] text-[var(--faint)] tabular-nums w-8 text-right">{Math.round(parseFloat(c.opacity ?? 1) * 100)}%</span>
               </Field>
-              <Field label={t('deckStudio.htmlEdit.shadow')} dot={inl.boxShadow}>
+              <Field label={t('deckStudio.htmlEdit.shadow')} dot={inl.boxShadow} onUnset={() => set({ boxShadow: null })}>
                 {c.boxShadow && c.boxShadow !== 'none' ? (
-                  <button onClick={() => set({ boxShadow: null })} className="text-[11px] text-[var(--faint)] hover:text-[var(--text)] flex items-center gap-1">
-                    <Icon.Eraser size={11} /> {t('deckStudio.htmlEdit.removeShadow')}
-                  </button>
+                  <span className="text-[11px] text-[var(--muted)]">{t('deckStudio.htmlEdit.shadowOn')}</span>
                 ) : (
                   <button onClick={() => set({ boxShadow: '0 8px 24px rgba(0,0,0,.18)' })} className="text-[11px] text-[var(--accent)] hover:brightness-110 flex items-center gap-1">
                     <Icon.Plus size={11} /> {t('deckStudio.htmlEdit.addShadow')}
@@ -522,7 +546,7 @@ export default function HtmlSlideInspector({
                 )}
               </Field>
               {/* border (Claude Design parity) */}
-              <Field label={t('deckStudio.htmlEdit.border')} dot={inl.border}>
+              <Field label={t('deckStudio.htmlEdit.border')} dot={inl.border} onUnset={() => set({ border: null, borderWidth: null, borderStyle: null, borderColor: null })}>
                 {inl.border && c.borderStyle && c.borderStyle !== 'none' && c.borderWidth > 0 ? (
                   <>
                     <input type="number" min={0} max={40} value={c.borderWidth ?? 1} onChange={(e) => set({ borderWidth: `${e.target.value || 0}px`, borderStyle: c.borderStyle || 'solid' })} className={`${inputCls} w-12`} />
@@ -532,9 +556,6 @@ export default function HtmlSlideInspector({
                       <option value="dashed">dashed</option>
                       <option value="dotted">dotted</option>
                     </select>
-                    <button onClick={() => set({ border: null, borderWidth: null, borderStyle: null, borderColor: null })} className="ml-auto text-[10px] text-[var(--faint)] hover:text-[var(--text)]" title={t('deckStudio.htmlEdit.reset')}>
-                      <Icon.Eraser size={12} />
-                    </button>
                   </>
                 ) : (
                   <button onClick={() => set({ border: `1px solid ${toHex(c.color) || '#000000'}` })} className="text-[11px] text-[var(--accent)] hover:brightness-110 flex items-center gap-1">

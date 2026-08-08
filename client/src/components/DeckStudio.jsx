@@ -398,6 +398,14 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   const htmlEditPreview = useRef(null) // { before } for AI tweak preview on HTML
   // mirror of isHtmlDeck for effects that run before the render-body computes it
   const isHtmlDeckRef = useRef(false)
+  // manual editing is now COMMIT-based (Claude Design "Discard / Save"): edits
+  // accumulate in the working deck and only persist on an explicit Save. Autosave
+  // is suppressed while editing; `htmlDirty` gates the Save/Discard bar and
+  // `htmlBaseline` is the deck snapshot to restore on Discard.
+  const [htmlDirty, setHtmlDirty] = useState(false)
+  const htmlBaseline = useRef(null)
+  const [htmlSaving, setHtmlSaving] = useState(false)
+  const htmlEditModeRef = useRef(false)
 
   useEffect(() => {
     if (!open || !deckId) return
@@ -466,10 +474,20 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     history.reset()
   }, [deckId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // tell App to hide the chat while manual HTML editing (max canvas room)
+  // tell App to hide the chat while manual HTML editing (max canvas room).
+  // Entering Edit mode snapshots the deck as the Discard baseline and clears the
+  // dirty flag; leaving it clears both (Save/Discard already handled the deck).
   useEffect(() => {
     onEditModeChange?.(htmlEditMode)
-  }, [htmlEditMode, onEditModeChange])
+    htmlEditModeRef.current = htmlEditMode
+    if (htmlEditMode) {
+      htmlBaseline.current = deck
+      setHtmlDirty(false)
+    } else {
+      htmlBaseline.current = null
+      setHtmlDirty(false)
+    }
+  }, [htmlEditMode, onEditModeChange]) // eslint-disable-line react-hooks/exhaustive-deps
   // leaving the studio or switching away from an HTML deck exits Edit mode
   useEffect(() => {
     if (!open) setHtmlEditMode(false)
@@ -559,6 +577,12 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     if (deck.streaming || !deck.id) return
     if (skipNextSave.current) {
       skipNextSave.current = false
+      return
+    }
+    // manual HTML editing is commit-based: while Edit mode is on, edits stay
+    // local (Discard/Save bar) and never autosave. Mark the deck dirty instead.
+    if (htmlEditModeRef.current && isHtmlDeckRef.current) {
+      setHtmlDirty(true)
       return
     }
     clearTimeout(saveTimer.current)
@@ -708,8 +732,10 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   }
   const acceptHtmlTweak = () => {
     if (!tweakPreview) return
-    patchJSON(`/api/decks/${deck.id}`, { title: deck.title, slides: deck.slides, audience: deck.audience, author: deck.author }).catch((e) => pushToast?.(e.message))
-    skipNextSave.current = true
+    // Commit-based editing: an accepted AI edit folds into the working deck and
+    // marks it dirty — it persists only on the explicit Save (like every manual
+    // edit), never on its own.
+    setHtmlDirty(true)
     setTweakHistory((h) => [{ label: tweakPreview.label, at: Date.now() }, ...h].slice(0, 20))
     setTweakPreview(null)
     setTweakCost(null)
@@ -726,6 +752,49 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     setTweakPreview(null)
     setTweakCost(null)
     htmlEditPreview.current = null
+  }
+
+  // ---- commit-based manual editing: explicit Save / Discard -----------------
+  // Save persists the current working deck (one PATCH) and re-baselines; Discard
+  // restores the snapshot taken when Edit mode opened and pushes it back onto the
+  // live canvas. Both clear the dirty flag.
+  const saveHtmlEdits = async () => {
+    if (!deck?.id || htmlSaving) return
+    setHtmlSaving(true)
+    try {
+      await patchJSON(`/api/decks/${deck.id}`, {
+        title: deck.title,
+        slides: deck.slides,
+        audience: deck.audience,
+        author: deck.author,
+        narrative: deck.narrative,
+      })
+      window.dispatchEvent(new CustomEvent('prism:deck-saved', { detail: { deckId: deck.id } }))
+      htmlBaseline.current = deck // new restore point
+      setHtmlDirty(false)
+    } catch (e) {
+      pushToast?.(e.message || t('deckStudio.saveError'))
+    } finally {
+      setHtmlSaving(false)
+    }
+  }
+  const discardHtmlEdits = () => {
+    const base = htmlBaseline.current
+    if (!base) {
+      setHtmlDirty(false)
+      return
+    }
+    // drop any pending AI preview too
+    setTweakPreview(null)
+    setTweakCost(null)
+    htmlEditPreview.current = null
+    skipNextSave.current = true
+    setDeck(base)
+    htmlEditorRef.current?.setHtml(slideHtml(base.slides[activeIndex]), true)
+    htmlHist.current = { past: [], future: [] }
+    setHtmlHistTick((n) => n + 1)
+    setHtmlSel(null)
+    setHtmlDirty(false)
   }
 
   // keep the global hotkey handler pointed at the live HTML-edit closures
@@ -1132,27 +1201,46 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
           <span className="font-semibold text-sm">{t('deckStudio.title')}</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
-          {isHtmlDeck && deck && !deck.streaming && (
+          {isHtmlDeck && deck && !deck.streaming && !htmlEditMode && (
             <button
-              onClick={() => {
-                setHtmlEditMode((v) => {
-                  const next = !v
-                  if (!next) {
-                    setHtmlSel(null)
-                    htmlEditorRef.current?.clear()
-                  }
-                  return next
-                })
-              }}
-              className={`flex items-center gap-1.5 rounded-lg font-semibold text-xs px-2.5 py-1.5 transition ${
-                htmlEditMode
-                  ? 'bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]'
-                  : 'text-[var(--muted)] hover:bg-[var(--surface-3)] border border-transparent'
-              }`}
+              onClick={() => setHtmlEditMode(true)}
+              className="flex items-center gap-1.5 rounded-lg font-semibold text-xs px-2.5 py-1.5 transition text-[var(--muted)] hover:bg-[var(--surface-3)] border border-transparent"
               title={t('deckStudio.htmlEdit.toggleTitle')}
             >
               <Icon.Pencil size={14} /> <span className="hidden sm:inline">{t('deckStudio.htmlEdit.toggle')}</span>
             </button>
+          )}
+          {isHtmlDeck && deck && !deck.streaming && htmlEditMode && (
+            // commit-based editing: explicit Discard / Save (Claude Design style).
+            // Both exit Edit mode; Save is disabled until there are changes.
+            <div className="flex items-center gap-1.5 mr-1">
+              <button
+                onClick={() => {
+                  discardHtmlEdits()
+                  setHtmlSel(null)
+                  htmlEditorRef.current?.clear()
+                  setHtmlEditMode(false)
+                }}
+                className="rounded-lg font-semibold text-xs px-2.5 py-1.5 border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--surface-3)] transition"
+                title={t('deckStudio.htmlEdit.discardEditsTitle')}
+              >
+                {t('deckStudio.htmlEdit.discardEdits')}
+              </button>
+              <button
+                onClick={async () => {
+                  await saveHtmlEdits()
+                  setHtmlSel(null)
+                  htmlEditorRef.current?.clear()
+                  setHtmlEditMode(false)
+                }}
+                disabled={!htmlDirty || htmlSaving}
+                className="inline-flex items-center gap-1.5 rounded-lg font-semibold text-xs px-3 py-1.5 bg-[var(--accent)] text-white hover:brightness-110 disabled:opacity-50 transition"
+                title={t('deckStudio.htmlEdit.saveEditsTitle')}
+              >
+                {htmlSaving && <span className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" aria-hidden />}
+                {t('deckStudio.htmlEdit.saveEdits')}
+              </button>
+            </div>
           )}
           <button
             onClick={onToggleFocus}
