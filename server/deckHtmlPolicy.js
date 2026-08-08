@@ -129,17 +129,17 @@ export const DECK_HTML_POLICY =
   '- Cada string de "slides" é UM <section> completo e válido. Estilos inline ou uma tag ' +
   '<style> DENTRO do <section> são permitidos; use os tokens var(--…) do design system ' +
   '(cores/fontes), nunca hex de cor cru.\n' +
-  '- Reproduza o vocabulário de componentes dos SLIDES DE EXEMPLO do design system (classes ' +
-  'como .eyebrow/.title/.card/.dv-table/.kpi/.bullets). Se não houver exemplo de um layout, ' +
-  'componha com flexbox/grid respeitando os tokens.\n' +
-  '- Gráficos: desenhe SVG inline (barras, linhas, área, pizza) com as cores do tema. ESTUDE os ' +
-  'gráficos dos SLIDES DE EXEMPLO do design system e reproduza a MESMA linguagem visual: em um ' +
-  'gráfico de barras/colunas, inclua (a) linhas de grade horizontais sutis (uma por marca do eixo), ' +
-  '(b) eixo Y com rótulos de valor nas marcas (ex.: 0/25/50/75/100), (c) rótulo de valor acima de ' +
-  'cada barra, (d) cantos arredondados no topo das barras (rx≈4). Em linha/área: marcadores nos ' +
-  'pontos e, se área, preenchimento translúcido. NÃO entregue um gráfico "cru" sem grade nem escala ' +
-  '— ele deve ter o mesmo acabamento dos exemplos do DS. Tabelas: use a classe de tabela do design ' +
-  'system (header de acento com cantos arredondados, zebra, numérico alinhado à direita).\n' +
+  '- PRINCÍPIO GERAL DE FIDELIDADE: para QUALQUER ativo do design system (tabela, gráfico, card, ' +
+  'kpi, lista, cabeçalho, etc.), use o ativo EXATAMENTE como o design system o define nos SLIDES ' +
+  'DE EXEMPLO — reproduza a estrutura, as classes e as propriedades daquele ativo. NÃO invente um ' +
+  'estilo próprio, NÃO prescreva você mesmo valores de acabamento (cantos, faixas, grade, eixos, ' +
+  'alinhamento, cores) e NÃO sobrescreva as propriedades do ativo: o acabamento é sempre o que o ' +
+  'design system determinar. Quando não houver um exemplo daquele ativo no DS, aí sim componha com ' +
+  'flexbox/grid respeitando os tokens (var(--…)).\n' +
+  '- Gráficos: desenhe SVG inline (barras, linhas, área, pizza) reproduzindo a MESMA linguagem ' +
+  'visual dos gráficos dos SLIDES DE EXEMPLO do design system — o acabamento (grade, eixos, ' +
+  'rótulos, marcadores, cantos, preenchimentos) é o que o DS mostra nesses exemplos, não algo que ' +
+  'você define. Nunca entregue um gráfico mais "cru" do que os exemplos do DS.\n' +
   '- Texto SEMPRE flui e quebra naturalmente. Se um slide tem muito conteúdo, reduza o conteúdo ' +
   'ou divida em dois — jamais espremer numa caixa estreita.\n' +
   '- Honestidade de dados: só use números presentes nesta conversa (pedido, respostas, anexos, ' +

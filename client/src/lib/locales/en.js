@@ -629,6 +629,7 @@ export default {
   'deckStudio.field.layout': 'Layout',
   'deckStudio.freeformLayout': 'Freeform editing (element canvas)',
   'deckStudio.htmlSlideNote': 'HTML slide — to adjust it, describe the change in the bar above (e.g. "summarize the bullets", "swap the chart for a table").',
+  'deckStudio.building': 'Building the slides…',
   'deckStudio.revertSemanticTitle': 'Discards the elements and returns to the original structured layout',
   'deckStudio.revertSemantic': 'Revert to semantic layout',
   'deckStudio.field.background': 'Background',

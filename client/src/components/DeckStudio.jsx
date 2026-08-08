@@ -214,6 +214,28 @@ function ItemListEditor({ items, fields, iconOptions, onChange, addLabel }) {
   )
 }
 
+// Shown on the stage while a pure-HTML deck is streaming and the current slide
+// hasn't arrived yet — a shimmering 16:9 placeholder (title bar + content
+// blocks) so the auto-opened Studio reads as "building", not a blank white box.
+function HtmlSlideSkeleton({ streaming, label }) {
+  return (
+    <div className="w-full rounded-lg shadow-lg overflow-hidden border border-[var(--border)]" style={{ aspectRatio: '16/9', background: '#F9F7F4' }}>
+      <div className="h-full w-full p-[6%] flex flex-col gap-[3%]">
+        <div className="h-[4%] w-[22%] rounded animate-pulse" style={{ background: 'rgba(0,0,0,0.10)' }} />
+        <div className="h-[9%] w-[70%] rounded animate-pulse" style={{ background: 'rgba(0,0,0,0.13)' }} />
+        <div className="flex-1 grid grid-cols-3 gap-[3%] mt-[2%]">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="rounded-lg animate-pulse" style={{ background: 'rgba(0,0,0,0.06)', animationDelay: `${i * 150}ms` }} />
+          ))}
+        </div>
+        {streaming && label && (
+          <div className="text-center text-xs text-[var(--muted)] pt-[1%]">{label}</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // Structured editor for the `diagram` layout — one block per column: label,
 // "coluna central" toggle (emphasized panel of bands) and one item/band per
 // line ("!" prefix marks an accent band, e.g. the governance layer).
@@ -971,12 +993,16 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
                 onClick={() => !isFreeform && setSelection(null)}
               >
                 {isHtmlDeck ? (
-                  <HtmlSlideFrame
-                    html={typeof slide === 'string' ? slide : slide?.html}
-                    template={template}
-                    title={`${deck.title} — ${activeIndex + 1}`}
-                    className="w-full rounded-lg shadow-lg"
-                  />
+                  slide ? (
+                    <HtmlSlideFrame
+                      html={typeof slide === 'string' ? slide : slide?.html}
+                      template={template}
+                      title={`${deck.title} — ${activeIndex + 1}`}
+                      className="w-full rounded-lg shadow-lg"
+                    />
+                  ) : (
+                    <HtmlSlideSkeleton streaming={deck.streaming} label={t('deckStudio.building')} />
+                  )
                 ) : isFreeform ? (
                   <ElementCanvas
                     slide={slide}

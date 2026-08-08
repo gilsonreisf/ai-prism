@@ -142,6 +142,9 @@ function serializeSvgWithComputedColors(svg, win, w, h) {
 // order, which matches how they were authored).
 export function extractSlideOps(slideRoot, win) {
   const ops = []
+  // table cells whose background was already painted by the row-level rect
+  // (see the TR branch) — their own per-cell bg rect is then skipped.
+  const paintedRowCells = new Set()
   const rootRect = slideRoot.getBoundingClientRect()
   const sx = STAGE_W / rootRect.width
   const sy = STAGE_H / rootRect.height
@@ -161,8 +164,30 @@ export function extractSlideOps(slideRoot, win) {
     const b = box(el)
     if (b.w <= 0 || b.h <= 0) return
 
+    // Table ROW with same-fill cells → emit ONE rect spanning the row, so a
+    // rounded header reads as a single rounded block (pptxgenjs roundRect can't
+    // do per-corner radius, and per-<th> rects would round every cell's 4
+    // corners). We paint the row bg here, then let the cells' TEXT render (their
+    // own bg is skipped via `paintedRowCells`). Radius comes from the corner
+    // cells' own border-radius — the DS decides it, we don't.
+    if (el.tagName === 'TR') {
+      const cells = [...el.children].filter((c) => c.tagName === 'TH' || c.tagName === 'TD')
+      const fills = cells.map((c) => parseColor(win.getComputedStyle(c).backgroundColor)?.hex || null)
+      const uniqueFill = fills.find(Boolean)
+      const allSame = uniqueFill && fills.every((f) => f === uniqueFill)
+      if (allSame && cells.length) {
+        // max corner radius among the cells (the DS rounds the outer cells)
+        const radii = cells.map((c) => parseFloat(win.getComputedStyle(c).borderTopLeftRadius) || parseFloat(win.getComputedStyle(c).borderTopRightRadius) || 0)
+        const radius = Math.max(...radii, 0)
+        ops.push({ type: 'rect', ...b, fill: uniqueFill, radius: Math.round(radius * sx), line: null })
+        for (const c of cells) paintedRowCells.add(c) // their own bg already painted
+        for (const child of el.children) visit(child)
+        return
+      }
+    }
+
     // 1) background / border → rect (roundRect when border-radius)
-    const bg = parseColor(cs.backgroundColor)
+    const bg = paintedRowCells.has(el) ? null : parseColor(cs.backgroundColor)
     const bw = parseFloat(cs.borderTopWidth) || 0
     const border = bw > 0 ? parseColor(cs.borderTopColor) : null
     if (bg || border) {

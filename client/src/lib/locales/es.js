@@ -629,6 +629,7 @@ export default {
   'deckStudio.field.layout': 'Diseño',
   'deckStudio.freeformLayout': 'Edición libre (lienzo de elementos)',
   'deckStudio.htmlSlideNote': 'Diapositiva en HTML — para ajustarla, describe el cambio en la barra de arriba (ej.: "resume los puntos", "cambia el gráfico por una tabla").',
+  'deckStudio.building': 'Montando las diapositivas…',
   'deckStudio.revertSemanticTitle': 'Descarta los elementos y vuelve al diseño estructurado original',
   'deckStudio.revertSemantic': 'Revertir al diseño semántico',
   'deckStudio.field.background': 'Fondo',
