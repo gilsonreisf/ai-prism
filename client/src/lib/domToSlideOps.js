@@ -108,6 +108,12 @@ function buildRuns(el, win) {
         const text = applyTransform(child.textContent, inherited.transform)
         if (text) runs.push({ text, ...inherited })
       } else if (child.nodeType === 1) {
+        if (child.tagName === 'BR') {
+          // a <br> is a hard line break — carry it as a newline run so
+          // "Time Jurídico<br>Preparado por" doesn't collapse onto one line
+          runs.push({ text: '\n', ...inherited })
+          continue
+        }
         const cs = win.getComputedStyle(child)
         walk(child, { ...inherited, ...styleOf(cs) })
       }
@@ -276,6 +282,54 @@ export function extractSlideOps(slideRoot, win) {
         })
       }
       return
+    }
+    // Mixed container (not a text leaf): recurse into element children AND emit
+    // any DIRECT non-empty text nodes as their own text ops. Without this, a
+    // flex row like `<div><svg/> texto</div>` drops "texto" (the icon makes the
+    // div a non-leaf, and el.children skips text nodes). We measure the exact
+    // text box with a Range so it's positioned right next to the icon.
+    for (const node of el.childNodes) {
+      if (node.nodeType !== 3) continue
+      if (!node.textContent.trim()) continue
+      try {
+        const range = win.document.createRange()
+        range.selectNode(node)
+        const r = range.getBoundingClientRect()
+        if (r.width <= 0 || r.height <= 0) continue
+        // Style comes from the CONTAINER's own computed style — the text node
+        // inherits it. (Do NOT reuse buildRuns(el)'s first run: that walks the
+        // whole element and its first run may be a sibling icon's color, which
+        // made the banner text render orange.)
+        const style = {
+          font: universalFont(cs.fontFamily),
+          size: Math.round(parseFloat(cs.fontSize) * PX_TO_PT * 10) / 10,
+          color: parseColor(cs.color)?.hex || '000000',
+          bold: weightToBold(cs.fontWeight),
+          italic: cs.fontStyle === 'italic',
+          tracking: cs.letterSpacing && cs.letterSpacing !== 'normal' ? Math.round(parseFloat(cs.letterSpacing) * PX_TO_PT * 10) / 10 : 0,
+        }
+        // The Range hugs the text tightly at the DM-Sans measurement; Arial in
+        // the .pptx is a touch wider and would wrap. Pad the width (and clamp to
+        // the parent's inner width so it never overflows the slide) to keep it
+        // on one line, matching the on-screen single-line banner.
+        const parentR = el.getBoundingClientRect()
+        const maxRight = (parentR.right - rootRect.left) * sx
+        const x = Math.round((r.left - rootRect.left) * sx)
+        const w = Math.max(Math.min(Math.round(r.width * sx * 1.12 + 6), Math.round(maxRight - x)), 8)
+        ops.push({
+          type: 'text',
+          x,
+          y: Math.round((r.top - rootRect.top) * sy),
+          w,
+          h: Math.max(Math.round(r.height * sy), 8),
+          runs: [{ ...style, text: applyTransform(node.textContent.replace(/\s+/g, ' '), cs.textTransform) }],
+          align: cs.textAlign === 'center' ? 'center' : cs.textAlign === 'right' || cs.textAlign === 'end' ? 'right' : 'left',
+          valign: 'middle',
+          lineHeight: 1.15,
+        })
+      } catch {
+        /* range unsupported — skip */
+      }
     }
     for (const child of el.children) visit(child, childBackdrop)
   }
