@@ -60,10 +60,27 @@ function fadeHex(hex, alpha, backdropHex) {
   return rgbToHex(fg.map((c, i) => c * alpha + bg[i] * (1 - alpha)))
 }
 
-// Universal-font mapping (matches the Claude Design "Universal fonts" option we
-// saw map DM Sans→Arial, DM Mono→Courier New): any family → a web-safe face so
-// the .pptx opens identically on any machine. Brand fidelity is a future toggle.
-function universalFont(family) {
+// The first concrete family in a CSS font-family list, stripped of quotes and
+// generic fallbacks — the brand face to embed for high-fidelity export.
+function primaryFamily(family) {
+  const first = String(family || '')
+    .split(',')[0]
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+  const generic = /^(sans-serif|serif|monospace|system-ui|ui-sans-serif|ui-serif|ui-monospace|-apple-system)$/i
+  return first && !generic.test(first) ? first : ''
+}
+
+// Map a CSS family to the face written into the .pptx. Two modes:
+//  • 'universal' (default): a web-safe face (Arial/Georgia/Courier New) so the
+//    file opens identically on any machine — matches Claude Design's default.
+//  • 'brand': the design system's real family name, so the deck renders in the
+//    brand font when that font travels with the file (embedded) or is installed.
+function resolveFont(family, mode) {
+  if (mode === 'brand') {
+    const brand = primaryFamily(family)
+    if (brand) return brand
+  }
   const f = (family || '').toLowerCase()
   if (/mono|courier|consolas|menlo/.test(f)) return 'Courier New'
   if (/georgia|times|serif/.test(f) && !/sans/.test(f)) return 'Georgia'
@@ -102,10 +119,10 @@ function applyTransform(text, transform) {
 
 // Build inline runs (text + per-run color/weight/italic) from a text-leaf's
 // descendants, so a heading with a colored <span> keeps that color in the pptx.
-function buildRuns(el, win) {
+function buildRuns(el, win, fontMode) {
   const runs = []
   const styleOf = (cs) => ({
-    font: universalFont(cs.fontFamily),
+    font: resolveFont(cs.fontFamily, fontMode),
     size: Math.round(parseFloat(cs.fontSize) * PX_TO_PT * 10) / 10, // px→pt (stage-relative)
     color: parseColor(cs.color)?.hex || '000000',
     bold: weightToBold(cs.fontWeight),
@@ -178,7 +195,7 @@ function serializeSvgWithComputedColors(svg, win, w, h) {
 // Walk one slide's root element, producing ops in paint order (DOM order ≈
 // z-order for static flow; absolutely-positioned nodes still come out in tree
 // order, which matches how they were authored).
-export function extractSlideOps(slideRoot, win) {
+export function extractSlideOps(slideRoot, win, { fontMode = 'universal' } = {}) {
   const ops = []
   // table cells whose background was already painted by the row-level rect
   // (see the TR branch) — their own per-cell bg rect is then skipped.
@@ -284,7 +301,7 @@ export function extractSlideOps(slideRoot, win) {
 
     // 3) text leaf → text op; else recurse into children
     if (isTextLeaf(el, win)) {
-      const runs = buildRuns(el, win)
+      const runs = buildRuns(el, win, fontMode)
       // bake cumulative opacity into each run's color (text has no reliable
       // per-run alpha in the .pptx) so a faded caption exports faded
       if (opacity < 0.999) for (const r of runs) r.color = fadeHex(r.color, opacity, backdrop)
@@ -329,7 +346,7 @@ export function extractSlideOps(slideRoot, win) {
         // whole element and its first run may be a sibling icon's color, which
         // made the banner text render orange.)
         const style = {
-          font: universalFont(cs.fontFamily),
+          font: resolveFont(cs.fontFamily, fontMode),
           size: Math.round(parseFloat(cs.fontSize) * PX_TO_PT * 10) / 10,
           color: fadeHex(parseColor(cs.color)?.hex || '000000', opacity, backdrop),
           bold: weightToBold(cs.fontWeight),
@@ -405,7 +422,7 @@ section.slide,section{box-sizing:border-box;width:${STAGE_W}px;height:${STAGE_H}
 // webfonts, and extracts native paint-ops. Returns [{w,h,ops}] for the server.
 // `tokenStyleBuilder` builds the DS token CSS (buildDeckTokenStyle from
 // HtmlSlideFrame) so brand vars resolve exactly as on screen.
-export async function extractOpsFromSlides(slidesHtml, tokenStyleBuilder) {
+export async function extractOpsFromSlides(slidesHtml, tokenStyleBuilder, { fontMode = 'universal' } = {}) {
   const tokenStyle = typeof tokenStyleBuilder === 'function' ? tokenStyleBuilder() : tokenStyleBuilder || ''
   const out = []
   for (const html of slidesHtml || []) {
@@ -428,7 +445,7 @@ export async function extractOpsFromSlides(slidesHtml, tokenStyleBuilder) {
       }
       await new Promise((r) => win.requestAnimationFrame(() => win.requestAnimationFrame(r)))
       const root = doc.querySelector('section') || doc.body
-      out.push({ w: STAGE_W, h: STAGE_H, ops: extractSlideOps(root, win) })
+      out.push({ w: STAGE_W, h: STAGE_H, ops: extractSlideOps(root, win, { fontMode }) })
     } catch {
       out.push({ w: STAGE_W, h: STAGE_H, ops: [] })
     } finally {

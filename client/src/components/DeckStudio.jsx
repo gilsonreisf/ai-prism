@@ -357,6 +357,8 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   const [loadTick, setLoadTick] = useState(0)
   const [activeIndex, setActiveIndex] = useState(0)
   const [exporting, setExporting] = useState(false)
+  // export font-fidelity chooser (HTML decks): universal vs. embedded brand fonts
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
   // canvas object selection (SelBox path) + NL tweak state
   const [selection, setSelection] = useState(null) // null | { path, label, text }
   const [tweak, setTweak] = useState('')
@@ -1167,19 +1169,25 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     URL.revokeObjectURL(url)
   }
 
-  const exportPptx = async () => {
+  // `fontMode`: 'universal' (web-safe faces, opens identically anywhere) or
+  // 'brand' (the DS's real fonts, embedded in the .pptx for max fidelity — the
+  // viewer sees the brand font even without it installed). Only HTML decks offer
+  // the choice; the legacy engine export stays universal.
+  const exportPptx = async (fontMode = 'universal') => {
     setExporting(true)
+    setExportMenuOpen(false)
     try {
       if (isHtmlDeck) {
         // Pure-HTML deck: export native editable shapes (like Claude Design).
         // Render every slide full-size off-screen, extract paint-ops off the DOM,
         // and POST them; the server assembles the .pptx with pptxgenjs.
         const slidesHtml = (deck.slides || []).map((s) => (typeof s === 'string' ? s : s?.html))
-        const slidesOps = await extractOpsFromSlides(slidesHtml, () => buildDeckTokenStyle(template))
+        const slidesOps = await extractOpsFromSlides(slidesHtml, () => buildDeckTokenStyle(template), { fontMode })
         const res = await fetch(`/api/decks/${deck.id}/export-html`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slides: slidesOps }),
+          // embedFonts asks the server to embed the DS font files into the .pptx
+          body: JSON.stringify({ slides: slidesOps, embedFonts: fontMode === 'brand' }),
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         triggerDownload(await res.blob())
@@ -1315,13 +1323,53 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
           >
             <Icon.Trash size={16} />
           </button>
-          <button
-            onClick={exportPptx}
-            disabled={!deck || exporting}
-            className="ml-1 md:ml-2 shrink-0 flex items-center gap-1.5 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm px-3 md:px-3.5 py-2 transition"
-          >
-            <Icon.Download size={15} /> <span className="hidden sm:inline">{exporting ? t('deckStudio.exporting') : t('deckStudio.exportPptx')}</span>
-          </button>
+          {isHtmlDeck ? (
+            // HTML decks offer a font-fidelity choice on export
+            <div className="relative ml-1 md:ml-2 shrink-0">
+              <button
+                onClick={() => setExportMenuOpen((o) => !o)}
+                disabled={!deck || exporting}
+                className="flex items-center gap-1.5 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm px-3 md:px-3.5 py-2 transition"
+                title={t('deckStudio.exportPptx')}
+              >
+                <Icon.Download size={15} />
+                <span className="hidden sm:inline">{exporting ? t('deckStudio.exporting') : t('deckStudio.exportPptx')}</span>
+                {!exporting && <Icon.ChevronRight size={12} className="rotate-90 -mr-0.5 opacity-80" />}
+              </button>
+              {exportMenuOpen && !exporting && (
+                <>
+                  <div className="fixed inset-0 z-[75]" onClick={() => setExportMenuOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1.5 z-[80] w-72 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-xl p-1.5 animate-fade-in">
+                    <button
+                      onClick={() => exportPptx('universal')}
+                      className="w-full text-left rounded-lg px-3 py-2 hover:bg-[var(--surface-3)] transition"
+                    >
+                      <div className="text-sm font-semibold text-[var(--text)]">{t('deckStudio.export.universalTitle')}</div>
+                      <div className="text-[11px] text-[var(--muted)] leading-snug mt-0.5">{t('deckStudio.export.universalBody')}</div>
+                    </button>
+                    <button
+                      onClick={() => exportPptx('brand')}
+                      className="w-full text-left rounded-lg px-3 py-2 hover:bg-[var(--surface-3)] transition"
+                    >
+                      <div className="text-sm font-semibold text-[var(--text)] flex items-center gap-1.5">
+                        {t('deckStudio.export.brandTitle')}
+                        <span className="text-[9px] font-bold uppercase tracking-wide text-[var(--accent)] bg-[var(--accent-soft)] rounded px-1 py-0.5">{t('deckStudio.export.brandBadge')}</span>
+                      </div>
+                      <div className="text-[11px] text-[var(--muted)] leading-snug mt-0.5">{t('deckStudio.export.brandBody')}</div>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => exportPptx()}
+              disabled={!deck || exporting}
+              className="ml-1 md:ml-2 shrink-0 flex items-center gap-1.5 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm px-3 md:px-3.5 py-2 transition"
+            >
+              <Icon.Download size={15} /> <span className="hidden sm:inline">{exporting ? t('deckStudio.exporting') : t('deckStudio.exportPptx')}</span>
+            </button>
+          )}
         </div>
       </header>
 

@@ -1,4 +1,5 @@
 import PptxGenJS from 'pptxgenjs'
+import JSZip from 'jszip'
 import { deckIconSvg } from '../shared/deckIcons.js'
 import { resolveDeckTheme, pickDeckIllustration, resolveThemeColor, luminance as themeLuminance, blend as themeBlend, contrastOn, pickLogoForBg } from '../shared/deckTheme.js'
 
@@ -1520,7 +1521,7 @@ const BUILDERS = {
 // client/lib/domToSlideOps.js). This mirrors how Claude Design exports — every
 // element becomes a positioned <p:sp>/text/image, nothing rasterized. Ops carry
 // px coords on a 1280×720 stage; we scale to the 10×5.625in canvas.
-export function renderPptxFromOps(deck, slides) {
+export async function renderPptxFromOps(deck, slides, { embedFonts = false, fontAssets = [] } = {}) {
   const pptx = new PptxGenJS()
   pptx.defineLayout({ name: 'PRISM_16x9', width: SLIDE_W, height: SLIDE_H })
   pptx.layout = 'PRISM_16x9'
@@ -1578,7 +1579,109 @@ export function renderPptxFromOps(deck, slides) {
       }
     }
   }
-  return pptx.write('nodebuffer')
+  const buf = await pptx.write('nodebuffer')
+  if (embedFonts && fontAssets.length) {
+    try {
+      return await embedFontsInPptx(buf, fontAssets)
+    } catch {
+      // embedding is best-effort — a failure falls back to the un-embedded file
+      return buf
+    }
+  }
+  return buf
+}
+
+// Embed the design system's TrueType fonts into a .pptx so the deck renders in
+// the brand face even where the font isn't installed. PowerPoint's OOXML font
+// embedding: font bytes live at ppt/fonts/fontN.fntdata, declared per-typeface
+// in ppt/presentation.xml <p:embeddedFontLst> (with embedTrueTypeFonts="1"),
+// wired by rels in ppt/_rels/presentation.xml.rels, and the fntdata extension
+// registered in [Content_Types].xml. pptxgenjs can't do this, so we post-process
+// the zip it produced. Only TTF/OTF data URIs are embeddable.
+async function embedFontsInPptx(buf, fontAssets) {
+  // group assets by family → { regular, bold, italic, boldItalic } bytes
+  const families = new Map()
+  for (const f of fontAssets) {
+    if (!f?.family || typeof f.dataUrl !== 'string') continue
+    const m = /^data:font\/(ttf|otf|truetype|opentype|sfnt)?;base64,(.+)$/i.exec(f.dataUrl)
+    if (!m) continue
+    const bytes = Buffer.from(m[2], 'base64')
+    const name = String(f.family).replace(/['"]/g, '').trim()
+    if (!name) continue
+    const bold = parseInt(f.weight, 10) >= 600 || /bold/i.test(f.weight || '')
+    const italic = /italic|oblique/i.test(f.style || '')
+    const slot = bold && italic ? 'boldItalic' : bold ? 'bold' : italic ? 'italic' : 'regular'
+    const entry = families.get(name) || {}
+    // keep the first seen for each slot (weights beyond the 4 OOXML slots fold in)
+    if (!entry[slot]) entry[slot] = bytes
+    families.set(name, entry)
+  }
+  if (!families.size) return buf
+
+  const zip = await JSZip.loadAsync(buf)
+  const SLOT_TAG = { regular: 'regular', bold: 'bold', italic: 'italic', boldItalic: 'boldItalic' }
+  let fontFileIx = 0
+  const embeddedFontXml = []
+  const relXml = []
+  const seenExt = new Set()
+
+  for (const [family, slots] of families) {
+    const slotRels = {}
+    for (const slot of ['regular', 'bold', 'italic', 'boldItalic']) {
+      if (!slots[slot]) continue
+      fontFileIx++
+      const fileName = `font${fontFileIx}.fntdata`
+      zip.file(`ppt/fonts/${fileName}`, slots[slot])
+      const rId = `rIdFont${fontFileIx}`
+      relXml.push(`<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/${fileName}"/>`)
+      slotRels[slot] = rId
+      seenExt.add('fntdata')
+    }
+    if (!Object.keys(slotRels).length) continue
+    const tags = Object.entries(slotRels)
+      .map(([slot, rId]) => `<p:${SLOT_TAG[slot]} r:id="${rId}"/>`)
+      .join('')
+    embeddedFontXml.push(`<p:embeddedFont><p:font typeface="${xmlEscape(family)}"/>${tags}</p:embeddedFont>`)
+  }
+  if (!embeddedFontXml.length) return buf
+
+  // 1) [Content_Types].xml — register the fntdata extension
+  {
+    const path = '[Content_Types].xml'
+    let ct = await zip.file(path).async('string')
+    if (!/Extension="fntdata"/.test(ct)) {
+      ct = ct.replace(
+        /<\/Types>/,
+        '<Default Extension="fntdata" ContentType="application/x-fontdata"/></Types>'
+      )
+      zip.file(path, ct)
+    }
+  }
+  // 2) ppt/_rels/presentation.xml.rels — add the font relationships
+  {
+    const path = 'ppt/_rels/presentation.xml.rels'
+    let rels = await zip.file(path).async('string')
+    rels = rels.replace(/<\/Relationships>/, relXml.join('') + '</Relationships>')
+    zip.file(path, rels)
+  }
+  // 3) ppt/presentation.xml — embedTrueTypeFonts + <p:embeddedFontLst>. The list
+  // must sit right after <p:sldIdLst>…</p:sldIdLst> per the schema's order.
+  {
+    const path = 'ppt/presentation.xml'
+    let pres = await zip.file(path).async('string')
+    pres = pres.replace(/<p:presentation([^>]*)>/, (mm, attrs) =>
+      /embedTrueTypeFonts/.test(attrs) ? mm : `<p:presentation${attrs} embedTrueTypeFonts="1">`
+    )
+    const lst = `<p:embeddedFontLst>${embeddedFontXml.join('')}</p:embeddedFontLst>`
+    if (/<\/p:sldIdLst>/.test(pres)) pres = pres.replace(/<\/p:sldIdLst>/, `</p:sldIdLst>${lst}`)
+    else pres = pres.replace(/(<p:sldSz\b)/, `${lst}$1`)
+    zip.file(path, pres)
+  }
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+}
+
+function xmlEscape(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
 export function renderPptx(deck, template, { engine = true } = {}) {

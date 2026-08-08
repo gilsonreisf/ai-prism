@@ -2319,7 +2319,11 @@ app.post('/api/decks/:id/export-html', auth, async (req, res) => {
     if (!deck) return res.status(404).json({ error: 'deck não encontrado' })
     const slides = Array.isArray(req.body?.slides) ? req.body.slides : []
     if (!slides.length) return res.status(400).json({ error: 'sem slides para exportar' })
-    const buf = await renderPptxFromOps(deck, slides)
+    // high-fidelity option: embed the design system's font files so the deck
+    // renders in the brand face even where the font isn't installed
+    const embedFonts = req.body?.embedFonts === true
+    const template = embedFonts ? await getSelectedDeckTemplate(req.email, req.token) : null
+    const buf = await renderPptxFromOps(deck, slides, { embedFonts, fontAssets: template?.fontAssets || [] })
     const safeName = (deck.title || 'apresentacao').replace(/[^\w-]+/g, '_').slice(0, 60) || 'apresentacao'
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation')
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`)
