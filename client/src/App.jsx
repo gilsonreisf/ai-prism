@@ -43,7 +43,7 @@ function notifyTurnDone(enabled, t) {
   } catch {}
 }
 
-function makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, onMeta, onTitle }) {
+function makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, setStreamingDeck, onMeta, onTitle }) {
   // Coalesce high-frequency content updates into ONE paint per animation frame
   // instead of one setState (→ full App re-render + markdown reparse) per token.
   // `accRef.value` is the single source of truth for the streamed text, so the
@@ -70,6 +70,22 @@ function makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, onMeta,
         break
       case 'usage':
         setTarget({ prompt_tokens: ev.usage.prompt_tokens, completion_tokens: ev.usage.completion_tokens })
+        break
+      case 'deck_stream_start':
+        // pure-HTML deck engine: the model started writing a deck. Open the
+        // Studio immediately with an empty live deck so slides stream IN (kills
+        // the blind spinner). The persisted deck (blocks event) supersedes it.
+        setStreamingDeck?.({ title: ev.title || '', slides: [], meta: { format: 'html' }, streaming: true })
+        setDeckStudioId?.('streaming')
+        break
+      case 'deck_slide':
+        // one slide finished — append/replace at its index so thumbnails build
+        // up live, in order.
+        setStreamingDeck?.((d) => {
+          const slides = (d?.slides || []).slice()
+          slides[ev.index] = ev.html
+          return { ...(d || { meta: { format: 'html' }, streaming: true }), slides }
+        })
         break
       case 'reasoning':
         // native reasoning/thinking tokens streamed by the model — shown live in
@@ -116,8 +132,12 @@ function makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, onMeta,
         accRef.value = ev.content
         setTarget({ content: ev.content, blocks: ev.blocks })
         {
-          const freshDeck = ev.blocks.find((b) => b.type === 'deck' && b.deckId)
-          if (freshDeck) setDeckStudioId(freshDeck.deckId)
+          const freshDeck = ev.blocks.find((b) => (b.type === 'deck' || b.type === 'deck-html') && b.deckId)
+          if (freshDeck) {
+            setDeckStudioId(freshDeck.deckId)
+            // the persisted deck now supersedes the live-streamed one
+            setStreamingDeck?.(null)
+          }
         }
         break
       case 'title':
@@ -187,6 +207,9 @@ export default function App({ uiLang, setUiLang }) {
   )
   const [view, setView] = useState('chat') // 'chat' | 'history'
   const [deckStudioId, setDeckStudioId] = useState(null)
+  // pure-HTML deck engine: the deck being streamed live (before it persists and
+  // gets a real deckId). Rendered by DeckStudio when deckStudioId === 'streaming'.
+  const [streamingDeck, setStreamingDeck] = useState(null)
   const [spreadsheetStudioId, setSpreadsheetStudioId] = useState(null)
   const [documentStudioId, setDocumentStudioId] = useState(null)
   // focus mode: while a deck is open the chat shrinks to a narrow side column
@@ -620,6 +643,7 @@ export default function App({ uiLang, setUiLang }) {
         accRef,
         pushToast,
         setDeckStudioId,
+        setStreamingDeck,
         onMeta: (ev) => {
           createdId = ev.sessionId
           if (ev.isNew) {
@@ -695,7 +719,7 @@ export default function App({ uiLang, setUiLang }) {
       abortRef.current = ctrl
       const accRef = { value: '' }
 
-      const sseHandler = makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId })
+      const sseHandler = makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, setStreamingDeck })
       try {
         await streamRegenerate(
           currentId,
@@ -743,7 +767,7 @@ export default function App({ uiLang, setUiLang }) {
         return next
       })
 
-    const sseHandler = makeSSEHandler({ setTarget: setLast, accRef, pushToast, setDeckStudioId })
+    const sseHandler = makeSSEHandler({ setTarget: setLast, accRef, pushToast, setDeckStudioId, setStreamingDeck })
     try {
       await streamContinue(
         currentId,
@@ -1050,8 +1074,12 @@ export default function App({ uiLang, setUiLang }) {
 
       <DeckStudio
         open={!!deckStudioId}
-        deckId={deckStudioId}
-        onClose={() => setDeckStudioId(null)}
+        deckId={deckStudioId === 'streaming' ? null : deckStudioId}
+        streamingDeck={deckStudioId === 'streaming' ? streamingDeck : null}
+        onClose={() => {
+          setDeckStudioId(null)
+          setStreamingDeck(null)
+        }}
         pushToast={pushToast}
         focus={deckFocus}
         onToggleFocus={() => setDeckFocus((f) => !f)}

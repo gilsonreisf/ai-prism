@@ -94,6 +94,7 @@ import {
 } from './blocks.js'
 import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool, TOOL_GROUP_KEYS } from './tools.js'
 import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
+import { makeSlideStreamScanner } from './deckHtmlStream.js'
 import { searchGenieSpaces } from './genie.js'
 import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
@@ -617,6 +618,15 @@ async function runAssistantTurn({
   // calls; 'ceiling' = hit MAX_ROUNDS. Surfaced to the user as an honest notice.
   let stoppedEarly = null
 
+  // Pure-HTML deck streaming (task #25): as the model writes the deck-html
+  // block, surface each slide the instant it closes so the Studio builds live
+  // instead of showing a blind spinner. One scanner per turn; slides accumulate
+  // across rounds via the `deck_slide` event (client keys off `index`).
+  const slideScanner = makeSlideStreamScanner({
+    onTitle: (title) => send({ type: 'deck_stream_start', title }),
+    onSlide: (html, index) => send({ type: 'deck_slide', html, index }),
+  })
+
   async function runRound(msgs, tools) {
     let content = ''
     let toolCalls = null
@@ -631,6 +641,7 @@ async function runAssistantTurn({
       if (chunk.delta) {
         content += chunk.delta
         send({ type: 'token', value: chunk.delta })
+        slideScanner(content)
       }
       if (chunk.usage) {
         usage.prompt_tokens += chunk.usage.prompt_tokens || 0

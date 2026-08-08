@@ -294,7 +294,7 @@ function DiagramEditor({ slide, onChange }) {
   )
 }
 
-export default function DeckStudio({ open, deckId, onClose, pushToast, focus = false, onToggleFocus, models, model }) {
+export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushToast, focus = false, onToggleFocus, models, model }) {
   const t = useT()
   const [deck, setDeck] = useState(null)
   const [template, setTemplate] = useState(null)
@@ -346,6 +346,25 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
       .finally(() => setLoading(false))
   }, [open, deckId, loadTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Live-streaming deck (pure-HTML engine): no deckId yet — the slides arrive
+  // via SSE and are handed in as `streamingDeck`. Mirror them into `deck` so the
+  // rail + stage build up live. The template is loaded once; saves are disabled
+  // while streaming (there's nothing persisted to PATCH yet).
+  useEffect(() => {
+    if (!open || !streamingDeck) return
+    skipNextSave.current = true
+    setDeck(streamingDeck)
+    setLoading(false)
+    setLoadError(null)
+  }, [open, streamingDeck])
+
+  useEffect(() => {
+    if (!open || !streamingDeck || template) return
+    getJSON('/api/deck-templates/selected')
+      .then((t) => setTemplate(t.template || null))
+      .catch(() => {})
+  }, [open, streamingDeck, template])
+
   // element selection is per-slide — switching slides clears it. A pending AI
   // preview is auto-discarded (revert to before) so it never leaks across slides
   useEffect(() => {
@@ -390,6 +409,8 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
   // fires a needless PATCH
   useEffect(() => {
     if (!deck) return
+    // a live-streaming deck has no persisted id yet — never PATCH it
+    if (deck.streaming || !deck.id) return
     if (skipNextSave.current) {
       skipNextSave.current = false
       return
