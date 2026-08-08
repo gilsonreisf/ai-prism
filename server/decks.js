@@ -1550,7 +1550,8 @@ export function renderPptxFromOps(deck, slides) {
           if (shape === 'roundRect') opts.rectRadius = Math.min(IN(op.radius, kx), Math.min(w, h) / 2)
           s.addShape(shape, opts)
         } else if (op.type === 'image' && op.dataUrl) {
-          s.addImage({ data: op.dataUrl, x, y, w, h })
+          // opacity from the DOM extractor → pptxgenjs `transparency` (0..100 %)
+          s.addImage({ data: op.dataUrl, x, y, w, h, ...(op.transparency ? { transparency: op.transparency } : {}) })
         } else if (op.type === 'text' && op.runs?.length) {
           const runs = op.runs.map((r) => ({
             text: r.text,

@@ -48,6 +48,18 @@ function flattenColor(parsed, backdropHex) {
   return rgbToHex(out)
 }
 
+// Bake a CSS `opacity` (0..1) into an already-resolved opaque hex by compositing
+// it over the backdrop — same philosophy as flattenColor for translucent fills.
+// The .pptx has no reliable per-shape text alpha, so a 40%-opacity heading is
+// exported as the concrete faded color it reads as on screen. alpha≥~1 is a
+// no-op; the caller only invokes this when the effective opacity is < 1.
+function fadeHex(hex, alpha, backdropHex) {
+  if (!hex || alpha >= 0.999) return hex
+  const bg = hexToRgb(backdropHex || 'FFFFFF')
+  const fg = hexToRgb(hex)
+  return rgbToHex(fg.map((c, i) => c * alpha + bg[i] * (1 - alpha)))
+}
+
 // Universal-font mapping (matches the Claude Design "Universal fonts" option we
 // saw map DM Sans→Arial, DM Mono→Courier New): any family → a web-safe face so
 // the .pptx opens identically on any machine. Brand fidelity is a future toggle.
@@ -184,11 +196,19 @@ export function extractSlideOps(slideRoot, win) {
     }
   }
 
-  const visit = (el, backdrop) => {
+  const visit = (el, backdrop, inheritedOpacity = 1) => {
     const cs = win.getComputedStyle(el)
     if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return
     const b = box(el)
     if (b.w <= 0 || b.h <= 0) return
+    // CSS `opacity` compounds down the tree (a 50% parent halves its children).
+    // We carry the cumulative factor and BAKE it into exported colors, since the
+    // .pptx can't reliably render per-shape alpha (mirrors the fill-flatten path).
+    const elOpacity = (() => {
+      const o = parseFloat(cs.opacity)
+      return Number.isFinite(o) ? o : 1
+    })()
+    const opacity = inheritedOpacity * elOpacity
 
     // Table ROW with same-fill cells → emit ONE rect spanning the row, so a
     // rounded header reads as a single rounded block (pptxgenjs roundRect can't
@@ -205,10 +225,10 @@ export function extractSlideOps(slideRoot, win) {
         // max corner radius among the cells (the DS rounds the outer cells)
         const radii = cells.map((c) => parseFloat(win.getComputedStyle(c).borderTopLeftRadius) || parseFloat(win.getComputedStyle(c).borderTopRightRadius) || 0)
         const radius = Math.max(...radii, 0)
-        const rowFill = flattenColor(parseColor(win.getComputedStyle(cells[0]).backgroundColor), backdrop)
+        const rowFill = fadeHex(flattenColor(parseColor(win.getComputedStyle(cells[0]).backgroundColor), backdrop), opacity, backdrop)
         ops.push({ type: 'rect', ...b, fill: rowFill, radius: Math.round(radius * sx), line: null })
         for (const c of cells) paintedRowCells.add(c) // their own bg already painted
-        for (const child of el.children) visit(child, rowFill || backdrop)
+        for (const child of el.children) visit(child, rowFill || backdrop, opacity)
         return
       }
     }
@@ -217,7 +237,9 @@ export function extractSlideOps(slideRoot, win) {
     // fills are FLATTENED against the current backdrop so a white-6% card reads
     // as the subtle dark panel it is on screen — not solid white.
     const bgParsed = paintedRowCells.has(el) ? null : parseColor(cs.backgroundColor)
-    const bg = bgParsed ? flattenColor(bgParsed, backdrop) : null
+    const bgFlat = bgParsed ? flattenColor(bgParsed, backdrop) : null
+    // bake the element's cumulative CSS opacity into the fill/border color too
+    const bg = bgFlat ? fadeHex(bgFlat, opacity, backdrop) : null
     const bw = parseFloat(cs.borderTopWidth) || 0
     const border = bw > 0 ? parseColor(cs.borderTopColor) : null
     if (bg || border) {
@@ -227,18 +249,21 @@ export function extractSlideOps(slideRoot, win) {
         ...b,
         fill: bg || null,
         radius: Math.round(radius * sx),
-        line: border ? { color: flattenColor(border, backdrop), width: Math.max(0.5, bw * sx) } : null,
+        line: border ? { color: fadeHex(flattenColor(border, backdrop), opacity, backdrop), width: Math.max(0.5, bw * sx) } : null,
       })
     }
     // an opaque bg becomes the backdrop for descendants (translucent children
-    // composite over IT, not the slide bg)
-    const childBackdrop = bg && bgParsed.a >= 0.999 ? bg : backdrop
+    // composite over IT, not the slide bg). Use the FADED bg so a child's text
+    // composites over what the panel actually looks like.
+    const childBackdrop = bg && bgParsed.a >= 0.999 && opacity >= 0.999 ? bg : backdrop
 
     // 2) <img> → image (only real embedded data; DS asset URLs resolve at
     // render — captured as their src when it's a data URI)
     if (el.tagName === 'IMG') {
       const src = el.currentSrc || el.src || ''
-      if (src.startsWith('data:image')) ops.push({ type: 'image', ...b, dataUrl: src })
+      // images keep real alpha in the .pptx (pptxgenjs `transparency` is a 0..100
+      // percentage), so a faded logo/photo exports faded rather than baked
+      if (src.startsWith('data:image')) ops.push({ type: 'image', ...b, dataUrl: src, ...(opacity < 0.999 ? { transparency: Math.round((1 - opacity) * 100) } : {}) })
       return
     }
     // inline SVG (charts/icons) → serialize to a data URI, drawn as one image.
@@ -250,7 +275,7 @@ export function extractSlideOps(slideRoot, win) {
     if (el.tagName === 'svg') {
       try {
         const dataUrl = serializeSvgWithComputedColors(el, win, b.w, b.h)
-        if (dataUrl) ops.push({ type: 'image', ...b, dataUrl })
+        if (dataUrl) ops.push({ type: 'image', ...b, dataUrl, ...(opacity < 0.999 ? { transparency: Math.round((1 - opacity) * 100) } : {}) })
       } catch {
         /* unserializable — skip */
       }
@@ -260,6 +285,9 @@ export function extractSlideOps(slideRoot, win) {
     // 3) text leaf → text op; else recurse into children
     if (isTextLeaf(el, win)) {
       const runs = buildRuns(el, win)
+      // bake cumulative opacity into each run's color (text has no reliable
+      // per-run alpha in the .pptx) so a faded caption exports faded
+      if (opacity < 0.999) for (const r of runs) r.color = fadeHex(r.color, opacity, backdrop)
       if (runs.length) {
         // inset the text box by the element's padding, so a table cell's text
         // sits with the same breathing room it has on screen (14–16px pads).
@@ -303,7 +331,7 @@ export function extractSlideOps(slideRoot, win) {
         const style = {
           font: universalFont(cs.fontFamily),
           size: Math.round(parseFloat(cs.fontSize) * PX_TO_PT * 10) / 10,
-          color: parseColor(cs.color)?.hex || '000000',
+          color: fadeHex(parseColor(cs.color)?.hex || '000000', opacity, backdrop),
           bold: weightToBold(cs.fontWeight),
           italic: cs.fontStyle === 'italic',
           tracking: cs.letterSpacing && cs.letterSpacing !== 'normal' ? Math.round(parseFloat(cs.letterSpacing) * PX_TO_PT * 10) / 10 : 0,
@@ -331,7 +359,7 @@ export function extractSlideOps(slideRoot, win) {
         /* range unsupported — skip */
       }
     }
-    for (const child of el.children) visit(child, childBackdrop)
+    for (const child of el.children) visit(child, childBackdrop, opacity)
   }
 
   // start from the slide root's children (the root itself is the full-bleed bg,

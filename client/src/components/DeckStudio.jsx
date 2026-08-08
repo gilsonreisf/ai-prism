@@ -406,6 +406,9 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   const htmlBaseline = useRef(null)
   const [htmlSaving, setHtmlSaving] = useState(false)
   const htmlEditModeRef = useRef(false)
+  // when closing the Studio with unsaved manual edits, show a Save / Discard /
+  // Cancel confirmation instead of silently dropping the changes
+  const [closeConfirm, setCloseConfirm] = useState(false)
 
   useEffect(() => {
     if (!open || !deckId) return
@@ -795,6 +798,29 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     setHtmlHistTick((n) => n + 1)
     setHtmlSel(null)
     setHtmlDirty(false)
+  }
+
+  // Closing the Studio with unsaved manual edits must not drop them silently:
+  // intercept the close and raise a Save / Discard / Cancel confirmation. When
+  // clean (or not editing), close straight through.
+  const requestClose = () => {
+    if (htmlEditMode && isHtmlDeck && htmlDirty) {
+      setCloseConfirm(true)
+      return
+    }
+    onClose?.()
+  }
+  const confirmCloseSave = async () => {
+    await saveHtmlEdits()
+    setCloseConfirm(false)
+    setHtmlEditMode(false)
+    onClose?.()
+  }
+  const confirmCloseDiscard = () => {
+    discardHtmlEdits()
+    setCloseConfirm(false)
+    setHtmlEditMode(false)
+    onClose?.()
   }
 
   // keep the global hotkey handler pointed at the live HTML-edit closures
@@ -1187,7 +1213,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     >
       {/* toolbar */}
       <header className="shrink-0 h-14 flex items-center gap-2 md:gap-3 px-3 md:px-4 border-b border-[var(--border)]">
-        <button onClick={onClose} className="p-2 -ml-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]">
+        <button onClick={requestClose} className="p-2 -ml-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]">
           <Icon.Close size={20} />
         </button>
         <Icon.Presentation size={18} className="text-[var(--accent)]" />
@@ -2281,6 +2307,38 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
         onAction={(action) => htmlOp(action)}
         onClose={() => setHtmlMenu(null)}
       />
+
+      {/* unsaved-edits guard: closing the Studio mid-edit asks Save/Discard/Cancel */}
+      {closeConfirm && (
+        <div className="fixed inset-0 z-[140] grid place-items-center bg-black/50 animate-fade-in" onClick={() => setCloseConfirm(false)}>
+          <div className="w-[min(92vw,26rem)] rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-[var(--text)]">{t('deckStudio.htmlEdit.closeConfirmTitle')}</h3>
+            <p className="text-[13px] text-[var(--muted)] mt-1.5 leading-relaxed">{t('deckStudio.htmlEdit.closeConfirmBody')}</p>
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button
+                onClick={() => setCloseConfirm(false)}
+                className="rounded-lg border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--surface-3)] font-semibold text-xs px-3 py-2 transition"
+              >
+                {t('deckStudio.htmlEdit.closeConfirmCancel')}
+              </button>
+              <button
+                onClick={confirmCloseDiscard}
+                className="rounded-lg border border-[var(--border)] text-[var(--danger,#e5484d)] hover:bg-[var(--surface-3)] font-semibold text-xs px-3 py-2 transition"
+              >
+                {t('deckStudio.htmlEdit.closeConfirmDiscard')}
+              </button>
+              <button
+                onClick={confirmCloseSave}
+                disabled={htmlSaving}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] text-white hover:brightness-110 disabled:opacity-50 font-semibold text-xs px-3.5 py-2 transition"
+              >
+                {htmlSaving && <span className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" aria-hidden />}
+                {t('deckStudio.htmlEdit.closeConfirmSave')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
