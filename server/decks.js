@@ -1565,12 +1565,21 @@ export async function renderPptxFromOps(deck, slides, { embedFonts = false, font
               ...(r.tracking ? { charSpacing: r.tracking } : {}),
             },
           }))
+          // Line height as EXACT points, not a multiple. pptxgenjs
+          // `lineSpacingMultiple` maps to OOXML `spcPct`, which PowerPoint applies
+          // relative to the font's NATURAL leading (~1.2×), not the font size —
+          // so a CSS line-height:1.05 rendered ~1.26× tall in PPTX and the last
+          // line overflowed. `lineSpacing` sets the exact inter-line distance in
+          // points; we compute it from the tallest run (size in pt) × the CSS
+          // multiple, matching the browser's line box exactly.
+          const maxSize = Math.max(...op.runs.map((r) => r.size || 12))
+          const lineSpacing = Math.round(maxSize * (op.lineHeight || 1.15) * 10) / 10
           s.addText(runs, {
             x, y, w, h,
             align: op.align || 'left',
             valign: op.valign || 'top',
             margin: 0,
-            lineSpacingMultiple: op.lineHeight || 1.15,
+            lineSpacing,
             wrap: true,
           })
         }
