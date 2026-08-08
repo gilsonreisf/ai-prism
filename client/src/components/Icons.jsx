@@ -90,6 +90,14 @@ export const Speaker = (p) => (
 export const Regenerate = (p) => (
   <svg {...s(p)}><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16" /></svg>
 )
+// Curved-arrow undo/redo (Claude Design edit toolbar): a hook that curves back
+// on itself with the arrowhead at the tail — mirror for redo.
+export const Undo = (p) => (
+  <svg {...s(p)}><path d="M9 14 4 9l5-5" /><path d="M4 9h11a5 5 0 0 1 0 10h-1" /></svg>
+)
+export const Redo = (p) => (
+  <svg {...s(p)}><path d="m15 14 5-5-5-5" /><path d="M20 9H9a5 5 0 0 0 0 10h1" /></svg>
+)
 export const File = (p) => (
   <svg {...s(p)}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg>
 )

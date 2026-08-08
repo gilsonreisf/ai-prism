@@ -207,6 +207,9 @@ export default function App({ uiLang, setUiLang }) {
   )
   const [view, setView] = useState('chat') // 'chat' | 'history'
   const [deckStudioId, setDeckStudioId] = useState(null)
+  // which chat session the open deck belongs to — the Studio auto-closes when
+  // the user navigates to a different conversation (a deck is bound to its chat)
+  const [deckSessionId, setDeckSessionId] = useState(null)
   // pure-HTML deck engine: the deck being streamed live (before it persists and
   // gets a real deckId). Rendered by DeckStudio when deckStudioId === 'streaming'.
   const [streamingDeck, setStreamingDeck] = useState(null)
@@ -227,8 +230,21 @@ export default function App({ uiLang, setUiLang }) {
   const [deckEditFullscreen, setDeckEditFullscreen] = useState(false)
   useEffect(() => {
     setDeckAutoCollapsed(!!deckStudioId)
-    if (!deckStudioId) setDeckEditFullscreen(false)
+    if (!deckStudioId) {
+      setDeckEditFullscreen(false)
+      setDeckSessionId(null)
+    }
   }, [deckStudioId])
+  // a deck is bound to the chat that created it: once we know the open deck's
+  // owning session, close the Studio if the user is viewing a different chat
+  // (streaming decks have no persisted session yet — never force-close those)
+  useEffect(() => {
+    if (!deckStudioId || deckStudioId === 'streaming' || deckSessionId == null) return
+    if (currentId != null && String(currentId) !== String(deckSessionId)) {
+      setDeckStudioId(null)
+      setStreamingDeck(null)
+    }
+  }, [currentId, deckSessionId, deckStudioId])
   const sidebarCollapsed = manualSidebarCollapsed || deckAutoCollapsed
   const toggleSidebarCollapse = () => {
     if (sidebarCollapsed) {
@@ -1093,6 +1109,7 @@ export default function App({ uiLang, setUiLang }) {
         focus={deckFocus}
         onToggleFocus={() => setDeckFocus((f) => !f)}
         onEditModeChange={setDeckEditFullscreen}
+        onDeckSession={setDeckSessionId}
         models={models}
         model={model}
       />

@@ -96,6 +96,7 @@ import {
 import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool, TOOL_GROUP_KEYS } from './tools.js'
 import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
 import { makeSlideStreamScanner } from './deckHtmlStream.js'
+import { buildDsStyleContract } from './deckHtmlPolicy.js'
 import { searchGenieSpaces } from './genie.js'
 import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
@@ -1986,6 +1987,33 @@ function replaceElementById(els, id, next) {
   })
 }
 
+// Compact digest of the conversation a deck came from, for grounding an AI
+// tweak (task #45). Plain-text roles only, tool traces and block payloads
+// dropped, capped so it stays token-affordable. Returns '' when there's no
+// session or nothing usable. Never throws to the caller — grounding is
+// best-effort.
+async function buildTweakChatContext(req, sessionId) {
+  if (!sessionId) return ''
+  const msgs = await listMessages(req.email, req.token, sessionId)
+  if (!msgs?.length) return ''
+  const parts = []
+  for (const m of msgs) {
+    if (m.role !== 'user' && m.role !== 'assistant') continue
+    const text = String(m.content || '')
+      .replace(/\{\{block:\d+\}\}/g, '')      // block placeholders
+      .replace(/\{\{toolcall:[^}]+\}\}/g, '') // inline tool-call markers
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!text) continue
+    parts.push(`${m.role === 'user' ? 'Usuário' : 'Assistente'}: ${text.slice(0, 1200)}`)
+  }
+  if (!parts.length) return ''
+  // keep the most recent exchanges (the deck's subject + latest refinements)
+  let digest = parts.slice(-16).join('\n')
+  if (digest.length > 6000) digest = digest.slice(-6000)
+  return digest
+}
+
 app.post('/api/decks/:id/tweak', auth, async (req, res) => {
   try {
     await ensureReady(req)
@@ -2023,18 +2051,32 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         'sem markdown, sem cercas de código, sem comentários e sem explicação. Preserve a marca e o ' +
         'design system (as variáveis var(--…) e a estrutura existente); nunca use position:absolute para ' +
         'reflowar conteúdo que já flui; nunca invente dados numéricos novos. Mantenha o mesmo idioma.'
+
+      // Grounding for the edit (task #45): (1) the active design system's STYLE
+      // CONTRACT — the same token vocabulary + worked examples the generator
+      // uses — so an edit stays in the brand's visual language by default; and
+      // (2) a digest of the originating chat, so the model knows what the deck
+      // is about (the numbers, the audience, the intent). The user can override
+      // the DS grounding explicitly in the instruction ("ignore o design system").
+      const dsContract = buildDsStyleContract(template)
+      const chatDigest = await buildTweakChatContext(req, deck.sessionId).catch(() => '')
+      const groundSystem =
+        (dsContract ? dsContract + '\n\n' : '') +
+        (chatDigest ? 'CONTEXTO DA CONVERSA que originou este deck (use como fonte da verdade p/ tema, dados e intenção; NÃO invente números fora dela):\n---\n' + chatDigest + '\n---\n\n' : '') +
+        contract +
+        ' APOIE-SE no design system acima (tokens var(--…), classes e composições dos exemplos) para qualquer ajuste visual, A MENOS QUE a instrução peça explicitamente o contrário; e mantenha coerência com o contexto da conversa.'
       let messages
       if (htmlOuter && scoped) {
         // element-scoped: give the model the whole <section> AND point at the
         // element to change; ask for the full new <section> back (no server-side
         // DOM splicing — robust, and the model keeps the rest byte-close).
         messages = [
-          { role: 'system', content: contract + ' Você recebe o HTML de UM slide (<section>) e o HTML de UM elemento dentro dele que o usuário selecionou. Aplique a instrução SOMENTE a esse elemento e devolva o <section> NOVO completo, mantendo todo o resto inalterado.' },
+          { role: 'system', content: groundSystem + ' Você recebe o HTML de UM slide (<section>) e o HTML de UM elemento dentro dele que o usuário selecionou. Aplique a instrução SOMENTE a esse elemento e devolva o <section> NOVO completo, mantendo todo o resto inalterado.' },
           { role: 'user', content: `Slide (HTML):\n${readHtml(scoped)}\n\nElemento selecionado (outerHTML):\n${htmlOuter}\n\nInstrução (só p/ o elemento): ${instruction}\n\n<section> novo:` },
         ]
       } else if (scoped) {
         messages = [
-          { role: 'system', content: contract + ' Você recebe o HTML de UM slide (<section>…</section>); devolva o <section> NOVO completo.' },
+          { role: 'system', content: groundSystem + ' Você recebe o HTML de UM slide (<section>…</section>); devolva o <section> NOVO completo.' },
           { role: 'user', content: `Slide (HTML):\n${readHtml(scoped)}\n\nInstrução: ${instruction}\n\n<section> novo:` },
         ]
       } else {
@@ -2044,7 +2086,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         let totalUsage = null
         for (const s of deck.slides) {
           const { text: raw, usage } = await completeWithUsage(req.token, model, [
-            { role: 'system', content: contract + ' Você recebe o HTML de UM slide (<section>…</section>) de um deck; devolva o <section> NOVO completo, aplicando a instrução de forma consistente com um deck inteiro.' },
+            { role: 'system', content: groundSystem + ' Você recebe o HTML de UM slide (<section>…</section>) de um deck; devolva o <section> NOVO completo, aplicando a instrução de forma consistente com um deck inteiro.' },
             { role: 'user', content: `Slide (HTML):\n${readHtml(s)}\n\nInstrução (vale p/ o deck todo): ${instruction}\n\n<section> novo:` },
           ], { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
           const cleaned = String(raw || '').replace(/```[a-z]*\n?/gi, '').trim()

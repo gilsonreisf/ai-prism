@@ -1946,13 +1946,15 @@ export async function createDeck(userEmail, userToken, sessionId, title, slides,
 
 export async function getDeck(userEmail, userToken, deckId) {
   return withClient(userEmail, userToken, async (c) => {
-    const r = await c.query(`SELECT id, title, slides, meta FROM chat_decks WHERE id = $1 AND user_email = $2`, [
+    const r = await c.query(`SELECT id, session_id, title, slides, meta FROM chat_decks WHERE id = $1 AND user_email = $2`, [
       deckId,
       userEmail,
     ])
     if (!r.rows.length) return null
     const x = r.rows[0]
-    return { id: String(x.id), title: x.title, slides: x.slides || [], ...(x.meta || {}) }
+    // sessionId lets an editor pull the originating conversation for grounding;
+    // kept off the enumerable spread so it never leaks into the persisted meta.
+    return { id: String(x.id), sessionId: x.session_id != null ? String(x.session_id) : null, title: x.title, slides: x.slides || [], ...(x.meta || {}) }
   })
 }
 

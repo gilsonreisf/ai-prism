@@ -78,14 +78,14 @@ export default function HtmlEditToolbar({ tool, onTool, onImage, onUndo, onRedo,
         />
       </label>
       <span className="w-px h-5 bg-[var(--border)] mx-0.5" />
-      <ToolBtn title={t('deckStudio.htmlEdit.undo')} onClick={onUndo}>
+      <ToolBtn title={t('deckStudio.htmlEdit.undo')} onClick={canUndo ? onUndo : undefined}>
         <span className={canUndo ? '' : 'opacity-30'}>
-          <Icon.Regenerate size={14} className="-scale-x-100" />
+          <Icon.Undo size={15} />
         </span>
       </ToolBtn>
-      <ToolBtn title={t('deckStudio.htmlEdit.redo')} onClick={onRedo}>
+      <ToolBtn title={t('deckStudio.htmlEdit.redo')} onClick={canRedo ? onRedo : undefined}>
         <span className={canRedo ? '' : 'opacity-30'}>
-          <Icon.Regenerate size={14} />
+          <Icon.Redo size={15} />
         </span>
       </ToolBtn>
     </div>

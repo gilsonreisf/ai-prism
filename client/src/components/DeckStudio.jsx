@@ -345,7 +345,7 @@ function DiagramEditor({ slide, onChange }) {
   )
 }
 
-export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushToast, focus = false, onToggleFocus, onEditModeChange, models, model }) {
+export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushToast, focus = false, onToggleFocus, onEditModeChange, onDeckSession, models, model }) {
   const t = useT()
   const [deck, setDeck] = useState(null)
   const [template, setTemplate] = useState(null)
@@ -396,6 +396,8 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   const htmlHist = useRef({ past: [], future: [] })
   const [htmlHistTick, setHtmlHistTick] = useState(0) // bump to refresh can-undo/redo
   const htmlEditPreview = useRef(null) // { before } for AI tweak preview on HTML
+  // mirror of isHtmlDeck for effects that run before the render-body computes it
+  const isHtmlDeckRef = useRef(false)
 
   useEffect(() => {
     if (!open || !deckId) return
@@ -407,6 +409,9 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
       .then(([d, t]) => {
         setDeck(d.deck)
         setTemplate(t.template || null)
+        // tell App which chat this deck belongs to, so it can close the Studio
+        // when the user navigates to a different conversation
+        onDeckSession?.(d.deck?.sessionId ?? null)
       })
       .catch((e) => setLoadError(e.message || t('deckStudio.loadError')))
       .finally(() => setLoading(false))
@@ -432,7 +437,11 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   }, [open, streamingDeck, template])
 
   // element selection is per-slide — switching slides clears it. A pending AI
-  // preview is auto-discarded (revert to before) so it never leaks across slides
+  // preview is PRESERVED across slide navigation: the previewed deck stays in
+  // `deck` so the user can page through every affected slide (esp. a whole-deck
+  // edit) and review before Accept/Discard. Only the freeform semantic path,
+  // whose preview is a splice into one slide's element tree, auto-reverts on nav
+  // (its selection context is gone once you leave the slide).
   useEffect(() => {
     setSelection(null)
     setSelectedElIds([])
@@ -443,7 +452,9 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     setHtmlMenu(null)
     htmlHist.current = { past: [], future: [] } // per-slide undo history
     setHtmlHistTick((n) => n + 1)
-    if (tweakPreviewRef.current) {
+    // revert a pending preview only for freeform/semantic decks; HTML-deck
+    // previews (element/slide/whole-deck) survive navigation for review
+    if (tweakPreviewRef.current && !isHtmlDeckRef.current) {
       skipNextSave.current = true
       setDeck(tweakPreviewRef.current.before)
       setTweakPreview(null)
@@ -578,6 +589,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   // strings. Its own Studio layout (rail + stage + inspector) and manual editor
   // apply instead of the semantic/freeform chrome.
   const isHtmlDeck = deck?.meta?.format === 'html' || typeof deck?.slides?.[0] === 'string'
+  isHtmlDeckRef.current = isHtmlDeck
 
   const updateSlide = (idx, patch) => {
     setDeck((d) => {
@@ -665,6 +677,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     const instruction = tweak.trim()
     if (!instruction || tweaking || !deck?.id) return
     setTweaking(true)
+    setTweakCost(null) // don't flash the previous edit's cost while this one runs
     try {
       const single = htmlSel?.paths?.length === 1 && !htmlSel.info?.multi
       const selPayload = single
@@ -699,6 +712,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     skipNextSave.current = true
     setTweakHistory((h) => [{ label: tweakPreview.label, at: Date.now() }, ...h].slice(0, 20))
     setTweakPreview(null)
+    setTweakCost(null)
     htmlEditPreview.current = null
     // history checkpoint so the accepted AI edit is itself undoable
     htmlHist.current.past.push(slideHtml(tweakPreview.before.slides[activeIndex]))
@@ -710,6 +724,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     setDeck(tweakPreview.before)
     htmlEditorRef.current?.setHtml(slideHtml(tweakPreview.before.slides[activeIndex]), true)
     setTweakPreview(null)
+    setTweakCost(null)
     htmlEditPreview.current = null
   }
 
@@ -1275,6 +1290,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
                       onDeselect={() => setHtmlSel(null)}
                       onChange={(newHtml) => setHtmlSlide(activeIndex, newHtml)}
                       onContextMenu={(m) => setHtmlMenu(m)}
+                      onDismissMenu={() => setHtmlMenu(null)}
                       onToolDone={() => setHtmlTool('select')}
                     />
                   ) : (

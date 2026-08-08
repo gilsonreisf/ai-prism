@@ -40,7 +40,9 @@ const RUNTIME = `
   var layer = null;             // overlay layer (rings/hover), outside <section>
   var hoverBox = null;
   var marquee = null;           // create/drag preview box
-  var drag = null;              // {mode:'create'|'move', ...}
+  var drag = null;              // {mode:'create'|'move'|'resize', ...}
+  var handles = [];             // 8 resize handles (single selection only)
+  var HANDLE_DIRS = ['nw','n','ne','e','se','s','sw','w'];
 
   function px(v){ v = parseFloat(v); return isFinite(v) ? Math.round(v*10)/10 : 0; }
   function send(msg){ msg.prism = true; parent.postMessage(msg, '*'); }
@@ -57,6 +59,32 @@ const RUNTIME = `
     marquee = document.createElement('div');
     marquee.style.cssText = 'position:absolute;pointer-events:none;border:1.5px solid '+ACCENT+';background:'+ACCENT+'18;display:none;';
     layer.appendChild(marquee);
+    // 8 resize handles (corners + edges) — shown only for a single selection.
+    var cursors = { nw:'nwse-resize', n:'ns-resize', ne:'nesw-resize', e:'ew-resize', se:'nwse-resize', s:'ns-resize', sw:'nesw-resize', w:'ew-resize' };
+    HANDLE_DIRS.forEach(function(dir){
+      var h = document.createElement('div');
+      h.setAttribute('data-prism-handle', dir);
+      h.style.cssText = 'position:absolute;width:10px;height:10px;box-sizing:border-box;'
+        + 'background:#fff;border:1.5px solid '+ACCENT+';border-radius:2px;display:none;'
+        + 'pointer-events:auto;z-index:2147483400;cursor:'+cursors[dir]+';';
+      layer.appendChild(h); handles.push(h);
+    });
+  }
+  // place the 8 handles around a single selected element's box; hide otherwise
+  function drawHandles(){
+    if (!handles.length) return;
+    if (selected.length !== 1 || selected[0] === root){ handles.forEach(function(h){ h.style.display='none'; }); return; }
+    var r = selected[0].getBoundingClientRect();
+    var x = r.left + window.scrollX, y = r.top + window.scrollY;
+    var pos = {
+      nw:[x,y], n:[x+r.width/2,y], ne:[x+r.width,y],
+      e:[x+r.width,y+r.height/2], se:[x+r.width,y+r.height],
+      s:[x+r.width/2,y+r.height], sw:[x,y+r.height], w:[x,y+r.height/2],
+    };
+    handles.forEach(function(h){
+      var p = pos[h.getAttribute('data-prism-handle')];
+      h.style.display='block'; h.style.left=(p[0]-5)+'px'; h.style.top=(p[1]-5)+'px';
+    });
   }
   // element-only child-index path from <section>, e.g. "1.0.2"
   function pathOf(el){
@@ -106,6 +134,7 @@ const RUNTIME = `
         fontFamily: cs.fontFamily,
         backgroundColor: cs.backgroundColor, opacity: cs.opacity, borderRadius: px(cs.borderTopLeftRadius),
         overflow: cs.overflow, boxShadow: cs.boxShadow,
+        borderWidth: px(cs.borderTopWidth), borderStyle: cs.borderTopStyle, borderColor: cs.borderTopColor,
         width: px(cs.width), height: px(cs.height),
         position: cs.position, top: st.top||'', left: st.left||'', right: st.right||'', bottom: st.bottom||'', zIndex: st.zIndex||'',
         flexGrow: st.flexGrow||'', alignSelf: cs.alignSelf,
@@ -119,7 +148,7 @@ const RUNTIME = `
         textAlign:!!st.textAlign, letterSpacing:!!st.letterSpacing, lineHeight:!!st.lineHeight,
         textTransform:!!st.textTransform, textDecoration:!!st.textDecorationLine,
         background:!!(st.background||st.backgroundColor), opacity:!!st.opacity, borderRadius:!!st.borderRadius,
-        overflow:!!st.overflow, boxShadow:!!st.boxShadow,
+        overflow:!!st.overflow, boxShadow:!!st.boxShadow, border:!!(st.border||st.borderWidth||st.borderTopWidth),
         width:!!st.width, height:!!st.height, position:!!st.position, zIndex:!!st.zIndex,
         padding:!!(st.padding||st.paddingTop||st.paddingLeft), margin:!!(st.margin||st.marginTop||st.marginLeft),
       },
@@ -144,6 +173,7 @@ const RUNTIME = `
     }
     while (rings.length > selected.length){ layer.removeChild(rings.pop()); }
     for (var i=0;i<selected.length;i++) position(rings[i], selected[i]);
+    drawHandles();
   }
   function reselect(){ drawRings(); }
   function serialize(){
@@ -263,7 +293,23 @@ const RUNTIME = `
   // ---- pointer interactions --------------------------------------------------
   function stagePoint(ev){ return { x: ev.clientX + window.scrollX, y: ev.clientY + window.scrollY }; }
   document.addEventListener('mousedown', function(ev){
+    // any pointer-down inside the frame dismisses a parent context menu
+    // (the parent's own outside-click listener can't see clicks in this
+    // cross-origin iframe, so we forward the signal explicitly)
+    send({ kind:'dismissMenu' });
     if (editingEl) return;
+    // resize handle grabbed? (single selection) — start a resize drag
+    var hdir = ev.target && ev.target.getAttribute && ev.target.getAttribute('data-prism-handle');
+    if (hdir && selected.length === 1){
+      ev.preventDefault(); ev.stopPropagation();
+      var el = selected[0], r = el.getBoundingClientRect();
+      var cs = getComputedStyle(el), p0 = stagePoint(ev);
+      drag = { mode:'resize', el: el, dir: hdir, x0: p0.x, y0: p0.y,
+        w0: r.width, h0: r.height,
+        abs: cs.position === 'absolute',
+        left0: parseFloat(el.style.left)||0, top0: parseFloat(el.style.top)||0 };
+      return;
+    }
     if (tool !== 'select'){
       ev.preventDefault(); ev.stopPropagation();
       var p = stagePoint(ev);
@@ -290,6 +336,19 @@ const RUNTIME = `
       drag.el.style.left=Math.round(drag.left0 + (p.x-drag.x0))+'px';
       drag.el.style.top=Math.round(drag.top0 + (p.y-drag.y0))+'px';
       reselect();
+    } else if (drag.mode === 'resize'){
+      var dx = p.x - drag.x0, dy = p.y - drag.y0, dir = drag.dir;
+      var w = drag.w0, h = drag.h0, left = drag.left0, top = drag.top0;
+      if (dir.indexOf('e') !== -1) w = Math.max(8, drag.w0 + dx);
+      if (dir.indexOf('s') !== -1) h = Math.max(8, drag.h0 + dy);
+      if (dir.indexOf('w') !== -1){ w = Math.max(8, drag.w0 - dx); if (drag.abs) left = drag.left0 + (drag.w0 - w); }
+      if (dir.indexOf('n') !== -1){ h = Math.max(8, drag.h0 - dy); if (drag.abs) top = drag.top0 + (drag.h0 - h); }
+      // width/height only along the axes the handle controls
+      if (dir === 'n' || dir === 's'){ drag.el.style.height = Math.round(h)+'px'; }
+      else if (dir === 'e' || dir === 'w'){ drag.el.style.width = Math.round(w)+'px'; }
+      else { drag.el.style.width = Math.round(w)+'px'; drag.el.style.height = Math.round(h)+'px'; }
+      if (drag.abs){ drag.el.style.left = Math.round(left)+'px'; drag.el.style.top = Math.round(top)+'px'; }
+      reselect();
     }
   }, true);
   document.addEventListener('mouseup', function(ev){
@@ -308,12 +367,14 @@ const RUNTIME = `
       serialize();
       send({ kind:'toolDone' }); tool = 'select';
     } else if (drag.mode === 'move'){ serialize(); emitSelect(); }
+    else if (drag.mode === 'resize'){ serialize(); emitSelect(); }
     drag = null;
   }, true);
 
   document.addEventListener('click', function(ev){
     if (tool !== 'select') return;
     var el = ev.target;
+    if (el && el.getAttribute && el.getAttribute('data-prism-handle')) return; // resize handle
     if (el === editingEl) return;
     if (el === document.body || el === document.documentElement){ setSelection([]); return; }
     ev.preventDefault(); ev.stopPropagation();
@@ -414,7 +475,7 @@ function buildEditableSrcDoc(sectionHtml, tokenStyle) {
 }
 
 const HtmlSlideEditor = forwardRef(function HtmlSlideEditor(
-  { html, template, title = 'slide', className = '', background = '#0e1a1f', tool = 'select', onSelect, onDeselect, onChange, onContextMenu, onToolDone },
+  { html, template, title = 'slide', className = '', background = '#0e1a1f', tool = 'select', onSelect, onDeselect, onChange, onContextMenu, onToolDone, onDismissMenu },
   ref
 ) {
   const wrapRef = useRef(null)
@@ -460,6 +521,7 @@ const HtmlSlideEditor = forwardRef(function HtmlSlideEditor(
         const rect = frameRef.current.getBoundingClientRect()
         onContextMenu?.({ x: rect.left + m.x * scale, y: rect.top + m.y * scale, paths: m.paths })
       } else if (m.kind === 'toolDone') onToolDone?.()
+      else if (m.kind === 'dismissMenu') onDismissMenu?.()
       else if (m.kind === 'html') {
         lastEmitted.current = m.html
         onChange?.(m.html)
@@ -467,7 +529,7 @@ const HtmlSlideEditor = forwardRef(function HtmlSlideEditor(
     }
     window.addEventListener('message', onMsg)
     return () => window.removeEventListener('message', onMsg)
-  }, [onSelect, onDeselect, onChange, onContextMenu, onToolDone, scale])
+  }, [onSelect, onDeselect, onChange, onContextMenu, onToolDone, onDismissMenu, scale])
 
   const post = (msg) => frameRef.current?.contentWindow?.postMessage({ prism: true, ...msg }, '*')
   useImperativeHandle(ref, () => ({

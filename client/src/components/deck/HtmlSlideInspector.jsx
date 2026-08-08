@@ -14,6 +14,8 @@ import * as Icon from '../Icons.jsx'
 // mirroring Claude Design. Style edits push to the iframe imperatively; the live
 // `info` snapshot drives shown values.
 
+const WEIGHTS = ['100', '200', '300', '400', '500', '600', '700', '800', '900']
+
 function toHex(c) {
   if (!c) return '#000000'
   if (c.startsWith('#')) return c.length === 4 ? '#' + [...c.slice(1)].map((x) => x + x).join('') : c
@@ -156,6 +158,61 @@ function Seg({ options, value, onChange }) {
   )
 }
 
+// Padding/Margin editor with None / All / X&Y / Individual modes — writes the
+// shorthand (`padding`/`margin`) so a single inline declaration stays clean and
+// the snapshot's mode detection round-trips.
+function BoxEdit({ label, prop, mode, c, inl, set, t }) {
+  const cap = prop === 'padding' ? 'padding' : 'margin'
+  const T = c[`${cap}Top`] ?? 0
+  const R = c[`${cap}Right`] ?? 0
+  const B = c[`${cap}Bottom`] ?? 0
+  const L = c[`${cap}Left`] ?? 0
+  const write = (t2, r2, b2, l2) => set({ [prop]: `${t2}px ${r2}px ${b2}px ${l2}px` })
+  const num = 'min-w-0 w-full text-[12px] rounded-md bg-[var(--surface)] border border-[var(--border)] px-1.5 py-1 outline-none focus:border-[var(--accent)]'
+  return (
+    <div className="space-y-1">
+      <Field label={label} dot={inl}>
+        <Seg
+          options={[
+            { value: 'none', label: t('deckStudio.htmlEdit.none') },
+            { value: 'all', label: t('deckStudio.htmlEdit.all') },
+            { value: 'xy', label: 'X·Y' },
+            { value: 'individual', label: t('deckStudio.htmlEdit.each') },
+          ]}
+          value={mode}
+          onChange={(v) => {
+            if (v === 'none') set({ [prop]: null })
+            else if (v === 'all') set({ [prop]: '16px' })
+            else if (v === 'xy') write(T || 16, R || 24, T || 16, R || 24)
+            else write(T, R, B, L)
+          }}
+        />
+      </Field>
+      {mode === 'all' && (
+        <div className="pl-[4.5rem]">
+          <input type="number" min={0} value={T} onChange={(e) => set({ [prop]: `${e.target.value || 0}px` })} className={`${num} !w-16`} />
+        </div>
+      )}
+      {mode === 'xy' && (
+        <div className="pl-[4.5rem] grid grid-cols-2 gap-1.5">
+          <label className="flex items-center gap-1 text-[10px] text-[var(--muted)]">Y<input type="number" value={T} onChange={(e) => write(e.target.value || 0, R, e.target.value || 0, L)} className={num} /></label>
+          <label className="flex items-center gap-1 text-[10px] text-[var(--muted)]">X<input type="number" value={R} onChange={(e) => write(T, e.target.value || 0, B, e.target.value || 0)} className={num} /></label>
+        </div>
+      )}
+      {mode === 'individual' && (
+        <div className="pl-[4.5rem] grid grid-cols-4 gap-1">
+          {[['T', T, (v) => write(v, R, B, L)], ['R', R, (v) => write(T, v, B, L)], ['B', B, (v) => write(T, R, v, L)], ['L', L, (v) => write(T, R, B, v)]].map(([lbl, val, on]) => (
+            <label key={lbl} className="flex flex-col items-center gap-0.5 text-[9px] text-[var(--faint)]">
+              {lbl}
+              <input type="number" value={val} onChange={(e) => on(e.target.value || 0)} className={num} />
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function HtmlSlideInspector({
   html,
   selectedPaths = [],
@@ -184,9 +241,15 @@ export default function HtmlSlideInspector({
   const sz = info?.sizing || {}
   const isBold = parseInt(c.fontWeight, 10) >= 600
   const set = (style) => onStyle?.(style)
-  // padding/margin box modes
-  const padMode = inl.padding ? (c.paddingTop === c.paddingRight && c.paddingRight === c.paddingBottom && c.paddingBottom === c.paddingLeft ? 'all' : 'individual') : 'none'
-  const marMode = inl.margin ? (c.marginTop === c.marginRight && c.marginRight === c.marginBottom && c.marginBottom === c.marginLeft ? 'all' : 'individual') : 'none'
+  // padding/margin box modes: none | all | xy | individual
+  const boxMode = (on, top, right, bottom, left) => {
+    if (!on) return 'none'
+    if (top === right && right === bottom && bottom === left) return 'all'
+    if (top === bottom && left === right) return 'xy'
+    return 'individual'
+  }
+  const padMode = boxMode(inl.padding, c.paddingTop, c.paddingRight, c.paddingBottom, c.paddingLeft)
+  const marMode = boxMode(inl.margin, c.marginTop, c.marginRight, c.marginBottom, c.marginLeft)
 
   const sizingSeg = [
     { value: 'hug', label: 'Hug' },
@@ -308,12 +371,30 @@ export default function HtmlSlideInspector({
                     <button onClick={() => set({ textDecoration: /underline/.test(c.textDecorationLine) ? 'none' : 'underline' })} className={`w-7 h-6 grid place-items-center underline text-[12px] border-l border-[var(--border)] ${/underline/.test(c.textDecorationLine) ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--muted)]'}`} title="Underline">
                       U
                     </button>
+                    <button onClick={() => set({ textDecoration: /line-through/.test(c.textDecorationLine) ? 'none' : 'line-through' })} className={`w-7 h-6 grid place-items-center line-through text-[12px] border-l border-[var(--border)] ${/line-through/.test(c.textDecorationLine) ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--muted)]'}`} title={t('deckStudio.htmlEdit.strike')}>
+                      S
+                    </button>
                   </div>
                   <select value={c.textTransform && c.textTransform !== 'none' ? c.textTransform : ''} onChange={(e) => set({ textTransform: e.target.value || 'none' })} className={`${inputCls} ml-1`} title={t('deckStudio.htmlEdit.transform')}>
                     <option value="">{t('deckStudio.htmlEdit.caseNormal')}</option>
                     <option value="uppercase">ABC</option>
                     <option value="lowercase">abc</option>
                     <option value="capitalize">Abc</option>
+                  </select>
+                </Field>
+                {/* full weight scale (Claude Design parity: Thin→Black) */}
+                <Field label={t('deckStudio.htmlEdit.weightScale')} dot={inl.fontWeight}>
+                  <select value={WEIGHTS.includes(String(parseInt(c.fontWeight, 10))) ? String(parseInt(c.fontWeight, 10)) : ''} onChange={(e) => set({ fontWeight: e.target.value || null })} className={inputCls}>
+                    <option value="">—</option>
+                    <option value="100">Thin</option>
+                    <option value="200">Extra Light</option>
+                    <option value="300">Light</option>
+                    <option value="400">Regular</option>
+                    <option value="500">Medium</option>
+                    <option value="600">Semibold</option>
+                    <option value="700">Bold</option>
+                    <option value="800">Extra Bold</option>
+                    <option value="900">Black</option>
                   </select>
                 </Field>
                 <Field label={t('deckStudio.htmlEdit.align')} dot={inl.textAlign}>
@@ -389,35 +470,11 @@ export default function HtmlSlideInspector({
               ) : null}
             </section>
 
-            {/* padding + margin */}
+            {/* padding + margin — None / All / X&Y / Individual (Claude Design parity) */}
             <section className="space-y-1">
               <SectionHead>{t('deckStudio.htmlEdit.spacingBox')}</SectionHead>
-              <Field label={t('deckStudio.htmlEdit.padding')} dot={inl.padding}>
-                <Seg
-                  options={[
-                    { value: 'none', label: t('deckStudio.htmlEdit.none') },
-                    { value: 'all', label: t('deckStudio.htmlEdit.all') },
-                  ]}
-                  value={padMode === 'none' ? 'none' : 'all'}
-                  onChange={(v) => (v === 'none' ? set({ padding: null }) : set({ padding: '16px' }))}
-                />
-                {padMode !== 'none' && (
-                  <input type="number" min={0} value={c.paddingTop ?? 0} onChange={(e) => set({ padding: `${e.target.value || 0}px` })} className={`${inputCls} w-14`} />
-                )}
-              </Field>
-              <Field label={t('deckStudio.htmlEdit.margin')} dot={inl.margin}>
-                <Seg
-                  options={[
-                    { value: 'none', label: t('deckStudio.htmlEdit.none') },
-                    { value: 'all', label: t('deckStudio.htmlEdit.all') },
-                  ]}
-                  value={marMode === 'none' ? 'none' : 'all'}
-                  onChange={(v) => (v === 'none' ? set({ margin: null }) : set({ margin: '16px' }))}
-                />
-                {marMode !== 'none' && (
-                  <input type="number" value={c.marginTop ?? 0} onChange={(e) => set({ margin: `${e.target.value || 0}px` })} className={`${inputCls} w-14`} />
-                )}
-              </Field>
+              <BoxEdit label={t('deckStudio.htmlEdit.padding')} prop="padding" mode={padMode} c={c} inl={inl.padding} set={set} t={t} />
+              <BoxEdit label={t('deckStudio.htmlEdit.margin')} prop="margin" mode={marMode} c={c} inl={inl.margin} set={set} t={t} />
             </section>
 
             {/* appearance */}
@@ -461,6 +518,27 @@ export default function HtmlSlideInspector({
                 ) : (
                   <button onClick={() => set({ boxShadow: '0 8px 24px rgba(0,0,0,.18)' })} className="text-[11px] text-[var(--accent)] hover:brightness-110 flex items-center gap-1">
                     <Icon.Plus size={11} /> {t('deckStudio.htmlEdit.addShadow')}
+                  </button>
+                )}
+              </Field>
+              {/* border (Claude Design parity) */}
+              <Field label={t('deckStudio.htmlEdit.border')} dot={inl.border}>
+                {inl.border && c.borderStyle && c.borderStyle !== 'none' && c.borderWidth > 0 ? (
+                  <>
+                    <input type="number" min={0} max={40} value={c.borderWidth ?? 1} onChange={(e) => set({ borderWidth: `${e.target.value || 0}px`, borderStyle: c.borderStyle || 'solid' })} className={`${inputCls} w-12`} />
+                    <input type="color" value={toHex(c.borderColor)} onChange={(e) => set({ borderColor: e.target.value.toUpperCase() })} className="w-6 h-6 rounded cursor-pointer border border-[var(--border)] bg-transparent shrink-0" />
+                    <select value={c.borderStyle || 'solid'} onChange={(e) => set({ borderStyle: e.target.value })} className={inputCls}>
+                      <option value="solid">solid</option>
+                      <option value="dashed">dashed</option>
+                      <option value="dotted">dotted</option>
+                    </select>
+                    <button onClick={() => set({ border: null, borderWidth: null, borderStyle: null, borderColor: null })} className="ml-auto text-[10px] text-[var(--faint)] hover:text-[var(--text)]" title={t('deckStudio.htmlEdit.reset')}>
+                      <Icon.Eraser size={12} />
+                    </button>
+                  </>
+                ) : (
+                  <button onClick={() => set({ border: `1px solid ${toHex(c.color) || '#000000'}` })} className="text-[11px] text-[var(--accent)] hover:brightness-110 flex items-center gap-1">
+                    <Icon.Plus size={11} /> {t('deckStudio.htmlEdit.addBorder')}
                   </button>
                 )}
               </Field>
