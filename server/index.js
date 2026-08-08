@@ -816,6 +816,12 @@ async function persistDeckBlocks(req, sessionId, blocks) {
     if (b.type === 'deck') {
       const meta = { audience: b.audience, author: b.author, narrative: b.narrative }
       b.deckId = await createDeck(req.email, req.token, sessionId, b.title, b.slides, meta)
+    } else if (b.type === 'deck-html') {
+      // pure-HTML deck: slides is an array of self-contained <section> strings.
+      // Stored in the same chat_decks table; meta.format discriminates it from
+      // the semantic tree deck on reload (see the Studio render path).
+      const meta = { audience: b.audience, author: b.author, format: 'html' }
+      b.deckId = await createDeck(req.email, req.token, sessionId, b.title, b.slides, meta)
     } else if (b.type === 'spreadsheet') {
       // persist the whole spec (title + sheets) so the export route can
       // reload and render it into .xlsx independent of the message content

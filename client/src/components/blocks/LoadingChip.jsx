@@ -12,6 +12,7 @@ const LABEL_KEYS = {
   insight: 'loading.insight',
   table: 'loading.table',
   deck: 'loading.deck',
+  'deck-html': 'loading.deck',
   'deck-questions': 'loading.deckQuestions',
   spreadsheet: 'loading.spreadsheet',
   document: 'loading.document',

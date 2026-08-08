@@ -631,6 +631,7 @@ export default {
   'deckStudio.field.authorPlaceholder': 'Autor/time (capa)',
   'deckStudio.field.layout': 'Layout',
   'deckStudio.freeformLayout': 'Edição livre (canvas de elementos)',
+  'deckStudio.htmlSlideNote': 'Slide em HTML — para ajustar, descreva a mudança na barra acima (ex.: "resuma os bullets", "troque o gráfico por uma tabela").',
   'deckStudio.revertSemanticTitle': 'Descarta os elementos e volta ao layout estruturado original',
   'deckStudio.revertSemantic': 'Reverter para layout semântico',
   'deckStudio.field.background': 'Fundo',

@@ -110,7 +110,11 @@ function trimExample(html, cap = 6000) {
 // deck AND the pure-HTML engine is active. Kept separate from the legacy
 // DECK_POLICY (server/blocks.js) so we can A/B and retire the tree path cleanly.
 export const DECK_HTML_POLICY =
-  '\n\n=== GERAÇÃO DE DECK (motor HTML) ===\n' +
+  '\n\n=== GERAÇÃO DE DECK (motor HTML) — SUBSTITUI A ETAPA 2 ACIMA ===\n' +
+  'IMPORTANTE: a Etapa 2 acima descreve um bloco "deck" (árvore de layout). IGNORE aquele ' +
+  'formato para a GERAÇÃO do deck. O fluxo de perguntas (bloco "deck-questions") continua ' +
+  'valendo, mas ao gerar o deck em si você emite um bloco "deck-html" (descrito aqui), NUNCA ' +
+  'um bloco "deck".\n' +
   'Um deck é um bloco ```prism-block``` do tipo "deck-html". Cada slide é UMA tag ' +
   '<section class="slide">…</section> auto-contida, em HTML que FLUI (flexbox/grid, ' +
   'quebra natural de texto) — NUNCA use position:absolute nem coordenadas fixas para ' +

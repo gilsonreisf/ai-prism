@@ -5,6 +5,7 @@ import ElementCanvas from './deck/ElementCanvas.jsx'
 import ElementInspector, { MultiSelectPanel } from './deck/ElementInspector.jsx'
 import AddElementBar from './deck/AddElementBar.jsx'
 import LayerTree from './deck/LayerTree.jsx'
+import HtmlSlideFrame from './deck/HtmlSlideFrame.jsx'
 import useDeckHistory from '../hooks/useDeckHistory.js'
 import { materializeSlide, CONVERTIBLE_LAYOUTS, defaultElement } from '../../../shared/deckLayout.js'
 import { resolveDeckTheme } from '../../../shared/deckTheme.js'
@@ -545,6 +546,11 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
 
   const slide = deck?.slides?.[activeIndex]
   const isFreeform = slide?.layout === 'freeform'
+  // pure-HTML deck (feat/deck-html-engine): slides are self-contained <section>
+  // strings. The semantic/freeform editing chrome doesn't apply — the Studio
+  // shows the HTML frames (thumbnail rail + full stage) and, for now, edits go
+  // through the NL "recompose" bar rather than element manipulation.
+  const isHtmlDeck = deck?.meta?.format === 'html' || typeof deck?.slides?.[0] === 'string'
 
   // --- element canvas handlers (freeform slides) -----------------------------
 
@@ -890,15 +896,19 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
                 }`}
                 style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
               >
-                <DeckSlidePreview
-                  slide={s}
-                  template={template}
-                  deck={deck}
-                  deckTitle={deck.title}
-                  variant="thumb"
-                  pageNumber={i + 1}
-                  sectionNo={deck.slides.slice(0, i + 1).filter((x) => x.layout === 'section').length}
-                />
+                {isHtmlDeck ? (
+                  <HtmlSlideFrame html={typeof s === 'string' ? s : s?.html} template={template} title={`${deck.title} — ${i + 1}`} className="rounded-lg" />
+                ) : (
+                  <DeckSlidePreview
+                    slide={s}
+                    template={template}
+                    deck={deck}
+                    deckTitle={deck.title}
+                    variant="thumb"
+                    pageNumber={i + 1}
+                    sectionNo={deck.slides.slice(0, i + 1).filter((x) => x.layout === 'section').length}
+                  />
+                )}
                 <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-[var(--surface-3)] border border-[var(--border)] text-[10px] font-semibold grid place-items-center">
                   {i + 1}
                 </span>
@@ -920,7 +930,14 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
                 style={{ maxWidth: 'calc((100dvh - 19rem) * 1.7778)' }}
                 onClick={() => !isFreeform && setSelection(null)}
               >
-                {isFreeform ? (
+                {isHtmlDeck ? (
+                  <HtmlSlideFrame
+                    html={typeof slide === 'string' ? slide : slide?.html}
+                    template={template}
+                    title={`${deck.title} — ${activeIndex + 1}`}
+                    className="w-full rounded-lg shadow-lg"
+                  />
+                ) : isFreeform ? (
                   <ElementCanvas
                     slide={slide}
                     template={template}
@@ -953,9 +970,10 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
               </div>
             </div>
 
-            {/* selected-object style toolbar (Edit mode) */}
+            {/* selected-object style toolbar (Edit mode) — not shown for HTML
+                decks, which have no element/selection model (edits via NL bar). */}
             <div className="shrink-0 mx-auto w-full px-6" style={{ maxWidth: 'calc((100dvh - 19rem) * 1.7778 + 3rem)' }}>
-              {isFreeform ? (
+              {isHtmlDeck ? null : isFreeform ? (
                 <div className="flex items-center justify-between gap-2">
                   <AddElementBar
                     theme={resolvePreviewTheme(template)}
@@ -1152,7 +1170,11 @@ export default function DeckStudio({ open, deckId, onClose, pushToast, focus = f
                 />
               </div>
 
-              {isFreeform ? (
+              {isHtmlDeck ? (
+                <div className="text-xs text-[var(--faint)] rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2.5 leading-relaxed">
+                  {t('deckStudio.htmlSlideNote')}
+                </div>
+              ) : isFreeform ? (
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
                     <label className="text-xs font-semibold text-[var(--faint)] w-20 shrink-0">{t('deckStudio.field.layout')}</label>
