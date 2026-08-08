@@ -3,6 +3,7 @@ import { ELEMENT_TYPES, SHAPE_KINDS, BOX_LIMITS, MAX_ELEMENTS_PER_SLIDE, CHART_K
 import { THEME_COLOR_TOKENS, resolveDeckTheme } from '../shared/deckTheme.js'
 import { reviewDeck as reviewDeckGeometry, formatReviewForModel } from '../shared/deckReview.js'
 import { buildDsStyleContract, DECK_HTML_POLICY } from './deckHtmlPolicy.js'
+import { webSearchConnectionName } from './tools.js'
 
 // Feature flag: route deck GENERATION (Etapa 2) through the pure-HTML engine
 // (the model writes flowing <section> HTML) instead of the semantic tree. The
@@ -1000,24 +1001,50 @@ export function buildBlocksInstruction(candidates, template, caps) {
   // matter how polished. When one of those is in play, reinforce that any
   // current/factual number must come from web_search (when available) and carry
   // its source — appended after the policies so it's the freshest instruction.
-  if (c.deck || c.document) out += GROUNDING_DIRECTIVE
+  if (c.deck || c.document) out += groundingDirective()
   if (c.deck) out += templateHint(template)
   return out
 }
 
-// Reinforces grounding for the artifacts where a wrong number is most damaging.
-// The web_search tool (when an admin configured WEB_SEARCH_CONNECTION) is
-// offered on every turn; this makes its use non-optional for time-sensitive or
-// factual figures inside a deck/document, and requires a cited source.
-const GROUNDING_DIRECTIVE =
-  '\n\n=== DADOS REAIS E FONTES (apresentações e documentos) ===\n' +
-  'Este artefato precisa ser factualmente correto. Para QUALQUER número, estatística, cotação, ' +
-  'data ou fato que dependa do mundo real atual (ex.: taxas, índices, resultados, market share, ' +
-  'notícias recentes), NÃO estime de memória: use a tool `web_search` para obter o valor atual e ' +
-  'cite a fonte e a data ao lado do dado (ex.: em uma nota de rodapé do slide, na legenda de um ' +
-  'gráfico, ou entre parênteses no texto). Se a tool de busca não estiver disponível e você não ' +
-  'tiver como confirmar um número, diga explicitamente que é uma estimativa/ordem de grandeza em ' +
-  'vez de apresentá-lo como fato — nunca invente precisão que você não tem.'
+// Reinforces grounding for the artifacts where a wrong number is most damaging
+// (deck/document). The instruction is TOOL-AWARE: it may only tell the model to
+// call `web_search` when that tool is actually registered for the turn — i.e.
+// when an admin configured a backing connection (WEB_SEARCH_CONNECTION). If it
+// isn't, mentioning the tool would make the model emit a call to a tool that
+// doesn't exist, which breaks the turn (observed). So without a connection we
+// fall back to a directive that only requires marking unconfirmed figures as
+// estimates — never invoking a phantom tool. This stays forward-compatible: the
+// day web search ships as a deploy-time UC-function-backed connection, setting
+// WEB_SEARCH_CONNECTION flips the directive back to the grounded variant with
+// no code change here.
+function groundingDirective() {
+  const header = '\n\n=== DADOS REAIS E FONTES (apresentações e documentos) ===\n'
+  const preamble =
+    'Este artefato precisa ser factualmente correto. Para QUALQUER número, estatística, cotação, ' +
+    'data ou fato que dependa do mundo real atual (ex.: taxas, índices, resultados, market share, ' +
+    'notícias recentes), NÃO estime de memória sem sinalizar. '
+  const markAsEstimate =
+    'Se você não tiver como confirmar um número, diga explicitamente que é uma estimativa/ordem de ' +
+    'grandeza em vez de apresentá-lo como fato — nunca invente precisão que você não tem.'
+  // Only reference the tool when it will actually be offered this turn.
+  if (webSearchConnectionName()) {
+    return (
+      header +
+      preamble +
+      'Use a tool `web_search` para obter o valor atual e cite a fonte e a data ao lado do dado ' +
+      '(ex.: em uma nota de rodapé do slide, na legenda de um gráfico, ou entre parênteses no ' +
+      'texto). ' +
+      markAsEstimate
+    )
+  }
+  return (
+    header +
+    preamble +
+    'Você NÃO tem nenhuma ferramenta de busca na web disponível nesta conversa — não tente chamar ' +
+    '`web_search` nem qualquer outra tool de busca (elas não existem aqui e a chamada falharia). ' +
+    markAsEstimate
+  )
+}
 
 function candidatesText(candidates) {
   return candidates.map((c) => `- ${c.id} (${c.chartType}): "${c.title}"`).join('\n')

@@ -58,6 +58,15 @@ export const WEB_SEARCH_TOOL_FN_NAME = 'web_search'
 // var, the tool is never offered and generation degrades to un-grounded (the
 // pre-existing behavior), so nothing breaks in a workspace that hasn't set it up.
 export function webSearchConnectionName() {
+  // Hard kill-switch: WEB_SEARCH_DISABLED=1 turns the whole feature off even if a
+  // connection is configured. The web search tool isn't meant to be an ad-hoc
+  // MCP call the model can trip over; it should ship as a governed, deploy-time
+  // tool (a UC function, like the Python exec UDF) or a connection an admin
+  // explicitly configures. Until that lands, this keeps it fully off so the
+  // model is never told about a tool that isn't reliably there. Treating the
+  // name as empty makes both the tool registration AND the grounding directive
+  // (which calls this) degrade to the un-grounded path with no other changes.
+  if (process.env.WEB_SEARCH_DISABLED === '1') return ''
   return (process.env.WEB_SEARCH_CONNECTION || '').trim()
 }
 
