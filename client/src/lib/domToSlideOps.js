@@ -11,6 +11,11 @@
 
 const STAGE_W = 1280
 const STAGE_H = 720
+// px (on the 1280-wide stage) → points on the 10in-wide pptx canvas:
+// 10in × 72pt/in ÷ 1280px = 0.5625. Using the screen 0.75 (=72/96) made every
+// font 1.33× too big → text overflowed its measured box and collided. This is
+// the correct stage-relative factor.
+const PX_TO_PT = (10 * 72) / STAGE_W
 
 // parse "rgb(a)(…)" → { hex, a }; returns null for transparent/none.
 function parseColor(c) {
@@ -67,7 +72,7 @@ function buildRuns(el, win) {
         const cs = win.getComputedStyle(child)
         walk(child, {
           font: universalFont(cs.fontFamily),
-          size: Math.round(parseFloat(cs.fontSize) * 0.75 * 10) / 10, // px→pt
+          size: Math.round(parseFloat(cs.fontSize) * PX_TO_PT * 10) / 10, // px→pt (stage-relative)
           color: parseColor(cs.color)?.hex || inherited.color,
           bold: weightToBold(cs.fontWeight),
           italic: cs.fontStyle === 'italic',
@@ -78,7 +83,7 @@ function buildRuns(el, win) {
   const base = win.getComputedStyle(el)
   walk(el, {
     font: universalFont(base.fontFamily),
-    size: Math.round(parseFloat(base.fontSize) * 0.75 * 10) / 10,
+    size: Math.round(parseFloat(base.fontSize) * PX_TO_PT * 10) / 10,
     color: parseColor(base.color)?.hex || '000000',
     bold: weightToBold(base.fontWeight),
     italic: base.fontStyle === 'italic',
@@ -92,6 +97,37 @@ function buildRuns(el, win) {
     } else merged.push({ ...r })
   }
   return merged.filter((r) => r.text.length)
+}
+
+// Serialize an inline <svg> with its COMPUTED colors baked in, so token-based
+// fills (var(--accent) etc.) survive as concrete rgb when the SVG is lifted out
+// of the document (where :root vars no longer resolve → would render black).
+function serializeSvgWithComputedColors(svg, win, w, h) {
+  const clone = svg.cloneNode(true)
+  // walk original + clone in lockstep; copy computed paint props onto the clone
+  const origNodes = [svg, ...svg.querySelectorAll('*')]
+  const cloneNodes = [clone, ...clone.querySelectorAll('*')]
+  const PAINT = ['fill', 'stroke', 'stopColor', 'stop-color', 'color', 'strokeWidth', 'opacity', 'fillOpacity', 'strokeOpacity']
+  for (let i = 0; i < origNodes.length; i++) {
+    const cs = win.getComputedStyle(origNodes[i])
+    const c = cloneNodes[i]
+    if (!c.setAttribute) continue
+    // resolve fill/stroke to concrete values (computed style already resolves var())
+    const fill = cs.fill
+    if (fill && fill !== 'none') c.setAttribute('fill', fill)
+    const stroke = cs.stroke
+    if (stroke && stroke !== 'none') c.setAttribute('stroke', stroke)
+    const sw = cs.strokeWidth
+    if (sw && sw !== '0px') c.setAttribute('stroke-width', parseFloat(sw))
+    const stop = cs.stopColor
+    if (stop && stop !== 'rgb(0, 0, 0)') c.setAttribute('stop-color', stop)
+    // strip inline style so the baked attributes win (style referenced var())
+    if (c.hasAttribute('style')) c.removeAttribute('style')
+  }
+  clone.setAttribute('width', w)
+  clone.setAttribute('height', h)
+  const xml = new win.XMLSerializer().serializeToString(clone)
+  return 'data:image/svg+xml;base64,' + win.btoa(unescape(encodeURIComponent(xml)))
 }
 
 // Walk one slide's root element, producing ops in paint order (DOM order ≈
@@ -141,13 +177,15 @@ export function extractSlideOps(slideRoot, win) {
       return
     }
     // inline SVG (charts/icons) → serialize to a data URI, drawn as one image.
-    // (The chart bars ARE shapes in the DS export, but serializing the SVG keeps
-    // full visual fidelity in v1; a shape-level SVG→ops pass is a later refinement.)
+    // CRITICAL: the SVG uses var(--accent)/var(--primary) tokens that resolve
+    // via the document ':root'. Serialized standalone, those vars are undefined
+    // and the shapes render BLACK. So we bake each element's COMPUTED fill/
+    // stroke (concrete rgb) onto a clone before serializing. Also stamp explicit
+    // width/height so the standalone SVG has intrinsic size.
     if (el.tagName === 'svg') {
       try {
-        const xml = new win.XMLSerializer().serializeToString(el)
-        const dataUrl = 'data:image/svg+xml;base64,' + win.btoa(unescape(encodeURIComponent(xml)))
-        ops.push({ type: 'image', ...b, dataUrl })
+        const dataUrl = serializeSvgWithComputedColors(el, win, b.w, b.h)
+        if (dataUrl) ops.push({ type: 'image', ...b, dataUrl })
       } catch {
         /* unserializable — skip */
       }
