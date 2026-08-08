@@ -132,9 +132,14 @@ export const DECK_HTML_POLICY =
   '- Reproduza o vocabulário de componentes dos SLIDES DE EXEMPLO do design system (classes ' +
   'como .eyebrow/.title/.card/.dv-table/.kpi/.bullets). Se não houver exemplo de um layout, ' +
   'componha com flexbox/grid respeitando os tokens.\n' +
-  '- Gráficos: desenhe SVG inline (barras, linhas, área, pizza) com as cores do tema, como nos ' +
-  'exemplos — rótulos de valor, eixos e legenda quando ajudarem. Tabelas: use a classe de tabela ' +
-  'do design system (header de acento, zebra, numérico alinhado à direita).\n' +
+  '- Gráficos: desenhe SVG inline (barras, linhas, área, pizza) com as cores do tema. ESTUDE os ' +
+  'gráficos dos SLIDES DE EXEMPLO do design system e reproduza a MESMA linguagem visual: em um ' +
+  'gráfico de barras/colunas, inclua (a) linhas de grade horizontais sutis (uma por marca do eixo), ' +
+  '(b) eixo Y com rótulos de valor nas marcas (ex.: 0/25/50/75/100), (c) rótulo de valor acima de ' +
+  'cada barra, (d) cantos arredondados no topo das barras (rx≈4). Em linha/área: marcadores nos ' +
+  'pontos e, se área, preenchimento translúcido. NÃO entregue um gráfico "cru" sem grade nem escala ' +
+  '— ele deve ter o mesmo acabamento dos exemplos do DS. Tabelas: use a classe de tabela do design ' +
+  'system (header de acento com cantos arredondados, zebra, numérico alinhado à direita).\n' +
   '- Texto SEMPRE flui e quebra naturalmente. Se um slide tem muito conteúdo, reduza o conteúdo ' +
   'ou divida em dois — jamais espremer numa caixa estreita.\n' +
   '- Honestidade de dados: só use números presentes nesta conversa (pedido, respostas, anexos, ' +
