@@ -6,6 +6,8 @@ import ElementInspector, { MultiSelectPanel } from './deck/ElementInspector.jsx'
 import AddElementBar from './deck/AddElementBar.jsx'
 import LayerTree from './deck/LayerTree.jsx'
 import HtmlSlideFrame, { buildDeckTokenStyle } from './deck/HtmlSlideFrame.jsx'
+import HtmlSlideEditor from './deck/HtmlSlideEditor.jsx'
+import HtmlSlideInspector from './deck/HtmlSlideInspector.jsx'
 import { extractOpsFromSlides } from '../lib/domToSlideOps.js'
 import useDeckHistory from '../hooks/useDeckHistory.js'
 import { materializeSlide, CONVERTIBLE_LAYOUTS, defaultElement } from '../../../shared/deckLayout.js'
@@ -353,6 +355,12 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   const dragFrom = useRef(null)
   const saveTimer = useRef(null)
   const skipNextSave = useRef(true)
+  // pure-HTML deck manual editing (task #28): Edit mode toggles the direct DOM
+  // editor + inspector; selection is a child-index path into the current slide's
+  // <section>, plus the live style snapshot the iframe reports for that node.
+  const [htmlEditMode, setHtmlEditMode] = useState(false)
+  const [htmlSel, setHtmlSel] = useState(null) // null | { path, info }
+  const htmlEditorRef = useRef(null)
 
   useEffect(() => {
     if (!open || !deckId) return
@@ -395,6 +403,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     setSelectedElIds([])
     setScopeId(null)
     setTool(null)
+    setHtmlSel(null)
     if (tweakPreviewRef.current) {
       skipNextSave.current = true
       setDeck(tweakPreviewRef.current.before)
@@ -464,6 +473,19 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     setDeck((d) => {
       const slides = [...d.slides]
       slides[idx] = { ...slides[idx], ...patch }
+      return { ...d, slides }
+    })
+  }
+
+  // Pure-HTML deck: write the edited <section> string back into the current
+  // slide, preserving whether the slide entry was a bare string or a {html,…}
+  // object (streaming/persisted decks use the object form with notes). Autosave
+  // then persists it exactly like any other slide mutation.
+  const setHtmlSlide = (idx, newHtml) => {
+    setDeck((d) => {
+      const slides = [...d.slides]
+      const cur = slides[idx]
+      slides[idx] = typeof cur === 'string' ? newHtml : { ...cur, html: newHtml }
       return { ...d, slides }
     })
   }
@@ -867,6 +889,28 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
           <span className="font-semibold text-sm">{t('deckStudio.title')}</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          {isHtmlDeck && deck && !deck.streaming && (
+            <button
+              onClick={() => {
+                setHtmlEditMode((v) => {
+                  const next = !v
+                  if (!next) {
+                    setHtmlSel(null)
+                    htmlEditorRef.current?.clear()
+                  }
+                  return next
+                })
+              }}
+              className={`flex items-center gap-1.5 rounded-lg font-semibold text-xs px-2.5 py-1.5 transition ${
+                htmlEditMode
+                  ? 'bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]'
+                  : 'text-[var(--muted)] hover:bg-[var(--surface-3)] border border-transparent'
+              }`}
+              title={t('deckStudio.htmlEdit.toggleTitle')}
+            >
+              <Icon.Pencil size={14} /> <span className="hidden sm:inline">{t('deckStudio.htmlEdit.toggle')}</span>
+            </button>
+          )}
           <button
             onClick={onToggleFocus}
             className="hidden md:block p-2 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)]"
@@ -938,6 +982,108 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
         </div>
       ) : loading || !deck ? (
         <div className="flex-1 grid place-items-center text-sm text-[var(--faint)]">{t('deckStudio.loading')}</div>
+      ) : isHtmlDeck ? (
+        // Pure-HTML deck layout (Claude-Design-style): thumbnail rail · stage +
+        // speaker notes · (Edit mode) DOM inspector. The stage swaps between the
+        // read-only frame and the directly-editable one based on htmlEditMode.
+        <div className="flex-1 flex flex-col md:flex-row min-h-0">
+          {/* thumbnail rail */}
+          <div className="flex md:block shrink-0 md:w-52 gap-2 md:gap-0 border-b md:border-b-0 md:border-r border-[var(--border)] overflow-x-auto md:overflow-x-visible md:overflow-y-auto p-3 md:space-y-2">
+            {deck.slides.map((s, i) => (
+              <div
+                key={i}
+                draggable
+                onDragStart={() => (dragFrom.current = i)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => {
+                  reorder(dragFrom.current, i)
+                  dragFrom.current = null
+                }}
+                onClick={() => setActiveIndex(i)}
+                className={`relative rounded-lg cursor-pointer ring-2 transition animate-fade-in shrink-0 w-32 md:w-auto ${
+                  i === activeIndex ? 'ring-[var(--accent)]' : 'ring-transparent hover:ring-[var(--border)]'
+                }`}
+                style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
+              >
+                <HtmlSlideFrame html={typeof s === 'string' ? s : s?.html} template={template} title={`${deck.title} — ${i + 1}`} className="rounded-lg" />
+                <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-[var(--surface-3)] border border-[var(--border)] text-[10px] font-semibold grid place-items-center">
+                  {i + 1}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* stage + speaker notes */}
+          <div className="flex-1 flex flex-col min-w-0 min-h-0">
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 pt-4 pb-2">
+              <div className="mx-auto w-full" style={{ maxWidth: 'calc((100dvh - 12rem) * 1.7778)' }}>
+                {slide ? (
+                  htmlEditMode ? (
+                    <HtmlSlideEditor
+                      ref={htmlEditorRef}
+                      html={typeof slide === 'string' ? slide : slide?.html}
+                      template={template}
+                      title={`${deck.title} — ${activeIndex + 1}`}
+                      className="w-full rounded-lg shadow-lg ring-1 ring-[var(--accent)]/40"
+                      onSelect={(path, info) => setHtmlSel({ path, info })}
+                      onDeselect={() => setHtmlSel(null)}
+                      onChange={(newHtml) => setHtmlSlide(activeIndex, newHtml)}
+                    />
+                  ) : (
+                    <HtmlSlideFrame
+                      html={typeof slide === 'string' ? slide : slide?.html}
+                      template={template}
+                      title={`${deck.title} — ${activeIndex + 1}`}
+                      className="w-full rounded-lg shadow-lg"
+                    />
+                  )
+                ) : (
+                  <HtmlSlideSkeleton streaming={deck.streaming} label={t('deckStudio.building')} />
+                )}
+                {htmlEditMode && slide && (
+                  <p className="text-[11px] text-[var(--faint)] text-center mt-2">{t('deckStudio.htmlEdit.canvasHint')}</p>
+                )}
+              </div>
+            </div>
+            {/* speaker notes */}
+            <div className="shrink-0 border-t border-[var(--border)] px-6 py-2.5">
+              <div className="mx-auto w-full flex items-start gap-2" style={{ maxWidth: 'calc((100dvh - 12rem) * 1.7778)' }}>
+                <label className="text-[10px] font-semibold uppercase tracking-wide text-[var(--faint)] w-20 shrink-0 pt-1.5">
+                  {t('deckStudio.field.notes')}
+                </label>
+                <textarea
+                  value={(typeof slide === 'object' && slide?.notes) || ''}
+                  onChange={(e) => updateSlide(activeIndex, { notes: e.target.value })}
+                  rows={1}
+                  disabled={!slide || typeof slide === 'string'}
+                  placeholder={t('deckStudio.field.notesPlaceholder')}
+                  className="flex-1 text-sm rounded-lg bg-[var(--surface-2)] border border-[var(--border)] px-2.5 py-1.5 outline-none focus:border-[var(--accent)] resize-none placeholder:text-[var(--faint)] disabled:opacity-50"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* DOM inspector — only in Edit mode */}
+          {htmlEditMode && slide && (
+            <div className="shrink-0 md:w-72 border-t md:border-t-0 md:border-l border-[var(--border)] bg-[var(--surface-2)] flex flex-col min-h-0 max-h-[45vh] md:max-h-none animate-fade-in">
+              <HtmlSlideInspector
+                html={typeof slide === 'string' ? slide : slide?.html}
+                selectedPath={htmlSel?.path ?? null}
+                selectedInfo={htmlSel?.info ?? null}
+                onSelectPath={(path) => htmlEditorRef.current?.select(path)}
+                onStyle={(style) => htmlSel && htmlEditorRef.current?.applyStyle(htmlSel.path, style)}
+                onText={(text) => {
+                  if (!htmlSel) return
+                  // optimistic: keep the CONTENT field in sync as the user types
+                  // (the iframe echoes a fresh snapshot too, but only after it
+                  // re-serializes — this keeps the controlled textarea responsive)
+                  setHtmlSel((s) => (s ? { ...s, info: { ...s.info, text } } : s))
+                  htmlEditorRef.current?.setText(htmlSel.path, text)
+                }}
+              />
+            </div>
+          )}
+        </div>
       ) : (
         <div className="flex-1 flex flex-col md:flex-row min-h-0">
           {/* thumbnail rail: horizontal filmstrip on mobile, vertical rail on md+ */}

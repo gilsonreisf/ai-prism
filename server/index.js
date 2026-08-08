@@ -86,6 +86,7 @@ import {
   stripBlockPlaceholders,
   buildNewCandidatesHint,
   sanitizeDeck,
+  sanitizeHtmlDeck,
   sanitizeSpreadsheet,
   sanitizeDocument,
   sanitizeQuestionAnswers,
@@ -1803,7 +1804,31 @@ app.get('/api/decks/:id', auth, async (req, res) => {
 app.patch('/api/decks/:id', auth, async (req, res) => {
   try {
     await ensureReady(req)
-    const sanitized = sanitizeDeck(req.body || {})
+    const body = req.body || {}
+    // Pure-HTML deck (manual editing path, task #28): its slides are <section>
+    // HTML strings, not the semantic tree sanitizeDeck expects. Route those
+    // through sanitizeHtmlDeck (which preserves inline styles — the whole point
+    // of DOM editing — and only strips <script>) so a manual style/text edit
+    // round-trips intact. Detected structurally: every slide is a string or a
+    // {html} object. meta.format='html' is preserved so reloads keep the format.
+    const slides = Array.isArray(body.slides) ? body.slides : []
+    const isHtmlDeck =
+      slides.length > 0 && slides.every((s) => typeof s === 'string' || (s && typeof s === 'object' && typeof s.html === 'string'))
+    if (isHtmlDeck) {
+      const sanitized = sanitizeHtmlDeck(body)
+      if (!sanitized) return res.status(400).json({ error: 'deck inválido' })
+      // carry any per-slide notes the client sent alongside the HTML strings
+      // (the client sends bare strings for HTML slides, but keeps notes in
+      // parallel {html,notes} objects when present).
+      const notesBySlide = slides.map((s) => (s && typeof s === 'object' && typeof s.notes === 'string' ? s.notes : undefined))
+      const finalSlides = sanitized.slides.map((html, i) =>
+        notesBySlide[i] ? { html, notes: notesBySlide[i] } : html
+      )
+      const meta = { format: 'html', audience: sanitized.audience, author: sanitized.author }
+      await updateDeckSlides(req.email, req.token, req.params.id, sanitized.title, finalSlides, meta)
+      return res.json({ ok: true })
+    }
+    const sanitized = sanitizeDeck(body)
     if (!sanitized) return res.status(400).json({ error: 'deck inválido' })
     const meta = { audience: sanitized.audience, author: sanitized.author, narrative: sanitized.narrative }
     await updateDeckSlides(req.email, req.token, req.params.id, sanitized.title, sanitized.slides, meta)
