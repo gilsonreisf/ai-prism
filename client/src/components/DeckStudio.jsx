@@ -1210,7 +1210,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
                 />
               </div>
 
-              {isHtmlDeck ? (
+              {!slide ? null : isHtmlDeck ? (
                 <div className="text-xs text-[var(--faint)] rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2.5 leading-relaxed">
                   {t('deckStudio.htmlSlideNote')}
                 </div>
@@ -1667,10 +1667,10 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
               </>
               )}
 
-              <div className="flex items-start gap-2">
+              <div className="flex items-start gap-2" style={{ display: slide ? undefined : 'none' }}>
                 <label className="text-xs font-semibold text-[var(--faint)] w-20 shrink-0 pt-2">{t('deckStudio.field.notes')}</label>
                 <textarea
-                  value={slide.notes || ''}
+                  value={slide?.notes || ''}
                   onChange={(e) => updateSlide(activeIndex, { notes: e.target.value })}
                   rows={2}
                   placeholder={t('deckStudio.field.notesPlaceholder')}
