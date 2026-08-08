@@ -1664,8 +1664,13 @@ async function embedFontsInPptx(buf, fontAssets) {
     rels = rels.replace(/<\/Relationships>/, relXml.join('') + '</Relationships>')
     zip.file(path, rels)
   }
-  // 3) ppt/presentation.xml — embedTrueTypeFonts + <p:embeddedFontLst>. The list
-  // must sit right after <p:sldIdLst>…</p:sldIdLst> per the schema's order.
+  // 3) ppt/presentation.xml — embedTrueTypeFonts + <p:embeddedFontLst>. CRITICAL:
+  // the CT_Presentation schema fixes the child order — sldMasterIdLst,
+  // notesMasterIdLst, handoutMasterIdLst, sldIdLst, sldSz, notesSz, then
+  // embeddedFontLst. Inserting it before sldSz/notesSz makes PowerPoint reject
+  // the file ("found a problem with content") and strip the fonts on repair. So
+  // we place it right AFTER <p:notesSz…/> (or after <p:sldSz…/> if notesSz is
+  // absent), never after </p:sldIdLst>.
   {
     const path = 'ppt/presentation.xml'
     let pres = await zip.file(path).async('string')
@@ -1673,8 +1678,9 @@ async function embedFontsInPptx(buf, fontAssets) {
       /embedTrueTypeFonts/.test(attrs) ? mm : `<p:presentation${attrs} embedTrueTypeFonts="1">`
     )
     const lst = `<p:embeddedFontLst>${embeddedFontXml.join('')}</p:embeddedFontLst>`
-    if (/<\/p:sldIdLst>/.test(pres)) pres = pres.replace(/<\/p:sldIdLst>/, `</p:sldIdLst>${lst}`)
-    else pres = pres.replace(/(<p:sldSz\b)/, `${lst}$1`)
+    if (/<p:notesSz\b[^>]*\/>/.test(pres)) pres = pres.replace(/(<p:notesSz\b[^>]*\/>)/, `$1${lst}`)
+    else if (/<p:sldSz\b[^>]*\/>/.test(pres)) pres = pres.replace(/(<p:sldSz\b[^>]*\/>)/, `$1${lst}`)
+    else pres = pres.replace(/<\/p:presentation>/, `${lst}</p:presentation>`)
     zip.file(path, pres)
   }
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
