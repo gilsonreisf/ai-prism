@@ -5,7 +5,8 @@ import ElementCanvas from './deck/ElementCanvas.jsx'
 import ElementInspector, { MultiSelectPanel } from './deck/ElementInspector.jsx'
 import AddElementBar from './deck/AddElementBar.jsx'
 import LayerTree from './deck/LayerTree.jsx'
-import HtmlSlideFrame from './deck/HtmlSlideFrame.jsx'
+import HtmlSlideFrame, { buildDeckTokenStyle } from './deck/HtmlSlideFrame.jsx'
+import { extractOpsFromSlides } from '../lib/domToSlideOps.js'
 import useDeckHistory from '../hooks/useDeckHistory.js'
 import { materializeSlide, CONVERTIBLE_LAYOUTS, defaultElement } from '../../../shared/deckLayout.js'
 import { resolveDeckTheme } from '../../../shared/deckTheme.js'
@@ -773,20 +774,38 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     setActiveIndex(to)
   }
 
+  const triggerDownload = (blob) => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(deck.title || 'apresentacao').replace(/[^\w-]+/g, '_').slice(0, 60)}.pptx`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   const exportPptx = async () => {
     setExporting(true)
     try {
+      if (isHtmlDeck) {
+        // Pure-HTML deck: export native editable shapes (like Claude Design).
+        // Render every slide full-size off-screen, extract paint-ops off the DOM,
+        // and POST them; the server assembles the .pptx with pptxgenjs.
+        const slidesHtml = (deck.slides || []).map((s) => (typeof s === 'string' ? s : s?.html))
+        const slidesOps = await extractOpsFromSlides(slidesHtml, () => buildDeckTokenStyle(template))
+        const res = await fetch(`/api/decks/${deck.id}/export-html`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slides: slidesOps }),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        triggerDownload(await res.blob())
+        return
+      }
       const res = await fetch(`/api/decks/${deck.id}/export`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${(deck.title || 'apresentacao').replace(/[^\w-]+/g, '_').slice(0, 60)}.pptx`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
+      triggerDownload(await res.blob())
     } catch (e) {
       pushToast?.(e.message || t('deckStudio.exportError'))
     } finally {

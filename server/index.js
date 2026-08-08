@@ -100,7 +100,7 @@ import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
 import { listChatEndpoints, buildAdminCatalog, buildUserModels, buildUserImageModels } from './serving.js'
 import { getImageBytes, deleteImageFile } from './imageStore.js'
-import { renderPptx } from './decks.js'
+import { renderPptx, renderPptxFromOps } from './decks.js'
 import { renderXlsx } from './xlsx-export.js'
 import { renderDocx } from './docx-export.js'
 
@@ -2154,6 +2154,27 @@ app.get('/api/decks/:id/export', auth, async (req, res) => {
     if (!deck) return res.status(404).json({ error: 'deck não encontrado' })
     const template = await getSelectedDeckTemplate(req.email, req.token)
     const buf = await renderPptx(deck, template)
+    const safeName = (deck.title || 'apresentacao').replace(/[^\w-]+/g, '_').slice(0, 60) || 'apresentacao'
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation')
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`)
+    res.send(buf)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Pure-HTML deck export: the client extracts native paint-ops off the rendered
+// DOM (client/lib/domToSlideOps.js) and POSTs them here; we assemble a .pptx of
+// editable shapes (renderPptxFromOps) — mirroring Claude Design's export, never
+// rasterized. Scoped to the deck's owner (getDeck enforces user_email).
+app.post('/api/decks/:id/export-html', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const deck = await getDeck(req.email, req.token, req.params.id)
+    if (!deck) return res.status(404).json({ error: 'deck não encontrado' })
+    const slides = Array.isArray(req.body?.slides) ? req.body.slides : []
+    if (!slides.length) return res.status(400).json({ error: 'sem slides para exportar' })
+    const buf = await renderPptxFromOps(deck, slides)
     const safeName = (deck.title || 'apresentacao').replace(/[^\w-]+/g, '_').slice(0, 60) || 'apresentacao'
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation')
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`)

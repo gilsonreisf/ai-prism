@@ -1515,6 +1515,70 @@ const BUILDERS = {
 // layout), icons come from the template's own mined/uploaded icon library
 // (never emoji, see addIconImage), and charts are native pptxgenjs charts
 // fed by already-resolved, trustworthy series data (never invented).
+// Pure-HTML deck export (task #29): assemble a .pptx of NATIVE, editable shapes
+// from paint-ops the client extracted off the rendered DOM (see
+// client/lib/domToSlideOps.js). This mirrors how Claude Design exports — every
+// element becomes a positioned <p:sp>/text/image, nothing rasterized. Ops carry
+// px coords on a 1280×720 stage; we scale to the 10×5.625in canvas.
+export function renderPptxFromOps(deck, slides) {
+  const pptx = new PptxGenJS()
+  pptx.defineLayout({ name: 'PRISM_16x9', width: SLIDE_W, height: SLIDE_H })
+  pptx.layout = 'PRISM_16x9'
+  pptx.author = 'AI Prism'
+  pptx.title = deck?.title || 'Apresentação'
+
+  for (const slide of slides || []) {
+    const s = pptx.addSlide()
+    const stageW = slide.w || 1280
+    const stageH = slide.h || 720
+    const kx = SLIDE_W / stageW // px → inches
+    const ky = SLIDE_H / stageH
+    const IN = (v, k) => Math.round(v * k * 1000) / 1000
+    for (const op of slide.ops || []) {
+      const x = IN(op.x, kx)
+      const y = IN(op.y, ky)
+      const w = Math.max(IN(op.w, kx), 0.02)
+      const h = Math.max(IN(op.h, ky), 0.02)
+      try {
+        if (op.type === 'rect') {
+          if (!op.fill && !op.line) continue
+          const shape = op.radius > 0 ? 'roundRect' : 'rect'
+          const opts = { x, y, w, h }
+          if (op.fill) opts.fill = { color: op.fill }
+          else opts.fill = { type: 'none' }
+          if (op.line) opts.line = { color: op.line.color, width: op.line.width }
+          if (shape === 'roundRect') opts.rectRadius = Math.min(IN(op.radius, kx), Math.min(w, h) / 2)
+          s.addShape(shape, opts)
+        } else if (op.type === 'image' && op.dataUrl) {
+          s.addImage({ data: op.dataUrl, x, y, w, h })
+        } else if (op.type === 'text' && op.runs?.length) {
+          const runs = op.runs.map((r) => ({
+            text: r.text,
+            options: {
+              fontFace: r.font || 'Arial',
+              fontSize: r.size || 12,
+              color: r.color || '000000',
+              bold: !!r.bold,
+              italic: !!r.italic,
+            },
+          }))
+          s.addText(runs, {
+            x, y, w, h,
+            align: op.align || 'left',
+            valign: op.valign || 'top',
+            margin: 0,
+            lineSpacingMultiple: op.lineHeight || 1.15,
+            wrap: true,
+          })
+        }
+      } catch {
+        // one malformed op must never abort the whole export
+      }
+    }
+  }
+  return pptx.write('nodebuffer')
+}
+
 export function renderPptx(deck, template, { engine = true } = {}) {
   const pptx = new PptxGenJS()
   pptx.defineLayout({ name: 'PRISM_16x9', width: SLIDE_W, height: SLIDE_H })
