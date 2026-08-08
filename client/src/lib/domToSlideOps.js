@@ -17,15 +17,35 @@ const STAGE_H = 720
 // the correct stage-relative factor.
 const PX_TO_PT = (10 * 72) / STAGE_W
 
-// parse "rgb(a)(…)" → { hex, a }; returns null for transparent/none.
+// parse "rgb(a)(…)" → { hex, a, rgb:[r,g,b] }; null for transparent/none.
 function parseColor(c) {
   if (!c) return null
   const m = /^rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/.exec(c)
   if (!m) return null
   const a = m[4] != null ? parseFloat(m[4]) : 1
   if (a === 0) return null
-  const hex = [m[1], m[2], m[3]].map((v) => Math.round(parseFloat(v)).toString(16).padStart(2, '0')).join('')
-  return { hex: hex.toUpperCase(), a }
+  const rgb = [m[1], m[2], m[3]].map((v) => Math.round(parseFloat(v)))
+  const hex = rgb.map((v) => v.toString(16).padStart(2, '0')).join('')
+  return { hex: hex.toUpperCase(), a, rgb }
+}
+
+const hexToRgb = (h) => {
+  const s = (h || '').replace('#', '')
+  return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)]
+}
+const rgbToHex = (rgb) => rgb.map((v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('').toUpperCase()
+
+// Composite a parsed color over an opaque backdrop hex → concrete opaque hex.
+// A translucent card (e.g. rgba(255,255,255,0.06) on navy) reads as a specific
+// solid color on screen; the .pptx has no per-shape alpha compositing we can
+// rely on, so we bake that exact blend. This is why a white-6% card was coming
+// out solid white (alpha dropped) instead of the subtle dark panel it is.
+function flattenColor(parsed, backdropHex) {
+  if (!parsed) return null
+  if (parsed.a >= 0.999) return parsed.hex
+  const bg = hexToRgb(backdropHex || 'FFFFFF')
+  const out = parsed.rgb.map((c, i) => c * parsed.a + bg[i] * (1 - parsed.a))
+  return rgbToHex(out)
 }
 
 // Universal-font mapping (matches the Claude Design "Universal fonts" option we
@@ -158,7 +178,7 @@ export function extractSlideOps(slideRoot, win) {
     }
   }
 
-  const visit = (el) => {
+  const visit = (el, backdrop) => {
     const cs = win.getComputedStyle(el)
     if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return
     const b = box(el)
@@ -179,15 +199,19 @@ export function extractSlideOps(slideRoot, win) {
         // max corner radius among the cells (the DS rounds the outer cells)
         const radii = cells.map((c) => parseFloat(win.getComputedStyle(c).borderTopLeftRadius) || parseFloat(win.getComputedStyle(c).borderTopRightRadius) || 0)
         const radius = Math.max(...radii, 0)
-        ops.push({ type: 'rect', ...b, fill: uniqueFill, radius: Math.round(radius * sx), line: null })
+        const rowFill = flattenColor(parseColor(win.getComputedStyle(cells[0]).backgroundColor), backdrop)
+        ops.push({ type: 'rect', ...b, fill: rowFill, radius: Math.round(radius * sx), line: null })
         for (const c of cells) paintedRowCells.add(c) // their own bg already painted
-        for (const child of el.children) visit(child)
+        for (const child of el.children) visit(child, rowFill || backdrop)
         return
       }
     }
 
-    // 1) background / border → rect (roundRect when border-radius)
-    const bg = paintedRowCells.has(el) ? null : parseColor(cs.backgroundColor)
+    // 1) background / border → rect (roundRect when border-radius). Translucent
+    // fills are FLATTENED against the current backdrop so a white-6% card reads
+    // as the subtle dark panel it is on screen — not solid white.
+    const bgParsed = paintedRowCells.has(el) ? null : parseColor(cs.backgroundColor)
+    const bg = bgParsed ? flattenColor(bgParsed, backdrop) : null
     const bw = parseFloat(cs.borderTopWidth) || 0
     const border = bw > 0 ? parseColor(cs.borderTopColor) : null
     if (bg || border) {
@@ -195,11 +219,14 @@ export function extractSlideOps(slideRoot, win) {
       ops.push({
         type: 'rect',
         ...b,
-        fill: bg?.hex || null,
+        fill: bg || null,
         radius: Math.round(radius * sx),
-        line: border ? { color: border.hex, width: Math.max(0.5, bw * sx) } : null,
+        line: border ? { color: flattenColor(border, backdrop), width: Math.max(0.5, bw * sx) } : null,
       })
     }
+    // an opaque bg becomes the backdrop for descendants (translucent children
+    // composite over IT, not the slide bg)
+    const childBackdrop = bg && bgParsed.a >= 0.999 ? bg : backdrop
 
     // 2) <img> → image (only real embedded data; DS asset URLs resolve at
     // render — captured as their src when it's a data URI)
@@ -250,15 +277,16 @@ export function extractSlideOps(slideRoot, win) {
       }
       return
     }
-    for (const child of el.children) visit(child)
+    for (const child of el.children) visit(child, childBackdrop)
   }
 
   // start from the slide root's children (the root itself is the full-bleed bg,
-  // handled as its own rect if colored)
+  // handled as its own rect if colored). The root bg is the initial backdrop
+  // that translucent descendants composite over.
   const rootCs = win.getComputedStyle(slideRoot)
-  const rootBg = parseColor(rootCs.backgroundColor)
-  ops.push({ type: 'rect', x: 0, y: 0, w: STAGE_W, h: STAGE_H, fill: rootBg?.hex || 'FFFFFF', radius: 0, line: null })
-  for (const child of slideRoot.children) visit(child)
+  const rootBg = flattenColor(parseColor(rootCs.backgroundColor), 'FFFFFF') || 'FFFFFF'
+  ops.push({ type: 'rect', x: 0, y: 0, w: STAGE_W, h: STAGE_H, fill: rootBg, radius: 0, line: null })
+  for (const child of slideRoot.children) visit(child, rootBg)
   return ops
 }
 
