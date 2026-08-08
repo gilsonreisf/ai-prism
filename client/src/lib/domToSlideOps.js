@@ -59,40 +59,47 @@ function isTextLeaf(el, win) {
   return hasText
 }
 
+// Apply CSS text-transform to the raw text so an uppercased eyebrow exports
+// uppercased (we read textContent, which is the SOURCE case).
+function applyTransform(text, transform) {
+  if (transform === 'uppercase') return text.toUpperCase()
+  if (transform === 'lowercase') return text.toLowerCase()
+  if (transform === 'capitalize') return text.replace(/\b\p{L}/gu, (c) => c.toUpperCase())
+  return text
+}
+
 // Build inline runs (text + per-run color/weight/italic) from a text-leaf's
 // descendants, so a heading with a colored <span> keeps that color in the pptx.
 function buildRuns(el, win) {
   const runs = []
+  const styleOf = (cs) => ({
+    font: universalFont(cs.fontFamily),
+    size: Math.round(parseFloat(cs.fontSize) * PX_TO_PT * 10) / 10, // px→pt (stage-relative)
+    color: parseColor(cs.color)?.hex || '000000',
+    bold: weightToBold(cs.fontWeight),
+    italic: cs.fontStyle === 'italic',
+    transform: cs.textTransform, // uppercase/lowercase/capitalize/none
+    // letter-spacing px → points (pptxgenjs charSpacing is in points)
+    tracking: cs.letterSpacing && cs.letterSpacing !== 'normal' ? Math.round(parseFloat(cs.letterSpacing) * PX_TO_PT * 10) / 10 : 0,
+  })
   const walk = (node, inherited) => {
     for (const child of node.childNodes) {
       if (child.nodeType === 3) {
-        const text = child.textContent
+        const text = applyTransform(child.textContent, inherited.transform)
         if (text) runs.push({ text, ...inherited })
       } else if (child.nodeType === 1) {
         const cs = win.getComputedStyle(child)
-        walk(child, {
-          font: universalFont(cs.fontFamily),
-          size: Math.round(parseFloat(cs.fontSize) * PX_TO_PT * 10) / 10, // px→pt (stage-relative)
-          color: parseColor(cs.color)?.hex || inherited.color,
-          bold: weightToBold(cs.fontWeight),
-          italic: cs.fontStyle === 'italic',
-        })
+        walk(child, { ...inherited, ...styleOf(cs) })
       }
     }
   }
   const base = win.getComputedStyle(el)
-  walk(el, {
-    font: universalFont(base.fontFamily),
-    size: Math.round(parseFloat(base.fontSize) * PX_TO_PT * 10) / 10,
-    color: parseColor(base.color)?.hex || '000000',
-    bold: weightToBold(base.fontWeight),
-    italic: base.fontStyle === 'italic',
-  })
+  walk(el, styleOf(base))
   // merge adjacent runs with identical styling (fewer <a:r> in the pptx)
   const merged = []
   for (const r of runs) {
     const last = merged[merged.length - 1]
-    if (last && last.font === r.font && last.size === r.size && last.color === r.color && last.bold === r.bold && last.italic === r.italic) {
+    if (last && last.font === r.font && last.size === r.size && last.color === r.color && last.bold === r.bold && last.italic === r.italic && last.tracking === r.tracking) {
       last.text += r.text
     } else merged.push({ ...r })
   }
@@ -196,12 +203,23 @@ export function extractSlideOps(slideRoot, win) {
     if (isTextLeaf(el, win)) {
       const runs = buildRuns(el, win)
       if (runs.length) {
+        // inset the text box by the element's padding, so a table cell's text
+        // sits with the same breathing room it has on screen (14–16px pads).
+        const pl = (parseFloat(cs.paddingLeft) || 0) * sx
+        const pr = (parseFloat(cs.paddingRight) || 0) * sx
+        const pt = (parseFloat(cs.paddingTop) || 0) * sy
+        const pb = (parseFloat(cs.paddingBottom) || 0) * sy
+        // vertical centering matches CSS line-box centering in cells/kickers
+        const valign = /middle|center/.test(cs.display) || cs.display === 'flex' || cs.alignItems === 'center' ? 'middle' : 'top'
         ops.push({
           type: 'text',
-          ...b,
+          x: Math.round(b.x + pl),
+          y: Math.round(b.y + pt),
+          w: Math.max(Math.round(b.w - pl - pr), 8),
+          h: Math.max(Math.round(b.h - pt - pb), 8),
           runs,
           align: cs.textAlign === 'center' ? 'center' : cs.textAlign === 'right' || cs.textAlign === 'end' ? 'right' : 'left',
-          valign: 'top',
+          valign,
           lineHeight: cs.lineHeight && cs.lineHeight !== 'normal' ? parseFloat(cs.lineHeight) / parseFloat(cs.fontSize) : 1.15,
         })
       }

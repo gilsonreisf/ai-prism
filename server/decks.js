@@ -1560,6 +1560,7 @@ export function renderPptxFromOps(deck, slides) {
               color: r.color || '000000',
               bold: !!r.bold,
               italic: !!r.italic,
+              ...(r.tracking ? { charSpacing: r.tracking } : {}),
             },
           }))
           s.addText(runs, {
