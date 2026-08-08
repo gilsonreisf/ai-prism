@@ -221,8 +221,13 @@ export default function App({ uiLang, setUiLang }) {
   // only this flag, never the user's persisted manual preference. Closing the
   // deck falls back to whatever they'd set before.
   const [deckAutoCollapsed, setDeckAutoCollapsed] = useState(false)
+  // when the deck Studio enters manual HTML Edit mode it asks to hide the chat
+  // entirely (the user wants max canvas room to edit the slide). Cleared when
+  // Edit mode closes or the Studio closes.
+  const [deckEditFullscreen, setDeckEditFullscreen] = useState(false)
   useEffect(() => {
     setDeckAutoCollapsed(!!deckStudioId)
+    if (!deckStudioId) setDeckEditFullscreen(false)
   }, [deckStudioId])
   const sidebarCollapsed = manualSidebarCollapsed || deckAutoCollapsed
   const toggleSidebarCollapse = () => {
@@ -934,6 +939,10 @@ export default function App({ uiLang, setUiLang }) {
       ) : (
       <main
         className={`flex-1 flex flex-col min-w-0 ${
+          // manual HTML Edit mode hides the chat entirely so the slide gets the
+          // full row (the Studio spans everything)
+          deckEditFullscreen ? 'hidden' : ''
+        } ${
           // focus mode: the chat column scales with the window (32%) instead
           // of a fixed 380px, so the composer isn't cramped on big screens
           deckStudioId && deckFocus ? 'md:flex-none md:w-[clamp(400px,32%,560px)] md:border-r md:border-[var(--border)]' : ''
@@ -1083,6 +1092,7 @@ export default function App({ uiLang, setUiLang }) {
         pushToast={pushToast}
         focus={deckFocus}
         onToggleFocus={() => setDeckFocus((f) => !f)}
+        onEditModeChange={setDeckEditFullscreen}
         models={models}
         model={model}
       />

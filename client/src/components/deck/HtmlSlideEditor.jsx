@@ -1,201 +1,403 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { buildDeckTokenStyle } from './HtmlSlideFrame.jsx'
 
-// Editable variant of HtmlSlideFrame (task #28 — manual HTML editing, Claude
-// Design parity). The sandboxed slide iframe becomes DIRECTLY editable: the DOM
-// IS the model. We inject a tiny runtime into the srcDoc that
-//   • reports the clicked node (a stable child-index path + a style snapshot),
-//   • draws a selection ring over it,
-//   • applies inline-style / text patches from the parent live, and
-//   • serializes the CLEAN <section> back after every edit.
-// Communication is postMessage (the frame is a unique sandbox origin). This is
-// the same "edit inline style/attrs of the node you clicked" model Claude Design
-// uses — no separate semantic tree, the rendered HTML is the source of truth.
+// Editable variant of HtmlSlideFrame (manual HTML editing, Claude Design "Pro"
+// parity). The sandboxed slide iframe becomes a full design surface: the DOM IS
+// the model. An injected runtime handles, entirely inside the frame:
+//   • single + MULTI selection (shift / ⌘ / ctrl-click toggles), with a ring
+//     drawn over every selected node,
+//   • a rich style snapshot (typography + full box model) reported to the parent,
+//   • live inline-style / text / attribute patches applied to the selection,
+//   • element CREATION (text, rectangle, oval, line, arrow, frame, image) by
+//     dragging on the canvas — new nodes are absolutely positioned so they never
+//     disturb the flowing layout,
+//   • drag-to-move of absolutely-positioned elements,
+//   • structural ops (delete / duplicate / group / ungroup / wrap-in-flex /
+//     reorder) and a right-click CONTEXT MENU that surfaces them,
+//   • whole-<section> replacement (setHtml) for undo/redo and AI tweaks,
+// then re-serializes the CLEAN <section> back after every mutation. Everything
+// the parent needs travels over postMessage (the frame is a unique sandbox
+// origin). No marker attributes ever persist — overlays live outside <section>.
 //
-// Kept separate from HtmlSlideFrame (which stays a dumb, pointer-inert renderer
-// used for thumbnails and off-screen export) so the read-only path carries zero
-// editing risk.
+// HtmlSlideFrame stays the dumb, pointer-inert renderer (thumbnails + export);
+// all editing risk is isolated here.
 
 const STAGE_W = 1280
 const STAGE_H = 720
 
-// The in-iframe runtime, serialized into the srcDoc. Pure vanilla JS; talks to
-// the parent only through postMessage with a `prism` discriminator. It never
-// leaves marker attributes in the serialized HTML (the selection ring is an
-// overlay appended to <body>, outside the <section> we serialize).
+// The in-iframe runtime. Pure vanilla JS; the whole editing engine lives here so
+// the React side only orchestrates history/clipboard/AI. Talks to the parent
+// exclusively through postMessage tagged `prism`.
 const RUNTIME = `
 <script>
 (function () {
-  var ACCENT = getComputedStyle(document.documentElement).getPropertyValue('--accent') || '#2D7FF9';
+  var css = getComputedStyle(document.documentElement);
+  var ACCENT = (css.getPropertyValue('--accent') || '#2D7FF9').trim();
   var root = document.querySelector('section');
-  var overlay = null, hoverBox = null, selectedEl = null, editingEl = null;
-  function ensureOverlay() {
-    if (overlay) return;
-    overlay = document.createElement('div');
-    overlay.id = '__prism_sel';
-    overlay.style.cssText = 'position:absolute;pointer-events:none;z-index:2147483646;border:2px solid ' + ACCENT.trim() + ';border-radius:3px;box-shadow:0 0 0 1px rgba(255,255,255,.5);display:none;';
-    document.body.appendChild(overlay);
+  var selected = [];            // array of selected elements
+  var editingEl = null;         // contenteditable text node being edited
+  var tool = 'select';          // active tool: select | text | rect | oval | line | arrow | frame
+  var layer = null;             // overlay layer (rings/hover), outside <section>
+  var hoverBox = null;
+  var marquee = null;           // create/drag preview box
+  var drag = null;              // {mode:'create'|'move', ...}
+
+  function px(v){ v = parseFloat(v); return isFinite(v) ? Math.round(v*10)/10 : 0; }
+  function send(msg){ msg.prism = true; parent.postMessage(msg, '*'); }
+
+  function ensureLayer(){
+    if (layer) return;
+    layer = document.createElement('div');
+    layer.id = '__prism_layer';
+    layer.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:2147483000;';
+    document.body.appendChild(layer);
     hoverBox = document.createElement('div');
-    hoverBox.id = '__prism_hover';
-    hoverBox.style.cssText = 'position:absolute;pointer-events:none;z-index:2147483645;border:1.5px dashed ' + ACCENT.trim() + '99;border-radius:3px;display:none;';
-    document.body.appendChild(hoverBox);
+    hoverBox.style.cssText = 'position:absolute;pointer-events:none;border:1.5px dashed '+ACCENT+'99;border-radius:3px;display:none;';
+    layer.appendChild(hoverBox);
+    marquee = document.createElement('div');
+    marquee.style.cssText = 'position:absolute;pointer-events:none;border:1.5px solid '+ACCENT+';background:'+ACCENT+'18;display:none;';
+    layer.appendChild(marquee);
   }
-  // element-only child index path from the section root, e.g. "1.0.2"
-  function pathOf(el) {
+  // element-only child-index path from <section>, e.g. "1.0.2"
+  function pathOf(el){
     var parts = [];
-    while (el && el !== root) {
-      var p = el.parentNode;
-      if (!p) break;
+    while (el && el !== root){
+      var p = el.parentNode; if (!p) break;
       var i = 0, n = p.firstElementChild;
-      while (n && n !== el) { i++; n = n.nextElementSibling; }
-      parts.unshift(i);
-      el = p;
+      while (n && n !== el){ i++; n = n.nextElementSibling; }
+      parts.unshift(i); el = p;
     }
     return parts.join('.');
   }
-  function nodeAt(path) {
+  function nodeAt(path){
     if (path === '' || path == null) return root;
-    var el = root;
-    var parts = String(path).split('.');
-    for (var k = 0; k < parts.length; k++) {
-      if (!el) return null;
-      el = el.children[parseInt(parts[k], 10)];
-    }
+    var el = root, parts = String(path).split('.');
+    for (var k=0;k<parts.length;k++){ if (!el) return null; el = el.children[parseInt(parts[k],10)]; }
     return el || null;
   }
-  // does this element hold its OWN text (no element children with text)? — those
-  // are the leaves the text editor targets.
-  function isTextLeaf(el) {
+  function isTextLeaf(el){
     if (!el) return false;
-    for (var i = 0; i < el.childNodes.length; i++) {
-      var c = el.childNodes[i];
-      if (c.nodeType === 1) return false; // has an element child
-    }
-    return (el.textContent || '').trim().length > 0;
+    for (var i=0;i<el.childNodes.length;i++){ if (el.childNodes[i].nodeType === 1) return false; }
+    return (el.textContent||'').trim().length > 0;
   }
-  function px(v) { v = parseFloat(v); return isFinite(v) ? Math.round(v * 10) / 10 : 0; }
-  function snapshot(el) {
-    var cs = getComputedStyle(el);
-    var st = el.style;
+  function sizingMode(el, prop){ // 'hug' | 'fixed' | 'fill'
+    var v = el.style[prop];
+    if (!v) return 'hug';
+    if (/%/.test(v) || v === 'auto' && el.style.flex) return 'fill';
+    if (/px|em|rem|vh|vw/.test(v)) return 'fixed';
+    if (parseFloat(el.style.flexGrow) >= 1) return 'fill';
+    return 'hug';
+  }
+  function snapshot(el){
+    var cs = getComputedStyle(el), st = el.style;
     return {
       tag: el.tagName.toLowerCase(),
       textLeaf: isTextLeaf(el),
       text: isTextLeaf(el) ? el.textContent : '',
-      // computed values give the effective look; inline flags tell the panel
-      // which props are explicitly overridden on THIS node.
+      isImage: el.tagName === 'IMG',
+      src: el.tagName === 'IMG' ? (el.getAttribute('src')||'') : '',
+      objectFit: cs.objectFit,
+      childCount: el.children.length,
       computed: {
-        fontSize: px(cs.fontSize),
-        color: cs.color,
-        fontWeight: cs.fontWeight,
-        fontStyle: cs.fontStyle,
-        textAlign: cs.textAlign,
-        letterSpacing: cs.letterSpacing === 'normal' ? 0 : px(cs.letterSpacing),
-        lineHeight: cs.lineHeight === 'normal' ? '' : (Math.round((parseFloat(cs.lineHeight) / parseFloat(cs.fontSize)) * 100) / 100 || ''),
-        textTransform: cs.textTransform,
-        backgroundColor: cs.backgroundColor,
-        opacity: cs.opacity,
-        borderRadius: px(cs.borderTopLeftRadius),
-        paddingTop: px(cs.paddingTop),
-        paddingRight: px(cs.paddingRight),
-        paddingBottom: px(cs.paddingBottom),
-        paddingLeft: px(cs.paddingLeft),
+        fontSize: px(cs.fontSize), color: cs.color, fontWeight: cs.fontWeight, fontStyle: cs.fontStyle,
+        textAlign: cs.textAlign, letterSpacing: cs.letterSpacing==='normal'?0:px(cs.letterSpacing),
+        lineHeight: cs.lineHeight==='normal'?'':(Math.round((parseFloat(cs.lineHeight)/parseFloat(cs.fontSize))*100)/100||''),
+        textTransform: cs.textTransform, textDecorationLine: cs.textDecorationLine,
+        fontFamily: cs.fontFamily,
+        backgroundColor: cs.backgroundColor, opacity: cs.opacity, borderRadius: px(cs.borderTopLeftRadius),
+        overflow: cs.overflow, boxShadow: cs.boxShadow,
+        width: px(cs.width), height: px(cs.height),
+        position: cs.position, top: st.top||'', left: st.left||'', right: st.right||'', bottom: st.bottom||'', zIndex: st.zIndex||'',
+        flexGrow: st.flexGrow||'', alignSelf: cs.alignSelf,
+        display: cs.display,
+        paddingTop: px(cs.paddingTop), paddingRight: px(cs.paddingRight), paddingBottom: px(cs.paddingBottom), paddingLeft: px(cs.paddingLeft),
+        marginTop: px(cs.marginTop), marginRight: px(cs.marginRight), marginBottom: px(cs.marginBottom), marginLeft: px(cs.marginLeft),
       },
+      sizing: { width: sizingMode(el,'width'), height: sizingMode(el,'height') },
       inline: {
-        fontSize: !!st.fontSize, color: !!st.color, fontWeight: !!st.fontWeight,
-        fontStyle: !!st.fontStyle, textAlign: !!st.textAlign, letterSpacing: !!st.letterSpacing,
-        lineHeight: !!st.lineHeight, textTransform: !!st.textTransform,
-        background: !!(st.background || st.backgroundColor), opacity: !!st.opacity,
-        borderRadius: !!st.borderRadius, padding: !!(st.padding || st.paddingTop),
+        fontSize:!!st.fontSize, color:!!st.color, fontWeight:!!st.fontWeight, fontStyle:!!st.fontStyle,
+        textAlign:!!st.textAlign, letterSpacing:!!st.letterSpacing, lineHeight:!!st.lineHeight,
+        textTransform:!!st.textTransform, textDecoration:!!st.textDecorationLine,
+        background:!!(st.background||st.backgroundColor), opacity:!!st.opacity, borderRadius:!!st.borderRadius,
+        overflow:!!st.overflow, boxShadow:!!st.boxShadow,
+        width:!!st.width, height:!!st.height, position:!!st.position, zIndex:!!st.zIndex,
+        padding:!!(st.padding||st.paddingTop||st.paddingLeft), margin:!!(st.margin||st.marginTop||st.marginLeft),
       },
     };
   }
-  function positionOverlay(box, el) {
-    if (!el || el === root) { box.style.display = 'none'; return; }
+  function position(box, el){
+    if (!el || el === root){ box.style.display='none'; return; }
     var r = el.getBoundingClientRect();
-    box.style.display = 'block';
-    box.style.left = (r.left + window.scrollX) + 'px';
-    box.style.top = (r.top + window.scrollY) + 'px';
-    box.style.width = r.width + 'px';
-    box.style.height = r.height + 'px';
+    box.style.display='block';
+    box.style.left=(r.left+window.scrollX)+'px'; box.style.top=(r.top+window.scrollY)+'px';
+    box.style.width=r.width+'px'; box.style.height=r.height+'px';
   }
-  function reselect() { if (selectedEl) positionOverlay(overlay, selectedEl); }
-  function send(msg) { msg.prism = true; parent.postMessage(msg, '*'); }
-  function serialize() {
+  var rings = [];
+  function drawRings(){
+    ensureLayer();
+    // reuse/create ring elements
+    while (rings.length < selected.length){
+      var d = document.createElement('div');
+      d.className='__prism_ring';
+      d.style.cssText='position:absolute;pointer-events:none;border:2px solid '+ACCENT+';border-radius:3px;box-shadow:0 0 0 1px rgba(255,255,255,.5);';
+      layer.appendChild(d); rings.push(d);
+    }
+    while (rings.length > selected.length){ layer.removeChild(rings.pop()); }
+    for (var i=0;i<selected.length;i++) position(rings[i], selected[i]);
+  }
+  function reselect(){ drawRings(); }
+  function serialize(){
     var clone = root.cloneNode(true);
-    clone.querySelectorAll('[contenteditable]').forEach(function (n) { n.removeAttribute('contenteditable'); });
-    send({ kind: 'html', html: clone.outerHTML });
+    clone.querySelectorAll('[contenteditable]').forEach(function(n){ n.removeAttribute('contenteditable'); });
+    send({ kind:'html', html: clone.outerHTML });
   }
-  function selectEl(el, opts) {
+  function emitSelect(){
+    if (!selected.length){ send({ kind:'deselect' }); return; }
+    if (selected.length === 1){ send({ kind:'select', paths:[pathOf(selected[0])], info: snapshot(selected[0]) }); }
+    else { send({ kind:'select', paths: selected.map(pathOf), info: { multi:true, count: selected.length } }); }
+  }
+  function setSelection(els, opts){
     opts = opts || {};
-    if (editingEl && editingEl !== el) stopEditing();
-    selectedEl = el;
-    ensureOverlay();
-    positionOverlay(overlay, el);
-    if (!opts.silent) send({ kind: 'select', path: pathOf(el), info: snapshot(el) });
+    if (editingEl && els.indexOf(editingEl) === -1) stopEditing();
+    selected = els.filter(function(e){ return e && e !== root; });
+    drawRings();
+    if (!opts.silent) emitSelect();
   }
-  function stopEditing() {
+  function toggle(el){
+    var i = selected.indexOf(el);
+    if (i === -1) selected.push(el); else selected.splice(i,1);
+    setSelection(selected.slice());
+  }
+  function stopEditing(){
     if (!editingEl) return;
     editingEl.removeAttribute('contenteditable');
-    var was = editingEl; editingEl = null;
-    serialize();
-    if (selectedEl === was) send({ kind: 'select', path: pathOf(was), info: snapshot(was) });
+    editingEl = null; serialize();
   }
-  function startEditing(el) {
+  function startEditing(el){
     if (!isTextLeaf(el)) return;
-    editingEl = el;
-    el.setAttribute('contenteditable', 'true');
-    el.focus();
-    var range = document.createRange();
-    range.selectNodeContents(el);
-    var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    editingEl = el; el.setAttribute('contenteditable','true'); el.focus();
+    var r = document.createRange(); r.selectNodeContents(el);
+    var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
   }
-  document.addEventListener('click', function (e) {
-    var el = e.target;
-    if (el === document.body || el === document.documentElement) { clearSel(); return; }
-    if (el === editingEl) return;
-    e.preventDefault(); e.stopPropagation();
-    selectEl(el);
-  }, true);
-  document.addEventListener('dblclick', function (e) {
-    var el = e.target;
-    if (!isTextLeaf(el)) return;
-    e.preventDefault(); e.stopPropagation();
-    selectEl(el, { silent: true });
-    startEditing(el);
-  }, true);
-  document.addEventListener('mouseover', function (e) {
-    var el = e.target;
-    if (!el || el === document.body || el === selectedEl || el === editingEl) { if (hoverBox) hoverBox.style.display = 'none'; return; }
-    ensureOverlay(); positionOverlay(hoverBox, el);
-  }, true);
-  document.addEventListener('mouseout', function () { if (hoverBox) hoverBox.style.display = 'none'; }, true);
-  document.addEventListener('blur', function (e) { if (e.target === editingEl) stopEditing(); }, true);
-  document.addEventListener('keydown', function (e) {
-    if (editingEl && (e.key === 'Escape')) { e.preventDefault(); stopEditing(); }
-  }, true);
-  function clearSel() { selectedEl = null; if (overlay) overlay.style.display = 'none'; send({ kind: 'deselect' }); }
-  window.addEventListener('resize', reselect);
-  window.addEventListener('message', function (e) {
-    var m = e.data || {};
-    if (!m.prism) return;
-    if (m.kind === 'select') { var el = nodeAt(m.path); if (el) selectEl(el); }
-    else if (m.kind === 'clear') { clearSel(); }
-    else if (m.kind === 'applyStyle') {
-      var el = nodeAt(m.path); if (!el) return;
-      for (var k in m.style) {
-        if (m.style[k] === null || m.style[k] === '') el.style.removeProperty(k.replace(/[A-Z]/g, function (c){return '-'+c.toLowerCase();}));
-        else el.style[k] = m.style[k];
+
+  // ---- element creation ------------------------------------------------------
+  function makeEl(type, box){
+    var e;
+    if (type === 'text'){
+      e = document.createElement('div'); e.textContent = 'Texto';
+      e.style.cssText = 'font-family:var(--font-body,sans-serif);font-size:24px;color:var(--primary,#111);line-height:1.3;';
+    } else if (type === 'rect' || type === 'frame'){
+      e = document.createElement('div');
+      e.style.cssText = 'background:'+(type==='frame'?'transparent':'var(--accent,#2D7FF9)')+';border-radius:'+(type==='frame'?'0':'8px')+';'+(type==='frame'?'border:2px solid var(--accent,#2D7FF9);':'');
+    } else if (type === 'oval'){
+      e = document.createElement('div'); e.style.cssText = 'background:var(--accent,#2D7FF9);border-radius:9999px;';
+    } else if (type === 'line' || type === 'arrow'){
+      e = document.createElement('div');
+      e.style.cssText = 'height:0;border-top:3px solid var(--primary,#111);'+(type==='arrow'?'position:relative;':'');
+      if (type==='arrow'){ /* arrowhead via box-shadow-ish: use a simple triangle span */
+        var head=document.createElement('span');
+        head.style.cssText='position:absolute;right:-1px;top:-6px;width:0;height:0;border-left:12px solid var(--primary,#111);border-top:6px solid transparent;border-bottom:6px solid transparent;';
+        e.appendChild(head);
       }
-      reselect(); serialize();
-      send({ kind: 'select', path: pathOf(el), info: snapshot(el) });
+    } else { e = document.createElement('div'); }
+    e.style.position = 'absolute';
+    e.style.left = Math.round(box.x)+'px'; e.style.top = Math.round(box.y)+'px';
+    if (type === 'line' || type === 'arrow'){ e.style.width = Math.max(20,Math.round(box.w))+'px'; }
+    else if (type !== 'text'){ e.style.width = Math.max(8,Math.round(box.w))+'px'; e.style.height = Math.max(8,Math.round(box.h))+'px'; }
+    return e;
+  }
+  function createImage(dataUrl, box){
+    var e = document.createElement('img'); e.setAttribute('src', dataUrl);
+    e.style.cssText='position:absolute;object-fit:contain;';
+    e.style.left=Math.round(box.x)+'px'; e.style.top=Math.round(box.y)+'px';
+    e.style.width=Math.max(40,Math.round(box.w||220))+'px'; e.style.height=Math.max(40,Math.round(box.h||160))+'px';
+    root.appendChild(e); setSelection([e]); serialize();
+  }
+
+  // ---- structural ops --------------------------------------------------------
+  function opDelete(){ selected.forEach(function(e){ if (e.parentNode) e.parentNode.removeChild(e); }); setSelection([]); serialize(); }
+  function opDuplicate(){
+    var clones = selected.map(function(e){
+      var c = e.cloneNode(true);
+      // nudge absolute clones so they're visible
+      if (c.style && c.style.position==='absolute'){ c.style.left=(parseFloat(c.style.left||0)+16)+'px'; c.style.top=(parseFloat(c.style.top||0)+16)+'px'; }
+      e.parentNode.insertBefore(c, e.nextSibling); return c;
+    });
+    setSelection(clones); serialize();
+  }
+  function opGroup(){
+    if (selected.length < 2) return;
+    // group only siblings; use the first's parent, insert wrapper before the first
+    var parent = selected[0].parentNode;
+    var g = document.createElement('div'); g.style.cssText='display:flex;gap:16px;align-items:flex-start;';
+    parent.insertBefore(g, selected[0]);
+    selected.forEach(function(e){ g.appendChild(e); });
+    setSelection([g]); serialize();
+  }
+  function opUngroup(){
+    var next=[];
+    selected.forEach(function(g){
+      if (g.children.length){ var kids=[].slice.call(g.children); kids.forEach(function(k){ g.parentNode.insertBefore(k,g); next.push(k); }); g.parentNode.removeChild(g); }
+    });
+    setSelection(next); serialize();
+  }
+  function opWrapFlex(){
+    if (!selected.length) return;
+    var parent = selected[0].parentNode;
+    var w = document.createElement('div'); w.style.cssText='display:flex;gap:16px;align-items:center;';
+    parent.insertBefore(w, selected[0]);
+    selected.forEach(function(e){ w.appendChild(e); });
+    setSelection([w]); serialize();
+  }
+  function opReorder(dir){ // 'front' | 'back' | 'forward' | 'backward'
+    selected.forEach(function(e){
+      var p=e.parentNode; if(!p) return;
+      if (dir==='front') p.appendChild(e);
+      else if (dir==='back') p.insertBefore(e, p.firstElementChild);
+      else if (dir==='forward' && e.nextElementSibling) p.insertBefore(e.nextElementSibling, e);
+      else if (dir==='backward' && e.previousElementSibling) p.insertBefore(e, e.previousElementSibling);
+    });
+    reselect(); serialize();
+  }
+
+  // ---- pointer interactions --------------------------------------------------
+  function stagePoint(ev){ return { x: ev.clientX + window.scrollX, y: ev.clientY + window.scrollY }; }
+  document.addEventListener('mousedown', function(ev){
+    if (editingEl) return;
+    if (tool !== 'select'){
+      ev.preventDefault(); ev.stopPropagation();
+      var p = stagePoint(ev);
+      drag = { mode:'create', type: tool, x0:p.x, y0:p.y };
+      ensureLayer(); marquee.style.display='block';
+      marquee.style.left=p.x+'px'; marquee.style.top=p.y+'px'; marquee.style.width='0px'; marquee.style.height='0px';
+      return;
     }
-    else if (m.kind === 'setText') {
-      var t = nodeAt(m.path); if (!t) return;
-      t.textContent = m.text; reselect(); serialize();
+    // move an already-selected absolute element by dragging it
+    var el = ev.target;
+    if (el !== document.body && el !== root && selected.indexOf(el) !== -1 && getComputedStyle(el).position === 'absolute'){
+      var p2 = stagePoint(ev);
+      drag = { mode:'move', el: el, x0:p2.x, y0:p2.y, left0: parseFloat(el.style.left)||0, top0: parseFloat(el.style.top)||0 };
+      ev.preventDefault();
     }
+  }, true);
+  document.addEventListener('mousemove', function(ev){
+    if (!drag) return;
+    var p = stagePoint(ev);
+    if (drag.mode === 'create'){
+      var x=Math.min(p.x,drag.x0), y=Math.min(p.y,drag.y0), w=Math.abs(p.x-drag.x0), h=Math.abs(p.y-drag.y0);
+      marquee.style.left=x+'px'; marquee.style.top=y+'px'; marquee.style.width=w+'px'; marquee.style.height=h+'px';
+    } else if (drag.mode === 'move'){
+      drag.el.style.left=Math.round(drag.left0 + (p.x-drag.x0))+'px';
+      drag.el.style.top=Math.round(drag.top0 + (p.y-drag.y0))+'px';
+      reselect();
+    }
+  }, true);
+  document.addEventListener('mouseup', function(ev){
+    if (!drag) return;
+    var p = stagePoint(ev);
+    if (drag.mode === 'create'){
+      marquee.style.display='none';
+      var x=Math.min(p.x,drag.x0), y=Math.min(p.y,drag.y0), w=Math.abs(p.x-drag.x0), h=Math.abs(p.y-drag.y0);
+      var rr = root.getBoundingClientRect();
+      var box = { x:x-(rr.left+window.scrollX), y:y-(rr.top+window.scrollY), w:w, h:h };
+      if (w < 6 && h < 6){ box.w = drag.type==='text'?200:120; box.h = drag.type==='text'?40:120; } // click w/o drag → default
+      var el = makeEl(drag.type, box);
+      root.appendChild(el);
+      setSelection([el]);
+      if (drag.type === 'text') startEditing(el);
+      serialize();
+      send({ kind:'toolDone' }); tool = 'select';
+    } else if (drag.mode === 'move'){ serialize(); emitSelect(); }
+    drag = null;
+  }, true);
+
+  document.addEventListener('click', function(ev){
+    if (tool !== 'select') return;
+    var el = ev.target;
+    if (el === editingEl) return;
+    if (el === document.body || el === document.documentElement){ setSelection([]); return; }
+    ev.preventDefault(); ev.stopPropagation();
+    var additive = ev.shiftKey || ev.metaKey || ev.ctrlKey;
+    if (additive) toggle(el);
+    else setSelection([el]);
+  }, true);
+  document.addEventListener('dblclick', function(ev){
+    var el = ev.target;
+    if (!isTextLeaf(el)) return;
+    ev.preventDefault(); ev.stopPropagation();
+    setSelection([el], { silent:true }); startEditing(el);
+  }, true);
+  document.addEventListener('contextmenu', function(ev){
+    var el = ev.target;
+    if (el === document.body || el === document.documentElement) return;
+    ev.preventDefault();
+    if (selected.indexOf(el) === -1) setSelection([el]);
+    send({ kind:'contextmenu', x: ev.clientX, y: ev.clientY, paths: selected.map(pathOf) });
+  }, true);
+  document.addEventListener('mouseover', function(ev){
+    if (tool !== 'select' || drag) return;
+    var el = ev.target;
+    if (!el || el===document.body || el===root || selected.indexOf(el)!==-1 || el===editingEl){ if(hoverBox) hoverBox.style.display='none'; return; }
+    ensureLayer(); position(hoverBox, el);
+  }, true);
+  document.addEventListener('mouseout', function(){ if(hoverBox) hoverBox.style.display='none'; }, true);
+  document.addEventListener('blur', function(ev){ if (ev.target === editingEl) stopEditing(); }, true);
+  document.addEventListener('input', function(ev){ if (ev.target === editingEl) reselect(); }, true);
+  window.addEventListener('resize', reselect);
+  window.addEventListener('scroll', reselect, true);
+
+  window.addEventListener('message', function(e){
+    var m = e.data || {}; if (!m.prism) return;
+    if (m.kind === 'select'){ var els=(m.paths||[]).map(nodeAt).filter(Boolean); setSelection(els); }
+    else if (m.kind === 'clear'){ setSelection([]); }
+    else if (m.kind === 'tool'){ tool = m.tool || 'select'; if (tool!=='select') setSelection([]); }
+    else if (m.kind === 'applyStyle'){
+      var targets = (m.paths||selected.map(pathOf)).map(nodeAt).filter(Boolean);
+      targets.forEach(function(el){
+        for (var k in m.style){
+          var prop = k.replace(/[A-Z]/g,function(c){return '-'+c.toLowerCase();});
+          if (m.style[k] === null || m.style[k] === '') el.style.removeProperty(prop);
+          else el.style.setProperty(prop, m.style[k]);
+        }
+      });
+      reselect(); serialize(); emitSelect();
+    }
+    else if (m.kind === 'setText'){ var t=nodeAt(m.path); if(t){ t.textContent=m.text; reselect(); serialize(); } }
+    else if (m.kind === 'setAttr'){ var a=nodeAt(m.path); if(a){ if(m.value==null) a.removeAttribute(m.attr); else a.setAttribute(m.attr,m.value); reselect(); serialize(); emitSelect(); } }
+    else if (m.kind === 'setHtml'){
+      // replace the whole <section> content (undo/redo, AI tweak). Rebuild from
+      // the provided outerHTML; keep selection cleared (paths may have shifted).
+      var tmp = document.createElement('div'); tmp.innerHTML = m.html;
+      var next = tmp.querySelector('section');
+      if (next){ root.replaceWith(next); root = next; }
+      selected = []; if (layer){ rings.forEach(function(r){layer.removeChild(r);}); rings=[]; }
+      drawRings();
+      if (!m.silent){ send({ kind:'html', html: root.outerHTML }); send({ kind:'deselect' }); }
+    }
+    else if (m.kind === 'createImage'){ var rr=root.getBoundingClientRect(); createImage(m.dataUrl, { x:(rr.width-220)/2, y:(rr.height-160)/2, w:m.w, h:m.h }); }
+    else if (m.kind === 'paste'){
+      var made = [];
+      (m.clips||[]).forEach(function(htmlStr){
+        var tmp = document.createElement('div'); tmp.innerHTML = htmlStr;
+        var node = tmp.firstElementChild; if (!node) return;
+        // nudge an absolute paste so it's visibly offset from the original
+        if (node.style && node.style.position === 'absolute'){ node.style.left=(parseFloat(node.style.left||0)+20)+'px'; node.style.top=(parseFloat(node.style.top||0)+20)+'px'; }
+        root.appendChild(node); made.push(node);
+      });
+      if (made.length){ setSelection(made); serialize(); }
+    }
+    else if (m.kind === 'op'){
+      if (m.paths){ var e2=m.paths.map(nodeAt).filter(Boolean); if(e2.length) selected=e2; }
+      if (m.op==='delete') opDelete();
+      else if (m.op==='duplicate') opDuplicate();
+      else if (m.op==='group') opGroup();
+      else if (m.op==='ungroup') opUngroup();
+      else if (m.op==='wrapFlex') opWrapFlex();
+      else if (m.op==='front'||m.op==='back'||m.op==='forward'||m.op==='backward') opReorder(m.op);
+    }
+    else if (m.kind === 'reselect'){ reselect(); }
   });
-  // report readiness so the parent can push an initial selection if needed
-  send({ kind: 'ready' });
+  send({ kind:'ready' });
 })();
 <\/script>`
 
@@ -204,30 +406,24 @@ function buildEditableSrcDoc(sectionHtml, tokenStyle) {
 <style data-ds-tokens>${tokenStyle}</style>
 <style>
   html,body{margin:0;padding:0;width:${STAGE_W}px;height:${STAGE_H}px;overflow:hidden;
-    background:var(--background,#fff);font-family:var(--font-body,var(--font-sans,system-ui));
-    cursor:default;}
-  section.slide,section{box-sizing:border-box;width:${STAGE_W}px;height:${STAGE_H}px;
-    position:relative;overflow:hidden;}
+    background:var(--background,#fff);font-family:var(--font-body,var(--font-sans,system-ui));cursor:default;}
+  section.slide,section{box-sizing:border-box;width:${STAGE_W}px;height:${STAGE_H}px;position:relative;overflow:hidden;}
   [contenteditable]{outline:none;cursor:text;}
 </style>
 </head><body>${sectionHtml || ''}${RUNTIME}</body></html>`
 }
 
-// forwardRef so the parent inspector can push edits imperatively (applyStyle,
-// setText, select, clear) without re-mounting the iframe on every keystroke.
 const HtmlSlideEditor = forwardRef(function HtmlSlideEditor(
-  { html, template, title = 'slide', className = '', background = '#0e1a1f', onSelect, onDeselect, onChange },
+  { html, template, title = 'slide', className = '', background = '#0e1a1f', tool = 'select', onSelect, onDeselect, onChange, onContextMenu, onToolDone },
   ref
 ) {
   const wrapRef = useRef(null)
   const frameRef = useRef(null)
   const [scale, setScale] = useState(0.5)
   const tokenStyle = useMemo(() => buildDeckTokenStyle(template), [template])
-  // srcDoc is rebuilt only when the HTML actually changes from OUTSIDE (slide
-  // switch, NL edit) — live inline-style edits go through postMessage, so we
-  // must not reset the doc on every self-originated change. We track the last
-  // html we rendered and the last html we emitted, and skip re-render when they
-  // match (an echo of our own edit).
+  // srcDoc rebuilds only when HTML changes from OUTSIDE (slide switch, AI tweak,
+  // undo/redo through the parent). Self-originated edits echo back and must not
+  // reset the doc — track the last html we emitted and skip re-render on a match.
   const lastEmitted = useRef(html)
   const [srcHtml, setSrcHtml] = useState(html)
   useEffect(() => {
@@ -248,12 +444,22 @@ const HtmlSlideEditor = forwardRef(function HtmlSlideEditor(
     return () => ro.disconnect()
   }, [])
 
+  // push the active tool into the frame whenever it changes
+  useEffect(() => {
+    frameRef.current?.contentWindow?.postMessage({ prism: true, kind: 'tool', tool }, '*')
+  }, [tool, srcDoc])
+
   useEffect(() => {
     const onMsg = (e) => {
       const m = e.data
       if (!m || !m.prism || e.source !== frameRef.current?.contentWindow) return
-      if (m.kind === 'select') onSelect?.(m.path, m.info)
+      if (m.kind === 'select') onSelect?.(m.paths, m.info)
       else if (m.kind === 'deselect') onDeselect?.()
+      else if (m.kind === 'contextmenu') {
+        // translate iframe-local coords to parent viewport (iframe is scaled)
+        const rect = frameRef.current.getBoundingClientRect()
+        onContextMenu?.({ x: rect.left + m.x * scale, y: rect.top + m.y * scale, paths: m.paths })
+      } else if (m.kind === 'toolDone') onToolDone?.()
       else if (m.kind === 'html') {
         lastEmitted.current = m.html
         onChange?.(m.html)
@@ -261,14 +467,20 @@ const HtmlSlideEditor = forwardRef(function HtmlSlideEditor(
     }
     window.addEventListener('message', onMsg)
     return () => window.removeEventListener('message', onMsg)
-  }, [onSelect, onDeselect, onChange])
+  }, [onSelect, onDeselect, onChange, onContextMenu, onToolDone, scale])
 
   const post = (msg) => frameRef.current?.contentWindow?.postMessage({ prism: true, ...msg }, '*')
   useImperativeHandle(ref, () => ({
-    applyStyle: (path, style) => post({ kind: 'applyStyle', path, style }),
+    applyStyle: (paths, style) => post({ kind: 'applyStyle', paths, style }),
     setText: (path, text) => post({ kind: 'setText', path, text }),
-    select: (path) => post({ kind: 'select', path }),
+    setAttr: (path, attr, value) => post({ kind: 'setAttr', path, attr, value }),
+    select: (paths) => post({ kind: 'select', paths }),
     clear: () => post({ kind: 'clear' }),
+    op: (op, paths) => post({ kind: 'op', op, paths }),
+    paste: (clips) => post({ kind: 'paste', clips }),
+    createImage: (dataUrl, w, h) => post({ kind: 'createImage', dataUrl, w, h }),
+    setHtml: (html, silent) => post({ kind: 'setHtml', html, silent }),
+    setTool: (t) => post({ kind: 'tool', tool: t }),
   }))
 
   return (

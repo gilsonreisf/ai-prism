@@ -2005,6 +2005,84 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         : null
 
     const template = await getSelectedDeckTemplate(req.email, req.token)
+
+    // ---- pure-HTML deck tweak (deck-html engine) ----------------------------
+    // Slides are <section> HTML strings. The model rewrites HTML → HTML. Scope:
+    // the whole deck (slideIndex null), one slide, or a single selected element
+    // (sel.htmlOuter carries that node's outerHTML; we splice the reply back into
+    // the slide at sel.path). Result is sanitized by sanitizeHtmlDeck and shown
+    // as a preview (Accept/Discard) before persisting — same reversible flow.
+    const deckIsHtml =
+      deck.meta?.format === 'html' || (deck.slides.length && deck.slides.every((s) => typeof s === 'string' || (s && typeof s === 'object' && typeof s.html === 'string')))
+    if (deckIsHtml) {
+      const model = resolveModelId(req.body?.model)
+      const readHtml = (s) => (typeof s === 'string' ? s : s?.html || '')
+      const htmlOuter = typeof sel?.htmlOuter === 'string' ? sel.htmlOuter : null
+      const contract =
+        'Você é um editor de slides que trabalha em HTML/CSS. Devolva SOMENTE o HTML resultante, ' +
+        'sem markdown, sem cercas de código, sem comentários e sem explicação. Preserve a marca e o ' +
+        'design system (as variáveis var(--…) e a estrutura existente); nunca use position:absolute para ' +
+        'reflowar conteúdo que já flui; nunca invente dados numéricos novos. Mantenha o mesmo idioma.'
+      let messages
+      if (htmlOuter && scoped) {
+        // element-scoped: give the model the whole <section> AND point at the
+        // element to change; ask for the full new <section> back (no server-side
+        // DOM splicing — robust, and the model keeps the rest byte-close).
+        messages = [
+          { role: 'system', content: contract + ' Você recebe o HTML de UM slide (<section>) e o HTML de UM elemento dentro dele que o usuário selecionou. Aplique a instrução SOMENTE a esse elemento e devolva o <section> NOVO completo, mantendo todo o resto inalterado.' },
+          { role: 'user', content: `Slide (HTML):\n${readHtml(scoped)}\n\nElemento selecionado (outerHTML):\n${htmlOuter}\n\nInstrução (só p/ o elemento): ${instruction}\n\n<section> novo:` },
+        ]
+      } else if (scoped) {
+        messages = [
+          { role: 'system', content: contract + ' Você recebe o HTML de UM slide (<section>…</section>); devolva o <section> NOVO completo.' },
+          { role: 'user', content: `Slide (HTML):\n${readHtml(scoped)}\n\nInstrução: ${instruction}\n\n<section> novo:` },
+        ]
+      } else {
+        // whole-deck scope: edit every slide in sequence, one call each, so each
+        // <section> stays bounded and coherent (mirrors the streaming generator).
+        const outSlides = []
+        let totalUsage = null
+        for (const s of deck.slides) {
+          const { text: raw, usage } = await completeWithUsage(req.token, model, [
+            { role: 'system', content: contract + ' Você recebe o HTML de UM slide (<section>…</section>) de um deck; devolva o <section> NOVO completo, aplicando a instrução de forma consistente com um deck inteiro.' },
+            { role: 'user', content: `Slide (HTML):\n${readHtml(s)}\n\nInstrução (vale p/ o deck todo): ${instruction}\n\n<section> novo:` },
+          ], { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
+          const cleaned = String(raw || '').replace(/```[a-z]*\n?/gi, '').trim()
+          outSlides.push(cleaned && /<section/i.test(cleaned) ? cleaned : readHtml(s))
+          // sum token usage across the per-slide calls, tolerating either the
+          // OpenAI-style keys (prompt/completion/total) or the anthropic-style
+          // ones (input/output) — whichever the gateway returned.
+          if (usage) {
+            totalUsage = totalUsage || {}
+            for (const k of Object.keys(usage)) {
+              if (typeof usage[k] === 'number') totalUsage[k] = (totalUsage[k] || 0) + usage[k]
+            }
+          }
+        }
+        const san = sanitizeHtmlDeck({ title: deck.title, slides: outSlides })
+        if (!san?.slides?.length) return res.status(422).json({ error: 'a edição resultou em um deck inválido' })
+        // preserve per-slide notes
+        const merged = san.slides.map((h, i) => {
+          const prev = deck.slides[i]
+          return prev && typeof prev === 'object' && prev.notes ? { html: h, notes: prev.notes } : h
+        })
+        const updated = { ...deck, slides: merged }
+        if (!preview) await updateDeckSlides(req.email, req.token, req.params.id, deck.title, merged, { format: 'html', audience: deck.audience, author: deck.author })
+        return res.json({ deck: updated, preview, usage: totalUsage, model })
+      }
+      const { text: raw, usage } = await completeWithUsage(req.token, model, messages, { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
+      const cleaned = String(raw || '').replace(/```[a-z]*\n?/gi, '').trim()
+      if (!/<section/i.test(cleaned)) return res.status(422).json({ error: 'a edição não retornou um slide válido' })
+      const san = sanitizeHtmlDeck({ title: deck.title, slides: [cleaned] })
+      if (!san?.slides?.length) return res.status(422).json({ error: 'a edição resultou em um slide inválido' })
+      const slides = [...deck.slides]
+      const prev = slides[slideIndex]
+      slides[slideIndex] = prev && typeof prev === 'object' && prev.notes ? { html: san.slides[0], notes: prev.notes } : san.slides[0]
+      const updated = { ...deck, slides }
+      if (!preview) await updateDeckSlides(req.email, req.token, req.params.id, deck.title, slides, { format: 'html', audience: deck.audience, author: deck.author })
+      return res.json({ deck: updated, preview, usage, model })
+    }
+
     const icons = usableIconAssets(template)
     const scopedFreeform = scoped?.layout === 'freeform'
 

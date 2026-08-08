@@ -8,6 +8,8 @@ import LayerTree from './deck/LayerTree.jsx'
 import HtmlSlideFrame, { buildDeckTokenStyle } from './deck/HtmlSlideFrame.jsx'
 import HtmlSlideEditor from './deck/HtmlSlideEditor.jsx'
 import HtmlSlideInspector from './deck/HtmlSlideInspector.jsx'
+import HtmlEditToolbar from './deck/HtmlEditToolbar.jsx'
+import HtmlEditContextMenu from './deck/HtmlEditContextMenu.jsx'
 import { extractOpsFromSlides } from '../lib/domToSlideOps.js'
 import useDeckHistory from '../hooks/useDeckHistory.js'
 import { materializeSlide, CONVERTIBLE_LAYOUTS, defaultElement } from '../../../shared/deckLayout.js'
@@ -16,6 +18,30 @@ import { findNode, findParent, updateNode, removeNodes, groupNodes, ungroupNode,
 import { getJSON, patchJSON, postJSON } from '../api.js'
 import { useT } from '../lib/i18n.jsx'
 import CostBadge from './CostBadge.jsx'
+
+// Given a slide's <section> HTML and a list of child-index paths (e.g. "1.0.2"),
+// return the outerHTML of each addressed node — used to copy/cut selected
+// elements to the studio clipboard (paste re-inserts them into the live editor).
+function extractNodesHtml(html, paths) {
+  if (!html || !paths?.length) return []
+  let doc
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html')
+  } catch {
+    return []
+  }
+  const root = doc.body.firstElementChild
+  if (!root) return []
+  const at = (path) => {
+    let el = root
+    for (const seg of String(path).split('.')) {
+      if (!el) return null
+      el = el.children[parseInt(seg, 10)]
+    }
+    return el || null
+  }
+  return paths.map(at).filter(Boolean).map((el) => el.outerHTML)
+}
 
 // "cards[2].heading" → immutable deep set into a slide object — the write
 // half of the canvas' inline text editing (SelBox commits land here).
@@ -319,7 +345,7 @@ function DiagramEditor({ slide, onChange }) {
   )
 }
 
-export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushToast, focus = false, onToggleFocus, models, model }) {
+export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushToast, focus = false, onToggleFocus, onEditModeChange, models, model }) {
   const t = useT()
   const [deck, setDeck] = useState(null)
   const [template, setTemplate] = useState(null)
@@ -355,12 +381,21 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   const dragFrom = useRef(null)
   const saveTimer = useRef(null)
   const skipNextSave = useRef(true)
-  // pure-HTML deck manual editing (task #28): Edit mode toggles the direct DOM
-  // editor + inspector; selection is a child-index path into the current slide's
-  // <section>, plus the live style snapshot the iframe reports for that node.
+  // pure-HTML deck manual editing (Claude Design "Pro" parity): Edit mode turns
+  // the slide into a full design surface (select/create/restyle). Selection is a
+  // list of child-index paths into the current slide's <section>, plus the live
+  // style snapshot the iframe reports.
   const [htmlEditMode, setHtmlEditMode] = useState(false)
-  const [htmlSel, setHtmlSel] = useState(null) // null | { path, info }
+  const [htmlSel, setHtmlSel] = useState(null) // null | { paths:[...], info }
+  const [htmlTool, setHtmlTool] = useState('select') // armed create tool
+  const [htmlMenu, setHtmlMenu] = useState(null) // right-click menu {x,y,paths}
+  const [htmlClip, setHtmlClip] = useState(null) // clipboard: outerHTML string(s)
   const htmlEditorRef = useRef(null)
+  // per-slide undo/redo stacks for the raw HTML string, keyed by slide index.
+  // Kept in refs (mutable, no re-render needed until we read length for toolbar).
+  const htmlHist = useRef({ past: [], future: [] })
+  const [htmlHistTick, setHtmlHistTick] = useState(0) // bump to refresh can-undo/redo
+  const htmlEditPreview = useRef(null) // { before } for AI tweak preview on HTML
 
   useEffect(() => {
     if (!open || !deckId) return
@@ -404,6 +439,10 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     setScopeId(null)
     setTool(null)
     setHtmlSel(null)
+    setHtmlTool('select')
+    setHtmlMenu(null)
+    htmlHist.current = { past: [], future: [] } // per-slide undo history
+    setHtmlHistTick((n) => n + 1)
     if (tweakPreviewRef.current) {
       skipNextSave.current = true
       setDeck(tweakPreviewRef.current.before)
@@ -416,15 +455,79 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     history.reset()
   }, [deckId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // tell App to hide the chat while manual HTML editing (max canvas room)
+  useEffect(() => {
+    onEditModeChange?.(htmlEditMode)
+  }, [htmlEditMode, onEditModeChange])
+  // leaving the studio or switching away from an HTML deck exits Edit mode
+  useEffect(() => {
+    if (!open) setHtmlEditMode(false)
+  }, [open])
+
   // undo/redo at the Studio level (Cmd+Z / Cmd+Shift+Z) — skipped while the
   // focus is in an input/textarea/contentEditable, where the browser's own
-  // text undo must win
+  // text undo must win. In HTML Edit mode, ALL editor hotkeys route through
+  // hotkeysRef (undo/redo/copy/cut/paste/duplicate/delete) instead of the
+  // semantic-tree history.
+  const hotkeysRef = useRef({})
   useEffect(() => {
     if (!open) return
     const onKey = (ev) => {
-      if (!(ev.metaKey || ev.ctrlKey) || ev.key.toLowerCase() !== 'z') return
       const t = ev.target
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+      const meta = ev.metaKey || ev.ctrlKey
+      const hk = hotkeysRef.current
+      // HTML Edit mode: full editor hotkey set (but never steal from a field)
+      if (hk.htmlActive && !inField) {
+        const k = ev.key.toLowerCase()
+        if (meta && k === 'z') {
+          ev.preventDefault()
+          ev.shiftKey ? hk.redo?.() : hk.undo?.()
+          return
+        }
+        if (meta && k === 'c') {
+          ev.preventDefault()
+          hk.op?.('copy')
+          return
+        }
+        if (meta && k === 'x') {
+          ev.preventDefault()
+          hk.op?.('cut')
+          return
+        }
+        if (meta && k === 'v') {
+          ev.preventDefault()
+          hk.op?.('paste')
+          return
+        }
+        if (meta && k === 'd') {
+          ev.preventDefault()
+          hk.op?.('duplicate')
+          return
+        }
+        if (meta && ev.shiftKey && k === 'g') {
+          ev.preventDefault()
+          hk.op?.('ungroup')
+          return
+        }
+        if (meta && k === 'g') {
+          ev.preventDefault()
+          hk.op?.('group')
+          return
+        }
+        if ((k === 'delete' || k === 'backspace') && hk.hasSel) {
+          ev.preventDefault()
+          hk.op?.('delete')
+          return
+        }
+        if (k === 'escape') {
+          hk.clearSel?.()
+          return
+        }
+        return
+      }
+      // semantic-tree slides: original Cmd+Z / Cmd+Shift+Z
+      if (!meta || ev.key.toLowerCase() !== 'z' || inField) return
       ev.preventDefault()
       setDeck((cur) => {
         if (!cur) return cur
@@ -469,25 +572,158 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
 
   if (!open) return null
 
+  const slide = deck?.slides?.[activeIndex]
+  const isFreeform = slide?.layout === 'freeform'
+  // pure-HTML deck (deck-html engine): slides are self-contained <section>
+  // strings. Its own Studio layout (rail + stage + inspector) and manual editor
+  // apply instead of the semantic/freeform chrome.
+  const isHtmlDeck = deck?.meta?.format === 'html' || typeof deck?.slides?.[0] === 'string'
+
   const updateSlide = (idx, patch) => {
     setDeck((d) => {
       const slides = [...d.slides]
-      slides[idx] = { ...slides[idx], ...patch }
+      const cur = slides[idx]
+      // an HTML slide stored as a bare string must become {html,…} to carry
+      // notes/patches (e.g. manual speaker notes on an HTML deck)
+      slides[idx] = typeof cur === 'string' ? { html: cur, ...patch } : { ...cur, ...patch }
       return { ...d, slides }
     })
   }
 
+  // read the raw <section> HTML string of a slide (string or {html} form)
+  const slideHtml = (s) => (typeof s === 'string' ? s : s?.html || '')
+
   // Pure-HTML deck: write the edited <section> string back into the current
-  // slide, preserving whether the slide entry was a bare string or a {html,…}
-  // object (streaming/persisted decks use the object form with notes). Autosave
-  // then persists it exactly like any other slide mutation.
-  const setHtmlSlide = (idx, newHtml) => {
+  // slide, preserving whether the slide entry was a bare string or a {html,notes}
+  // object. `pushHistory` snapshots the PREVIOUS html for undo (skipped for
+  // history-driven writes so undo/redo don't stack on themselves).
+  const setHtmlSlide = (idx, newHtml, { pushHistory = true } = {}) => {
     setDeck((d) => {
       const slides = [...d.slides]
       const cur = slides[idx]
+      const prev = slideHtml(cur)
+      if (prev === newHtml) return d
+      if (pushHistory) {
+        htmlHist.current.past.push(prev)
+        if (htmlHist.current.past.length > 100) htmlHist.current.past.shift()
+        htmlHist.current.future = []
+        setHtmlHistTick((n) => n + 1)
+      }
       slides[idx] = typeof cur === 'string' ? newHtml : { ...cur, html: newHtml }
       return { ...d, slides }
     })
+  }
+
+  // undo/redo the current slide's HTML — pushes the inverse onto the other stack
+  // and pushes the restored html into the live editor (setHtml replaces <section>)
+  const htmlUndo = () => {
+    const h = htmlHist.current
+    if (!h.past.length) return
+    const cur = slideHtml(deck.slides[activeIndex])
+    const prev = h.past.pop()
+    h.future.push(cur)
+    setHtmlHistTick((n) => n + 1)
+    setHtmlSlide(activeIndex, prev, { pushHistory: false })
+    htmlEditorRef.current?.setHtml(prev, true)
+    setHtmlSel(null)
+  }
+  const htmlRedo = () => {
+    const h = htmlHist.current
+    if (!h.future.length) return
+    const cur = slideHtml(deck.slides[activeIndex])
+    const next = h.future.pop()
+    h.past.push(cur)
+    setHtmlHistTick((n) => n + 1)
+    setHtmlSlide(activeIndex, next, { pushHistory: false })
+    htmlEditorRef.current?.setHtml(next, true)
+    setHtmlSel(null)
+  }
+
+  // right-click / hotkey structural ops routed to the iframe runtime
+  const htmlOp = (op) => {
+    if (op === 'copy' || op === 'cut') {
+      // copy the selected nodes' outerHTML from the current slide's DOM
+      const paths = htmlSel?.paths || []
+      const clips = extractNodesHtml(slideHtml(deck.slides[activeIndex]), paths)
+      if (clips.length) setHtmlClip(clips)
+      if (op === 'cut') htmlEditorRef.current?.op('delete')
+      return
+    }
+    if (op === 'paste') {
+      if (!htmlClip?.length) return
+      htmlEditorRef.current?.paste(htmlClip)
+      return
+    }
+    htmlEditorRef.current?.op(op, htmlSel?.paths)
+  }
+
+  // AI tweak for HTML decks: scope = whole deck / this slide / selected element.
+  // Runs in PREVIEW mode; the returned deck is shown with Accept/Discard. On
+  // discard we restore the pre-edit deck AND push the original HTML back into the
+  // live editor iframe so the canvas reverts too.
+  const submitHtmlTweak = async () => {
+    const instruction = tweak.trim()
+    if (!instruction || tweaking || !deck?.id) return
+    setTweaking(true)
+    try {
+      const single = htmlSel?.paths?.length === 1 && !htmlSel.info?.multi
+      const selPayload = single
+        ? { path: htmlSel.paths[0], htmlOuter: extractNodesHtml(slideHtml(deck.slides[activeIndex]), htmlSel.paths)[0] || null }
+        : null
+      const r = await postJSON(`/api/decks/${deck.id}/tweak`, {
+        instruction,
+        slideIndex: tweakWholeDeck ? null : activeIndex,
+        selection: tweakWholeDeck ? null : selPayload,
+        preview: true,
+        model,
+      })
+      htmlEditPreview.current = { before: deck }
+      setTweakPreview({ before: deck, label: instruction })
+      skipNextSave.current = true
+      setDeck(r.deck)
+      // reflect the edited HTML on the live canvas
+      const editedHtml = slideHtml(r.deck.slides[activeIndex])
+      htmlEditorRef.current?.setHtml(editedHtml, true)
+      setHtmlSel(null)
+      if (r.usage) setTweakCost({ usage: r.usage, model: r.model })
+      setTweak('')
+    } catch (e) {
+      pushToast?.(e.message || t('deckStudio.tweakError'))
+    } finally {
+      setTweaking(false)
+    }
+  }
+  const acceptHtmlTweak = () => {
+    if (!tweakPreview) return
+    patchJSON(`/api/decks/${deck.id}`, { title: deck.title, slides: deck.slides, audience: deck.audience, author: deck.author }).catch((e) => pushToast?.(e.message))
+    skipNextSave.current = true
+    setTweakHistory((h) => [{ label: tweakPreview.label, at: Date.now() }, ...h].slice(0, 20))
+    setTweakPreview(null)
+    htmlEditPreview.current = null
+    // history checkpoint so the accepted AI edit is itself undoable
+    htmlHist.current.past.push(slideHtml(tweakPreview.before.slides[activeIndex]))
+    setHtmlHistTick((n) => n + 1)
+  }
+  const discardHtmlTweak = () => {
+    if (!tweakPreview) return
+    skipNextSave.current = true
+    setDeck(tweakPreview.before)
+    htmlEditorRef.current?.setHtml(slideHtml(tweakPreview.before.slides[activeIndex]), true)
+    setTweakPreview(null)
+    htmlEditPreview.current = null
+  }
+
+  // keep the global hotkey handler pointed at the live HTML-edit closures
+  hotkeysRef.current = {
+    htmlActive: htmlEditMode && isHtmlDeck,
+    hasSel: !!htmlSel?.paths?.length,
+    undo: htmlUndo,
+    redo: htmlRedo,
+    op: htmlOp,
+    clearSel: () => {
+      setHtmlSel(null)
+      htmlEditorRef.current?.clear()
+    },
   }
 
   // inline canvas text edit (SelBox double-click commit)
@@ -609,14 +845,6 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     })
     setActiveIndex((i) => i + 1)
   }
-
-  const slide = deck?.slides?.[activeIndex]
-  const isFreeform = slide?.layout === 'freeform'
-  // pure-HTML deck (feat/deck-html-engine): slides are self-contained <section>
-  // strings. The semantic/freeform editing chrome doesn't apply — the Studio
-  // shows the HTML frames (thumbnail rail + full stage) and, for now, edits go
-  // through the NL "recompose" bar rather than element manipulation.
-  const isHtmlDeck = deck?.meta?.format === 'html' || typeof deck?.slides?.[0] === 'string'
 
   // --- element canvas handlers (freeform slides) -----------------------------
 
@@ -868,7 +1096,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
       className={`fixed inset-0 z-[70] flex flex-col bg-[var(--bg)] animate-fade-in
                  md:static md:inset-auto md:z-auto md:h-full
                  md:border-l md:border-[var(--border)] ${
-                   focus
+                   focus || (htmlEditMode && isHtmlDeck)
                      ? 'md:flex-1 md:min-w-0'
                      : 'md:shrink-0 md:w-[45%] md:min-w-[420px] md:max-w-[760px]'
                  }`}
@@ -1013,25 +1241,45 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
             ))}
           </div>
 
-          {/* stage + speaker notes */}
+          {/* stage + create toolbar + AI bar + speaker notes */}
           <div className="flex-1 flex flex-col min-w-0 min-h-0">
-            <div className="flex-1 min-h-0 overflow-y-auto px-6 pt-4 pb-2">
-              <div className="mx-auto w-full" style={{ maxWidth: 'calc((100dvh - 12rem) * 1.7778)' }}>
+            {/* create-asset toolbar (Edit mode only) */}
+            {htmlEditMode && slide && (
+              <div className="shrink-0 flex items-center justify-center gap-2 px-6 pt-3 pb-1 animate-fade-in">
+                <HtmlEditToolbar
+                  tool={htmlTool}
+                  onTool={(tName) => {
+                    setHtmlTool(tName)
+                    htmlEditorRef.current?.setTool(tName)
+                  }}
+                  onImage={(dataUrl) => htmlEditorRef.current?.createImage(dataUrl)}
+                  onUndo={htmlUndo}
+                  onRedo={htmlRedo}
+                  canUndo={htmlHist.current.past.length > 0}
+                  canRedo={htmlHist.current.future.length > 0}
+                />
+              </div>
+            )}
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 pt-2 pb-2">
+              <div className="mx-auto w-full" style={{ maxWidth: 'calc((100dvh - 15rem) * 1.7778)' }}>
                 {slide ? (
                   htmlEditMode ? (
                     <HtmlSlideEditor
                       ref={htmlEditorRef}
-                      html={typeof slide === 'string' ? slide : slide?.html}
+                      html={slideHtml(slide)}
                       template={template}
+                      tool={htmlTool}
                       title={`${deck.title} — ${activeIndex + 1}`}
-                      className="w-full rounded-lg shadow-lg ring-1 ring-[var(--accent)]/40"
-                      onSelect={(path, info) => setHtmlSel({ path, info })}
+                      className={`w-full rounded-lg shadow-lg ring-1 ring-[var(--accent)]/40 ${htmlTool !== 'select' ? 'cursor-crosshair' : ''}`}
+                      onSelect={(paths, info) => setHtmlSel({ paths, info })}
                       onDeselect={() => setHtmlSel(null)}
                       onChange={(newHtml) => setHtmlSlide(activeIndex, newHtml)}
+                      onContextMenu={(m) => setHtmlMenu(m)}
+                      onToolDone={() => setHtmlTool('select')}
                     />
                   ) : (
                     <HtmlSlideFrame
-                      html={typeof slide === 'string' ? slide : slide?.html}
+                      html={slideHtml(slide)}
                       template={template}
                       title={`${deck.title} — ${activeIndex + 1}`}
                       className="w-full rounded-lg shadow-lg"
@@ -1041,13 +1289,74 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
                   <HtmlSlideSkeleton streaming={deck.streaming} label={t('deckStudio.building')} />
                 )}
                 {htmlEditMode && slide && (
-                  <p className="text-[11px] text-[var(--faint)] text-center mt-2">{t('deckStudio.htmlEdit.canvasHint')}</p>
+                  <p className="text-[11px] text-[var(--faint)] text-center mt-2">
+                    {htmlTool === 'select' ? t('deckStudio.htmlEdit.canvasHint') : t('deckStudio.htmlEdit.drawHint')}
+                  </p>
                 )}
               </div>
             </div>
-            {/* speaker notes */}
+
+            {/* AI edit bar (Edit mode) — slide / deck / selected element, with a
+                reversible preview (Accept / Discard). */}
+            {htmlEditMode && slide && (
+              <div className="shrink-0 px-6 pb-1">
+                <div className="mx-auto w-full" style={{ maxWidth: 'calc((100dvh - 15rem) * 1.7778)' }}>
+                  {tweakPreview ? (
+                    <div className="flex items-center gap-2 rounded-xl border border-[var(--accent)] bg-[var(--accent-soft)] px-3 py-2 animate-fade-in">
+                      <Icon.Wand size={14} className="text-[var(--accent)] shrink-0" />
+                      <span className="text-xs text-[var(--text)] flex-1 min-w-0 truncate" title={tweakPreview.label}>
+                        {t('deckStudio.tweak.previewLabel', { label: tweakPreview.label })}
+                      </span>
+                      {tweakCost && <CostBadge usage={tweakCost.usage} model={tweakCost.model} models={models} className="text-[11px] shrink-0" />}
+                      <button onClick={discardHtmlTweak} className="rounded-lg border border-[var(--border)] bg-[var(--surface)] hover:brightness-110 text-[var(--muted)] font-semibold text-xs px-2.5 py-1.5 shrink-0">
+                        {t('deckStudio.tweak.discard')}
+                      </button>
+                      <button onClick={acceptHtmlTweak} className="rounded-lg bg-[var(--accent)] hover:brightness-110 text-white font-semibold text-xs px-2.5 py-1.5 shrink-0">
+                        {t('deckStudio.tweak.accept')}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-2.5">
+                        <Icon.Wand size={14} className="text-[var(--accent)] shrink-0" />
+                        <input
+                          value={tweak}
+                          onChange={(e) => setTweak(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && submitHtmlTweak()}
+                          placeholder={
+                            tweakWholeDeck
+                              ? t('deckStudio.tweak.placeholderDeck')
+                              : htmlSel && !htmlSel.info?.multi
+                                ? t('deckStudio.htmlEdit.aiPlaceholderEl')
+                                : t('deckStudio.tweak.placeholderSlide')
+                          }
+                          disabled={tweaking}
+                          className="flex-1 bg-transparent text-sm py-2 outline-none placeholder:text-[var(--faint)] disabled:opacity-50"
+                        />
+                      </div>
+                      <button
+                        onClick={submitHtmlTweak}
+                        disabled={!tweak.trim() || tweaking}
+                        className="rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-xs px-3 py-2.5 transition shrink-0 inline-flex items-center gap-1.5"
+                      >
+                        {tweaking && <span className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" aria-hidden />}
+                        {t('deckStudio.tweak.apply')}
+                      </button>
+                    </div>
+                  )}
+                  {!tweakPreview && (
+                    <label className="flex items-center gap-1.5 text-[10px] text-[var(--muted)] cursor-pointer w-fit mt-1">
+                      <input type="checkbox" checked={tweakWholeDeck} onChange={(e) => setTweakWholeDeck(e.target.checked)} />
+                      {t('deckStudio.tweak.wholeDeckToggle')}
+                    </label>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* speaker notes — always editable (converts a string slide to {html,notes}) */}
             <div className="shrink-0 border-t border-[var(--border)] px-6 py-2.5">
-              <div className="mx-auto w-full flex items-start gap-2" style={{ maxWidth: 'calc((100dvh - 12rem) * 1.7778)' }}>
+              <div className="mx-auto w-full flex items-start gap-2" style={{ maxWidth: 'calc((100dvh - 15rem) * 1.7778)' }}>
                 <label className="text-[10px] font-semibold uppercase tracking-wide text-[var(--faint)] w-20 shrink-0 pt-1.5">
                   {t('deckStudio.field.notes')}
                 </label>
@@ -1055,7 +1364,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
                   value={(typeof slide === 'object' && slide?.notes) || ''}
                   onChange={(e) => updateSlide(activeIndex, { notes: e.target.value })}
                   rows={1}
-                  disabled={!slide || typeof slide === 'string'}
+                  disabled={!slide}
                   placeholder={t('deckStudio.field.notesPlaceholder')}
                   className="flex-1 text-sm rounded-lg bg-[var(--surface-2)] border border-[var(--border)] px-2.5 py-1.5 outline-none focus:border-[var(--accent)] resize-none placeholder:text-[var(--faint)] disabled:opacity-50"
                 />
@@ -1067,19 +1376,26 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
           {htmlEditMode && slide && (
             <div className="shrink-0 md:w-72 border-t md:border-t-0 md:border-l border-[var(--border)] bg-[var(--surface-2)] flex flex-col min-h-0 max-h-[45vh] md:max-h-none animate-fade-in">
               <HtmlSlideInspector
-                html={typeof slide === 'string' ? slide : slide?.html}
-                selectedPath={htmlSel?.path ?? null}
+                html={slideHtml(slide)}
+                selectedPaths={htmlSel?.paths ?? []}
                 selectedInfo={htmlSel?.info ?? null}
-                onSelectPath={(path) => htmlEditorRef.current?.select(path)}
-                onStyle={(style) => htmlSel && htmlEditorRef.current?.applyStyle(htmlSel.path, style)}
-                onText={(text) => {
-                  if (!htmlSel) return
-                  // optimistic: keep the CONTENT field in sync as the user types
-                  // (the iframe echoes a fresh snapshot too, but only after it
-                  // re-serializes — this keeps the controlled textarea responsive)
-                  setHtmlSel((s) => (s ? { ...s, info: { ...s.info, text } } : s))
-                  htmlEditorRef.current?.setText(htmlSel.path, text)
+                onSelectPath={(path, additive) => {
+                  const cur = htmlSel?.paths || []
+                  const next = additive ? (cur.includes(path) ? cur.filter((p) => p !== path) : [...cur, path]) : [path]
+                  htmlEditorRef.current?.select(next)
                 }}
+                onStyle={(style) => htmlEditorRef.current?.applyStyle(htmlSel?.paths, style)}
+                onText={(text) => {
+                  const p = htmlSel?.paths?.[0]
+                  if (!p) return
+                  setHtmlSel((s) => (s ? { ...s, info: { ...s.info, text } } : s))
+                  htmlEditorRef.current?.setText(p, text)
+                }}
+                onAttr={(attr, value) => {
+                  const p = htmlSel?.paths?.[0]
+                  if (p) htmlEditorRef.current?.setAttr(p, attr, value)
+                }}
+                onOp={(op) => htmlOp(op)}
               />
             </div>
           )}
@@ -1855,6 +2171,12 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
         </div>
       )}
       {presenting && deck && <PresentMode deck={deck} template={template} onClose={() => setPresenting(false)} />}
+      <HtmlEditContextMenu
+        menu={htmlMenu}
+        canPaste={!!htmlClip?.length}
+        onAction={(action) => htmlOp(action)}
+        onClose={() => setHtmlMenu(null)}
+      />
     </div>
   )
 }
