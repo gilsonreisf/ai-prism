@@ -126,7 +126,7 @@ ai-prism/
 │   │   │   ├── SettingsModal.jsx  # personas, system prompt, temperatura
 │   │   │   ├── VoiceOverlay.jsx   # modo de conversação por voz (full-duplex)
 │   │   │   ├── ToolsPicker.jsx    # habilita ferramentas nativas por sessão
-│   │   │   ├── DeckStudio.jsx     # editor de slides (canvas de elementos) + export .pptx
+│   │   │   ├── DeckStudio.jsx     # editor de slides (HTML/DOM editável) + export .pptx
 │   │   │   ├── SpreadsheetStudio.jsx # editor de planilha + export .xlsx
 │   │   │   ├── Welcome.jsx        # tela inicial com sugestões de prompt
 │   │   │   └── blocks/             # Chart/Table/Insight/Deck/Spreadsheet + BlockRenderer
@@ -259,22 +259,24 @@ Além de markdown, uma resposta do assistente pode carregar **blocos estruturado
 ### Decks (Estúdio de Slides)
 - Pedidos explícitos de apresentação entram num fluxo em duas etapas: o modelo faz
   perguntas de contexto sob medida (público, idioma, duração, tom — sempre com campo livre
-  "Outros" além das opções e "Decida por mim") e então gera um bloco `deck` estruturado,
-  editável no Estúdio de Slides e exportável para `.pptx` real (`server/decks.js`).
+  "Outros" além das opções e "Decida por mim") e então gera um bloco `deck-html` — cada
+  slide é um `<section>` de HTML/CSS que FLUI contra o design system ativo (motor HTML
+  puro), editável no Estúdio de Slides (o DOM é o modelo editável) e exportável para `.pptx`
+  real de objetos nativos (`server/decks.js`).
 - **Design systems por usuário** (Settings → Modelos de apresentação): importe um ou vários
   arquivos de uma vez — `.pptx` da marca, `.json` exportado, logos e ícones avulsos — e o
   miner (`client/src/lib/pptxMining.js`) extrai cores (sempre editáveis em HEX), fontes,
-  logo, ícones, fotos, placas de capa/divisor, motivo decorativo, tipografia e **diagramas
-  vetoriais complexos** dos slides (caixas + conectores + rótulos), tudo opcional — quanto
-  mais assets, maior a aderência do resultado à marca.
+  logo, ícones, ilustrações/motivos, fotos, placas de capa/divisor e tipografia, tudo
+  opcional — quanto mais assets, maior a aderência do resultado à marca.
+- Os assets reais do DS entram nos slides HTML via `<img data-ds-asset-id="ID">`
+  (`<img data-ds-logo>` para o logo): o id simbólico fica no HTML salvo e é resolvido para
+  a arte inline da marca na preview, no editor e no export. O comportamento padrão é usar o
+  ícone/motivo ORIGINAL do design system — criação livre só a pedido explícito.
 - Mídia reusada em quase todos os slides do arquivo original é classificada como **marca
   d'água** e nunca entra em um deck gerado (nem como ícone, nem como imagem) — imagens de
   deck jamais carregam marca d'água.
-- Diagramas minerados podem ser reaproveitados pelo modelo (`diagramRef`) ou aplicados
-  manualmente no Estúdio: são redesenhados em vetor no PPTX com as fontes do tema e as
-  cores originais do design system, com preview 1:1 na UI.
 - Rotulagem semântica opcional dos assets com modelo de visão ("Rotular com IA") para
-  melhorar a escolha de ícones/imagens/diagramas pelo modelo.
+  melhorar a escolha de ícones/ilustrações/imagens pelo modelo.
 - QA determinístico do pipeline: `scripts/mine-pptx-qa.mjs` (minera um .pptx sintético e
   valida marca d'água/diagramas/render) e `scripts/render-deck-preview.mjs` +
   `scripts/pptx-to-png.sh` (QA visual das fixtures em `scripts/fixtures/`).

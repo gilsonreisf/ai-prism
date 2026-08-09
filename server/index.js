@@ -468,7 +468,7 @@ function msgLang(responseLang, uiLang) {
 // supports tools and provisioning succeeded) plus whichever Genie/UC refs the
 // session has enabled. Shared by /api/chat and the regenerate endpoint so
 // both attach tools identically.
-async function resolveToolDefs(req, model, enabledToolRefs, { includeImage = false } = {}) {
+async function resolveToolDefs(req, model, enabledToolRefs, { includeImage = false, suppressDataTools = false } = {}) {
   const modelInfo = modelById(model)
   if (!modelInfo.tools) return { toolDefs: null, toolResolvers: null }
   const ts = await ensureTools(req)
@@ -482,6 +482,9 @@ async function resolveToolDefs(req, model, enabledToolRefs, { includeImage = fal
     includePython: ts.ready,
     includeImage: includeImage && toolPolicy['image-gen'] !== false,
     toolPolicy,
+    // on an artifact-only turn the caps router asks to drop company-data tools
+    // (Genie One etc.) so they can't misfire while building an unrelated deck
+    suppressDataTools,
   })
   if (!built.tools.length) return { toolDefs: null, toolResolvers: null }
   return { toolDefs: built.tools, toolResolvers: built.resolvers }
@@ -2417,6 +2420,7 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // provisioning failed (e.g. no SQL_WAREHOUSE_ID / no CREATE FUNCTION grant).
     const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs, {
       includeImage: caps.image,
+      suppressDataTools: caps.suppressDataTools,
     })
     // narration guidance only when tools are actually in play — appended after
     // the history so it's the freshest instruction when the model decides
@@ -2637,6 +2641,7 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
 
     const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs, {
       includeImage: caps.image,
+      suppressDataTools: caps.suppressDataTools,
     })
     if (toolDefs) apiMessages.push({ role: 'system', content: TOOL_NARRATION_POLICY })
     // forced response language (Preferences) — LAST system message, so it's the
@@ -2759,6 +2764,7 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
 
     const { toolDefs, toolResolvers } = await resolveToolDefs(req, model, enabledToolRefs, {
       includeImage: caps.image,
+      suppressDataTools: caps.suppressDataTools,
     })
     if (toolDefs) apiMessages.push({ role: 'system', content: TOOL_NARRATION_POLICY })
     // forced response language (Preferences) — LAST system message, so it's the

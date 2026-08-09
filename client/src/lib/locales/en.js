@@ -229,6 +229,10 @@ export default {
 
   // message / tool trace
   'message.thinking': 'Thinking…',
+  'message.building.deck': 'Designing your deck…',
+  'message.building.spreadsheet': 'Building your spreadsheet…',
+  'message.building.document': 'Writing your document…',
+  'message.building.image': 'Generating your image…',
   'reasoning.thinking': 'Reasoning…',
   'reasoning.done': 'Reasoning',
   'message.question': 'Question',

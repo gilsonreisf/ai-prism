@@ -137,203 +137,63 @@ const DECK_POLICY =
   'opções oferecidas como escolha válida do usuário. Se o próprio pedido inicial já vier ' +
   'com contexto suficiente (ex.: um briefing completo colado), pule direto para a Etapa 2.\n\n' +
 
-  '=== ETAPA 2: GERAÇÃO DO DECK (bloco `deck`) ===\n' +
+  '=== ETAPA 2: GERAÇÃO DO DECK ===\n' +
   'Depois que o usuário responder (a mensagem seguinte trará as respostas, tipicamente como ' +
-  '"Perguntas respondidas: ..."), gere o bloco `deck` completo usando essas respostas para ' +
-  'moldar seções, tom, idioma e número de slides:\n' +
-  '```prism-block\n{"type":"deck","title":"...","audience":"...","author":"...",' +
-  '"narrative":"...","slides":[{"layout":"...","kicker":"...","heading":"...",' +
-  '"subheading":"...","bullets":["..."],"body":"...","footnote":"...",' +
-  '"callout":{"kicker":"...","text":"..."},"notes":"..."}]}\n```\n' +
-  'Campos de nível de deck:\n' +
-  '- "audience" (recomendado): o texto EXATO que aparece no rodapé de todo slide, já escrito ' +
-  'no idioma do deck (ex.: "Preparado para o C-Level · Grupo Capitale", "Prepared for Murphy ' +
-  'USA") — extraia o cliente/empresa das respostas. "author" (opcional): quem apresenta/assina, ' +
-  'exibido na capa e no encerramento.\n' +
-  '- "narrative" (OBRIGATÓRIO): antes de escrever qualquer slide, decida o arco do deck em uma ' +
-  'linha (ex.: "contexto → problema → visão da solução → prova/comparação → business case → ' +
-  'plano → decisão"). Escreva os slides SEGUINDO esse arco: começo (por que estamos aqui), ' +
-  'meio (argumento com evidência), fim (resumo executivo + próximo passo concreto).\n\n' +
+  '"Perguntas respondidas: ..."), gere o deck completo usando essas respostas para moldar ' +
+  'seções, tom, idioma e número de slides. O FORMATO técnico do deck (o bloco a emitir e as ' +
+  'regras de composição) está descrito na seção "GERAÇÃO DE DECK (motor HTML)" mais abaixo — ' +
+  'esta seção cobre o CONTEÚDO e a qualidade editorial, que valem para qualquer slide.\n' +
+  '- Público/rodapé: capture o cliente/empresa-alvo das respostas e use-o no rodapé de todo ' +
+  'slide e na capa (ex.: "Preparado para o C-Level · Grupo Capitale", "Prepared for Murphy USA"), ' +
+  'já escrito no idioma do deck. Se o usuário indicou quem apresenta/assina, cite na capa e no ' +
+  'encerramento.\n' +
+  '- ARCO NARRATIVO (obrigatório): antes de escrever qualquer slide, decida o arco em uma linha ' +
+  '(ex.: "contexto → problema → visão da solução → prova/comparação → business case → plano → ' +
+  'decisão") e siga-o: começo (por que estamos aqui), meio (argumento com evidência), fim ' +
+  '(resumo executivo + próximo passo concreto).\n\n' +
 
   'DIMENSIONAMENTO: o número de slides segue o conteúdo e a duração pedida — nunca comprima ' +
   'um pedido denso em meia dúzia de slides. Referências: ~30 min executivos ≈ 18–24 slides; ' +
-  'cada seção temática pedida ≈ 1 divisor "section" + 2–4 slides de conteúdo; decks com 10+ ' +
-  'slides devem usar divisores "section" entre blocos e fechar com um resumo executivo ' +
-  '(layout "agenda" com itens de conclusão) antes do "closing".\n\n' +
+  'cada seção temática pedida ≈ 1 slide divisor + 2–4 slides de conteúdo; decks com 10+ slides ' +
+  'devem usar divisores entre blocos e fechar com um resumo executivo (3–5 conclusões ' +
+  'ranqueadas) antes do slide de encerramento.\n\n' +
 
   'COPYWRITING (o que separa um deck profissional de uma lista de tópicos):\n' +
-  '- O "heading" de um slide de conteúdo é a CONCLUSÃO do slide, não o assunto. Rótulos como ' +
+  '- O TÍTULO de um slide de conteúdo é a CONCLUSÃO do slide, não o assunto. Rótulos como ' +
   '"Principais vantagens" ou "Resultados" são proibidos; escreva a tese completa: ' +
   'RUIM: "Vantagens do Unity Catalog" → BOM: "Uma camada de governança substitui quatro ' +
   'ferramentas separadas". RUIM: "Cronograma" → BOM: "Go-live antes do fim do ano, com valor ' +
   'entregue em cada fase".\n' +
-  '- "kicker" (recomendado em todo slide de conteúdo e na capa): rótulo curto de categoria em ' +
-  'caixa alta implícita (ex.: "Business case", "Arquitetura alvo · Alto nível", "Contexto") — ' +
-  'ele orienta; o heading afirma.\n' +
-  '- "subheading" (opcional): uma frase de apoio em tom neutro sob o título.\n' +
+  '- Um "kicker" curto (rótulo de categoria em caixa alta, ex.: "Business case", "Contexto") ' +
+  'orienta acima do título; o título afirma. Uma frase de apoio neutra pode vir sob o título.\n' +
   '- Bullets com no máx. ~12 palavras, sempre afirmações (verbo + consequência), nunca ' +
   'fragmentos vagos. Use sentence case (nunca Title Case) em tudo.\n' +
-  '- "callout" (opcional, em qualquer layout de conteúdo): a banda escura de "so what" no pé ' +
-  'do slide — {kicker:"O padrão"/"Por que importa"/etc., text: a implicação em uma frase ' +
-  'forte}. Use quando o slide tem uma conclusão que não pode passar despercebida (1 a cada ' +
-  '2–3 slides de conteúdo, não em todos).\n' +
-  '- "footnote" (opcional): nota pequena em itálico no pé — OBRIGATÓRIA sempre que um número/' +
-  'meta for estimativa ilustrativa e não dado real desta conversa (ex.: "Illustrative target; ' +
-  'firm business case produced during discovery."). Honestidade explícita é parte do estilo.\n' +
-  '- "notes" (opcional, em qualquer layout): notas do apresentador; vão para o campo de notas ' +
-  'do PPTX, nunca aparecem no slide.\n\n' +
+  '- Um "so what" ancorado no pé (a implicação em uma frase forte) fecha os slides cuja ' +
+  'conclusão não pode passar despercebida — use em 1 a cada 2–3 slides de conteúdo, não em todos.\n' +
+  '- Sempre que um número/meta for estimativa ilustrativa (não dado real desta conversa), ' +
+  'marque com uma nota de rodapé explícita no slide (ex.: "Illustrative target; firm business ' +
+  'case produced during discovery."). Honestidade explícita é parte do estilo.\n\n' +
 
-  '=== LAYOUTS DISPONÍVEIS (blocos de construção combináveis — NÃO é um roteiro fixo de ' +
-  'seções; escolha o layout pela MENSAGEM do slide, e varie: dois slides "bullets" seguidos é ' +
-  'sinal de layout errado) ===\n' +
-  '- "title": capa — {kicker (ex.: "Proposta de migração"), heading, subheading (1 frase de ' +
-  'valor, cite o cliente)}. "section": divisor numerado automaticamente — {heading, ' +
-  'subheading?}. "closing": encerramento — heading como call-to-action concreto, não "Obrigado".\n' +
-  '- "bullets": {heading,body?,bullets} — só para conteúdo realmente sequencial/argumentativo. ' +
-  '"two-column": idem dividido em duas colunas. "quote": {body (citação), heading (autor)}.\n' +
-  '- "agenda": {heading,items:[{title,body?}]} — lista editorial numerada: roteiro no início ' +
-  'E/OU resumo executivo no fim (3–5 conclusões ranqueadas com uma linha de apoio cada).\n' +
-  '- "cards": {heading,cards:[{iconRef?,heading,body?}]} (até 6, ideal 3) — N ideias paralelas ' +
-  'do mesmo nível (motivos, capacidades, dores, pilares).\n' +
-  '- "stat-grid": {heading,stats:[{iconRef?,value,label?}]} (até 4) — KPIs/números de impacto. ' +
-  '"value" é SÓ o número/sigla (máx. ~12 caracteres: "25%", "3–5×", "R$ 2M" — nunca uma frase); ' +
-  'o contexto vai no label (frase curta). Citações de fonte NUNCA vão no label — fontes e ' +
-  'ressalvas vão na "footnote" do slide.\n' +
-  '- "comparison": {heading,leftTitle,rightTitle,leftBullets,rightBullets} — antes/depois, ' +
-  'hoje/alvo; o lado direito é sempre o estado proposto (ganha destaque visual automático).\n' +
-  '- "table": {heading,columns,rows} — matriz de dados. Para comparação de capacidades use ' +
-  'a variante de matriz de níveis: {columns:["Capacidade","Opção A","Nossa opção"], rows:[' +
-  '["SQL & BI","partial","full"]], cellStyle:"level", highlightColumn:2} — células "full"/' +
-  '"partial"/"none" viram indicadores visuais (●◑○) e highlightColumn destaca a coluna ' +
-  'vencedora. MUITO mais forte que "comparison" para 4+ critérios.\n' +
-  '- "timeline": {heading,phases:[{iconRef?,label,period?,body?}]} (até 5) — roadmap/fases.\n' +
-  '- "diagram": arquitetura/fluxo de sistemas — {heading, columns:[{label,items:[{label,' +
-  'iconRef?}]} para trilhas laterais (fontes, consumidores), {label,sublabel?,emphasis:true,' +
-  'bands:[{label,tone:"accent"?}]} para a plataforma/produto central]} (2–4 colunas; setas ' +
-  'automáticas). Use SEMPRE que a mensagem for "como as peças se conectam" — é o slide que ' +
-  'mais transmite competência técnica em propostas de dados/plataforma; a banda de governança/' +
-  'destaque leva tone:"accent".\n' +
-  '- "chart": {heading,chartRef:"candidate_N"} — visualize dados REAIS já disponíveis nesta ' +
-  'conversa (mesmos IDs candidate_N usados no restante do chat). Use SOMENTE se um candidato ' +
-  'real existir; nunca invente uma série de números para este layout — se não houver dado real ' +
-  'disponível, não use "chart".\n' +
-  '- "image": {heading,subheading (legenda),imageRef?,diagramRef?} — quando uma foto/diagrama/' +
-  'screenshot real comunicaria melhor que texto. Se o design system ativo listar imagens reais ' +
-  '(lista de `imageRef` abaixo, quando houver), use o id de uma que combine DE VERDADE com o ' +
-  'slide; se listar diagramas minerados (`diagramRef`), use o id de um cujo rótulo corresponda ' +
-  'ao assunto — ele é redesenhado em vetor com a identidade do tema. Imagens com marca d\'água ' +
-  'são PROIBIDAS em qualquer slide (as listas abaixo já vêm filtradas — nunca contorne isso). ' +
-  'Sem asset adequado, deixe sem imagem — você não consegue gerar a imagem em si, e o usuário ' +
-  'pode subir uma depois no Estúdio de Slides; use `body`/`notes` para descrever o que deveria ' +
-  'aparecer ali.\n' +
-  'ÍCONES (em itens de cards/stat-grid/timeline/diagram — NUNCA emoji, a marca não usa emoji):\n' +
-  '- `iconRef` (preferido): referencia UM ícone real do design system ativo pelo id (lista ' +
-  'abaixo, quando houver). Só use um id que exista na lista e que realmente combine com o item; ' +
-  'nunca repita o mesmo ícone em itens diferentes do mesmo slide.\n' +
-  '- `icon` (fallback neutro): quando não houver ícone real adequado, use um pictograma neutro ' +
-  'embutido, escolhido semanticamente entre estes nomes de ícones built-in. Ele é desenhado em linha fina na cor de destaque do tema — discreto e elegante em qualquer ' +
-  'marca. Em cards e timeline, usar `icon` em todos os itens (sem repetir nomes no mesmo slide) ' +
-  'deixa o slide visivelmente mais rico; se nenhum nome combinar, omita — um item sem ícone é ' +
-  'normal e preferível a um ícone forçado.\n\n' +
+  'VARIEDADE DE COMPOSIÇÃO: escolha a forma de cada slide pela MENSAGEM dele, e varie — dois ' +
+  'slides de bullets seguidos é sinal de composição preguiçosa. Repertório do que compõe um deck ' +
+  'forte (materialize cada um em HTML, seguindo o motor descrito abaixo):\n' +
+  '- capa com kicker + título de valor citando o cliente; divisores entre seções; encerramento ' +
+  'com um call-to-action concreto (nunca "Obrigado");\n' +
+  '- grade de 2–4 cards para ideias paralelas (pilares, capacidades, dores); faixa de 2–4 ' +
+  'métricas grandes para KPIs (o número em destaque, o contexto em legenda curta);\n' +
+  '- matriz de comparação para "antes/depois", "nós vs. eles" ou trade-offs de 4+ critérios ' +
+  '(muito mais forte que duas listas lado a lado); linha do tempo para roadmap/fases;\n' +
+  '- diagrama de arquitetura/fluxo (colunas de nós ligadas por setas, com a plataforma central ' +
+  'em destaque) SEMPRE que a mensagem for "como as peças se conectam" — é o slide que mais ' +
+  'transmite competência técnica em propostas de dados/plataforma;\n' +
+  '- gráfico APENAS de dados REAIS desta conversa (pedido, respostas, anexos, resultados de ' +
+  'tools, candidatos candidate_N). Números ilustrativos só com nota de estimativa no slide; ' +
+  'nunca invente uma série apresentada como dado real. Sem dados completos, prefira uma ' +
+  'afirmação clara em texto a um gráfico vazio.\n\n' +
 
-  '=== LAYOUT LIVRE: "freeform" (canvas de elementos) ===\n' +
-  'Além dos layouts acima, você pode desenhar QUALQUER composição com ' +
-  '{layout:"freeform", background:{color:"@background"}, notes?, elements:[...]}. Use freeform ' +
-  'quando (a) o usuário descrever um layout específico que os layouts semânticos não expressam, ' +
-  '(b) a mensagem pedir uma composição sob medida (infográfico, gráfico com painel lateral de ' +
-  'conclusões, matriz/heatmap, cronograma gantt, capa fora do padrão), ou (c) um layout ' +
-  'semântico ficaria forçado. Para slides comuns (bullets, cards, timeline, capa padrão), os ' +
-  'layouts semânticos são um caminho seguro — MAS quando o design system ativo tiver uma ' +
-  'linguagem de composição própria (ver a seção "LINGUAGEM DE COMPOSIÇÃO DESTE DESIGN SYSTEM", ' +
-  'quando presente), prefira freeform e componha para essa marca: layouts semânticos deixam ' +
-  'todo deck com a mesma cara, mudando só cor/logo/fundo. Sem essa seção (design system só de ' +
-  'cores), fique nos semânticos e não gere o deck inteiro em freeform por estilo.\n' +
-  'Canvas: 10.00 × 5.625 polegadas (16:9), margem recomendada 0.62, box em polegadas ' +
-  '{x,y,w,h}. Máximo 80 nós por slide. Tipos de elemento (todos aceitam name — rótulo da ' +
-  'camada no editor — e os elementos exportam como objetos NATIVOS e editáveis do PowerPoint):\n' +
-  '- text: {type:"text",box,text,style:{fontRole:"heading"|"body",fontSize,color,bold,italic,' +
-  'uppercase,align:"left|center|right",valign:"top|middle|bottom",lineHeight,letterSpacing,' +
-  'bullet:true ("\\n" separa itens)}}\n' +
-  '- shape: {type:"shape",shape:"rect|roundRect|ellipse|triangle|diamond|chevron|rightArrow",' +
-  'box,style:{fill,radius,borderColor,borderWidth,opacity(0-100),shadow:true}}\n' +
-  '- line: {type:"line",box (h:0 = horizontal, w:0 = vertical),style:{lineColor,lineWidth,' +
-  'dash:"solid|dash|dot",arrowStart,arrowEnd}}\n' +
-  '- icon: {type:"icon",box,icon:{assetId:"<id de iconRef>"} ou {builtin:"<pictograma da lista ' +
-  'acima>"},style:{fill (placa de fundo),color}}. O box do ícone é SEMPRE quadrado (w=h) e nunca ' +
-  'menor que ~0.4in — em um card, um ícone de destaque tem 0.5–0.8in; nunca 0.2–0.3in (some no slide). ' +
-  'Com placa (fill), 0.7–0.9in.\n' +
-  '- image: {type:"image",box,imageAssetId:"<id de imageRef>"} — só assets listados.\n' +
-  '- chart: ver a seção de gráficos abaixo.\n' +
-  '- group: {type:"group",box,name,children:[...],stack?,style?} — style com fill/radius/' +
-  'borderColor desenha um painel atrás dos filhos (é assim que se faz um card).\n' +
-  'REGRAS DE OURO:\n' +
-  '0. TODAS as medidas são em POLEGADAS (nunca px!): box no canvas 10×5.625; fontSize é a única ' +
-  'exceção (pontos). Valores típicos: radius 0.05–0.12 (cantos de card; acima de 0.3 vira pílula), ' +
-  'gap 0.08–0.3, padding 0.15–0.3, borderWidth 0.5–1.5 (pt). Se você escreveria "16px", em ' +
-  'polegadas é ~0.17.\n' +
-  '1. NUNCA posicione itens repetidos calculando coordenadas à mão — componha com group+stack: ' +
-  'stack:{direction:"column"|"row",gap,padding,align:"start|center|end|stretch",justify:' +
-  '"start|center|end|between"} posiciona os filhos automaticamente. Em um stack, x/y dos ' +
-  'filhos são ignorados; a ALTURA de textos é automática (hug — nunca a calcule); grow:1 em um ' +
-  'filho absorve o espaço restante (uma linha de 3 cards iguais = 3 groups com grow:1 dentro ' +
-  'de um stack row). Stacks aninham até 4 níveis.\n' +
-  '2. Cores SEMPRE como tokens do tema (o slide continua se re-adaptando ao design system): ' +
-  '@primary @secondary @accent @background @heading @bodyText @muted @faint @hairline ' +
-  '@accentSoft @cardFill @deep @onPrimary @onAccent @onPrimaryMuted @onPrimaryFaint @accentOnPrimary. ' +
-  'Sobre fundo @primary/@deep, textos usam @onPrimary/@onPrimaryMuted; um kicker/rótulo de ' +
-  'destaque nesse fundo escuro usa @accentOnPrimary (NUNCA @accent cru — em alguns temas o accent ' +
-  'é igual ao primary e sumiria). Sobre @background, ' +
-  '@heading/@bodyText/@muted. Cards: fill @cardFill + borderColor @hairline; destaque: ' +
-  '@accentSoft ou @accent. Hex literal só se o usuário pedir uma cor específica.\n' +
-  '3. Siga a hierarquia tipográfica do deck: kicker 10pt bold uppercase letterSpacing 2.4 ' +
-  '@accent; título do slide ~21pt bold @heading no topo; corpo 10–13pt; legendas 8–9pt; nunca ' +
-  'abaixo de 7.5pt. Respeite as margens e alinhe elementos entre si (mesmos x/y/w quando ' +
-  'lado a lado).\n\n' +
-
-  '=== GRÁFICOS EM FREEFORM: escolha o tipo pela mensagem do insight ===\n' +
-  'O elemento chart cria gráficos reais: {type:"chart",box,chart:{kind,...}}.\n' +
-  '- Comparação entre categorias → kind:"bar"; ranking/rótulos longos → "barH". Evolução ' +
-  'temporal → "line"; magnitude acumulada no tempo → "area". Composição do todo → "pie" ou ' +
-  '"doughnut" (máx. 6 fatias). Correlação entre duas variáveis → "scatter". Intensidade em ' +
-  'matriz (ex.: uso por área × mês, risco × impacto) → "heatmap". Cronograma/fases no tempo → ' +
-  '"gantt". Nunca escolha por variedade estética — escolha pelo que torna o insight óbvio.\n' +
-  '- bar/barH/line/area/pie/doughnut: chart:{kind,series:[{name,data:[{label,value}]}]} ' +
-  '(até 6 séries; showLegend:false para esconder legenda de série única).\n' +
-  '- scatter: chart:{kind:"scatter",series:[{name,points:[{x,y}]}]}.\n' +
-  '- heatmap: chart:{kind:"heatmap",heatmap:{xLabels:[...],yLabels:[...],values:[[linha por ' +
-  'yLabel]],showValues?}}.\n' +
-  '- gantt: chart:{kind:"gantt",gantt:{tasks:[{label,start,end,milestone?}],axis:["M1","M2",' +
-  '...]}} — start/end na unidade dos segmentos de axis (ex.: meses 0–6 com axis de 6 rótulos).\n' +
-  'bar/barH/line/area/pie/doughnut/scatter exportam como gráficos NATIVOS do PowerPoint ' +
-  '(dados editáveis lá); heatmap/gantt são desenhados como objetos vetoriais igualmente ' +
-  'editáveis. Combine o chart com um painel lateral/inferior de conclusões (group+stack) — um ' +
-  'gráfico sem "so what" é um slide fraco.\n' +
-  'HONESTIDADE DE DADOS: as séries só podem conter números presentes nesta conversa (pedido, ' +
-  'respostas, anexos, resultados de tools, candidatos candidate_N). Números ilustrativos são ' +
-  'permitidos SOMENTE com footnote/nota explícita de estimativa no próprio slide. NUNCA ' +
-  'invente séries apresentadas como dado real. Quando um candidato candidate_N já existir, o ' +
-  'layout semântico "chart" com chartRef continua sendo o caminho preferido.\n\n' +
-
-  '=== NUNCA GERE UM ELEMENTO/SLIDE VAZIO (regra dura) ===\n' +
-  'Um slide freeform SEMPRE tem que ter conteúdo textual ou visual real. Um group/placa sem ' +
-  'filhos com conteúdo é PROIBIDO — o editor mostraria "Grupo · 0" e o slide sairia em branco. ' +
-  'Cada tipo de elemento só é válido com seus campos obrigatórios; sem eles, o elemento é ' +
-  'DESCARTADO na validação (e o slide pode ficar vazio):\n' +
-  '- text: "text" não-vazio. shape: "shape" válido. icon: "icon" (assetId/builtin) válido.\n' +
-  '- chart bar/barH/line/area/pie/doughnut: "series" com ≥1 série e ≥1 ponto {label,value} com ' +
-  'value NUMÉRICO.\n' +
-  '- chart scatter: "series" com ≥1 "points":[{x,y}] numéricos.\n' +
-  '- chart heatmap: "heatmap" com "xLabels" (≥1), "yLabels" (≥1) e "values" (matriz yLabels×' +
-  'xLabels de números). NUNCA emita heatmap sem "values".\n' +
-  '- chart gantt: "gantt" com "tasks":[{label,start,end}] (≥1, start/end numéricos) e "axis".\n' +
-  '- line: "box" com w/h explícitos. group: ≥1 filho com conteúdo.\n' +
-  'SE VOCÊ NÃO TEM OS DADOS COMPLETOS PARA UM GRÁFICO, NÃO EMITA O CHART — escreva a conclusão ' +
-  'em "text" ou componha o que você tem em shape/group. Na dúvida sobre números, prefira ' +
-  'text/shape a um chart: um gráfico sem dados é pior que uma afirmação clara.\n\n' +
-
-  'Nunca envie outro texto além do bloco correspondente (`deck-questions` ou `deck`) quando o ' +
-  'pedido for especificamente por uma apresentação — o Estúdio de Slides cuida da renderização ' +
-  'e o usuário poderá editar tudo antes de exportar para PPTX.'
+  'Nunca envie outro texto além do bloco correspondente (`deck-questions` na Etapa 1, ou o bloco ' +
+  'de deck da Etapa 2) quando o pedido for especificamente por uma apresentação — o Estúdio de ' +
+  'Slides cuida da renderização e o usuário poderá editar tudo antes de exportar para PPTX.'
 
 // Spreadsheet generation: the tabular sibling of a deck. Emitted as a
 // `spreadsheet` prism-block, rendered as a live-preview grid in the chat and
@@ -592,7 +452,7 @@ function templateComposition(template) {
     const feel = ratio >= 3 ? 'DRAMÁTICA (títulos enormes, slides arejados, muito espaço em branco)'
       : ratio >= 2 ? 'equilibrada (títulos claramente dominantes, densidade média)'
       : 'sóbria/densa (contraste tipográfico baixo, muita informação por slide)'
-    lines.push(`- Personalidade tipográfica ${feel}: título ~${Math.round(mined.titlePt)}pt vs corpo ~${Math.round(mined.bodyPt)}pt no canvas de 10in. Respeite essa proporção nos slides freeform.`)
+    lines.push(`- Personalidade tipográfica ${feel}: título ~${Math.round(mined.titlePt)}pt vs corpo ~${Math.round(mined.bodyPt)}pt. Respeite essa proporção de contraste no CSS dos slides.`)
   }
 
   // the DS's OWN slides (mined structures) — the strongest signal of how this
@@ -632,71 +492,22 @@ function templateComposition(template) {
     )
   }
 
-  // decorative identity — the ACTUAL mined assets, WITH ids, so the model
-  // places the real brand art (a `type:"image"` element with imageAssetId)
-  // instead of inventing generic circles/blobs. Without the ids the model has
-  // nothing to reference and falls back to drawing ellipses — the exact bug
-  // seen on covers/closings. Illustrations are NOT in usableImageAssets (that
-  // gate is for `image`-layout photos), so they're surfaced here explicitly.
-  const illustrations = (template.iconAssets || []).filter((a) => a.kind === 'illustration')
-  if (illustrations.length) {
-    lines.push(
-      '- ILUSTRAÇÕES REAIS da marca (a arte decorativa do design system) — em capas, divisores e ' +
-      'encerramentos, coloque UMA como elemento {type:"image", imageAssetId:"<id>", box} no canto/lateral ' +
-      '(tipicamente ~2–2.5in, encostada na margem). NUNCA desenhe círculos/elipses/blobs decorativos à ' +
-      'mão como substituto — isso destrói a identidade da marca. Ids disponíveis:\n' +
-      illustrations.slice(0, 12).map((a) => `  · ${a.id}: "${a.label || 'ilustração'}"`).join('\n')
-    )
-  }
-  if (mined.motif) lines.push('- Há também um motivo decorativo próprio (padrão de pontos/formas) — pode ser reproduzido discretamente em fundos.')
-  if (template.coverPlateDataUrl) lines.push('- Há uma placa de capa full-bleed — capas/divisores podem usar background {plate:"cover"} para trazê-la.')
-
   if (!lines.length) return ''
   return (
     '\n\n=== LINGUAGEM DE COMPOSIÇÃO DESTE DESIGN SYSTEM (adeque os slides a ELE) ===\n' +
     'Este design system tem uma identidade visual PRÓPRIA. Um deck genérico repintado com as ' +
     'cores dele NÃO basta — a COMPOSIÇÃO (hierarquia, densidade, onde vai o espaço em branco, ' +
-    'como os elementos se agrupam) precisa parecer nativa desta marca. Como só você controla a ' +
-    'composição, prefira slides "freeform" (canvas de elementos) para materializar essa ' +
-    'linguagem, guiando-se por estas características mineradas do próprio design system:\n' +
+    'como os elementos se agrupam) precisa parecer nativa desta marca. Guie-se por estas ' +
+    'características mineradas do próprio design system, reproduzindo-as no HTML que flui:\n' +
     lines.join('\n') +
-    '\nUse SEMPRE tokens @tema (nunca hex) para que a composição continue re-adaptável. Componha ' +
-    'com group+stack (auto-layout) — jamais chutando coordenadas item a item.' +
-    '\n\nDIRETRIZ (design system com identidade própria): o padrão para ESTE deck é "freeform". ' +
-    'Gere a MAIORIA dos slides como freeform, compondo com group+stack para refletir as ' +
-    'composições reais do design system acima — capa, divisores e slides de conteúdo. Só use um ' +
-    'layout semântico (bullets/cards/stat-grid/...) quando ele já reproduzir exatamente a ' +
-    'composição desejada; se você gerar o deck inteiro em layouts semânticos, está ignorando a ' +
-    'identidade do design system e o resultado será genérico. Cada slide freeform deve ter ' +
-    'hierarquia clara (kicker + título afirmativo no topo, corpo composto abaixo), respeitar a ' +
-    'margem de 0.62in e a proporção tipográfica indicada, e nunca deixar elementos sobrepostos ou ' +
-    'fora do canvas.' +
-    '\n\nDECORAÇÃO — regra dura: NUNCA invente formas decorativas (círculos, elipses, "blobs", ' +
-    'anéis) para preencher espaço numa capa/divisor/encerramento. Ou você usa uma ILUSTRAÇÃO REAL ' +
-    'da marca (elemento image com imageAssetId de um id listado acima), ou o background {plate:...}, ' +
-    'ou deixa o espaço limpo. Um shape ellipse/rect só é válido quando é peça funcional da composição ' +
-    '(placa de card, node de um diagrama, barra) — jamais como enfeite genérico. Espaço em branco ' +
-    'intencional é mais elegante que um enfeite inventado.' +
-    '\n\nCOMPLETUDE — cada slide freeform tem que sair CHEIO de conteúdo real (títulos, corpo, ' +
-    'cards, diagramas, números com fonte). Um slide com só um título ou só uma placa vazia é uma ' +
-    'falha. Se um elemento (ex.: um chart) não tem dados completos, substitua-o por text/shape ' +
-    'com o que você tem — nunca deixe um group/região sem conteúdo.' +
-    '\n\nDENSIDADE (calibre de deck profissional) — abaixo do título, a área de conteúdo (≈ y 1.5 ' +
-    'a 5.0, largura útil ~8.75in) deve ser preenchida com uma COMPOSIÇÃO estruturada, não um bloco ' +
-    'de texto solto. Prefira, conforme o conteúdo:\n' +
-    '  • grade de 2–4 cards (group+stack) cada um com ícone (icon do tema) + rótulo curto (heading) ' +
-    '+ 1 linha de apoio (body) — para benefícios, pilares, capacidades;\n' +
-    '  • faixa de 2–4 métricas grandes (número em fonte heading ~34–44pt + legenda pequena por ' +
-    'baixo) — para resultados/KPIs;\n' +
-    '  • diagrama multi-coluna (2–4 colunas de nodes em stack, com uma coluna central enfatizada e ' +
-    'setas/linhas ligando) — para arquiteturas e fluxos;\n' +
-    '  • matriz de comparação (linhas × colunas com cabeçalho destacado) — para "antes/depois", ' +
-    '"nós vs. eles", trade-offs.\n' +
-    'Distribua os blocos pela largura toda (não empilhe tudo numa coluna estreita à esquerda), ' +
-    'mantenha gaps/paddings consistentes entre os cards (auto-layout do stack) e alinhe as bordas. ' +
-    'Um callout curto (kicker + frase) ancorado num canto fecha a composição. Cada slide de ' +
-    'conteúdo deve ter tipicamente 6–14 elementos reais — poucos elementos num slide vazio é o ' +
-    'sintoma de output pobre que queremos evitar.'
+    '\n\nDENSIDADE (calibre de deck profissional) — abaixo do título, a área de conteúdo deve ser ' +
+    'preenchida com uma COMPOSIÇÃO estruturada (flexbox/grid), não um bloco de texto solto. ' +
+    'Prefira, conforme o conteúdo: grade de 2–4 cards (cada um com ícone REAL do DS + rótulo curto ' +
+    '+ 1 linha de apoio) para pilares/capacidades; faixa de 2–4 métricas grandes para KPIs; ' +
+    'diagrama multi-coluna ligado por setas para arquiteturas/fluxos; matriz de comparação para ' +
+    'trade-offs. Distribua os blocos pela largura toda, mantenha gaps/paddings consistentes e ' +
+    'alinhe as bordas. Cada slide de conteúdo deve sair CHEIO de conteúdo real — um slide com só um ' +
+    'título ou uma placa vazia é uma falha.'
   )
 }
 
@@ -734,35 +545,65 @@ function templateHint(template) {
       template.brandRules +
       '\n---'
   }
+  // === ASSETS REAIS DO DESIGN SYSTEM (motor HTML) ===
+  // Colors and fonts ride CSS tokens; raster/vector assets can't, so the model
+  // references a real DS asset by id via `<img data-ds-asset-id="ID">` (the
+  // renderer swaps in the brand's real inlined art — see client deckAssets.js).
+  // This is the ONLY correct way to place brand imagery in the pure-HTML engine.
   const icons = usableIconAssets(template)
-  if (icons.length) {
-    hint +=
-      '\nÍcones reais disponíveis neste design system (use o id em `iconRef` quando um combinar ' +
-      'bem com o item; nunca use emoji; logos/fotos/marcas d\'água do design system não são ' +
-      'ícones e não têm id listado aqui):\n' +
-      icons.slice(0, 30).map((a) => `- ${a.id}: "${a.label || 'ícone sem nome'}"`).join('\n')
-  } else {
-    hint += '\nEste design system não tem nenhum ícone real cadastrado — não use `iconRef` (e nunca emoji).'
-  }
+  const illustrations = (template.iconAssets || []).filter((a) => a.kind === 'illustration')
   const images = usableImageAssets(template)
-  if (images.length) {
+  const hasAnyAsset = icons.length || illustrations.length || images.length || template.logoDataUrl
+
+  if (hasAnyAsset) {
     hint +=
-      '\nImagens/fotos REAIS deste design system — em um slide de layout "image", use ' +
-      'o campo `imageRef` com um destes ids para inserir o asset de verdade (só quando o rótulo ' +
-      'indicar claramente que a imagem combina com o slide; rótulos genéricos como "Imagem 3" ' +
-      'não dizem nada — nesse caso não use). Nunca use uma imagem que contenha marca d\'água:\n' +
-      images.slice(0, 12).map((a) => `- ${a.id}: "${a.label || 'sem rótulo'}"`).join('\n')
+      '\n\n=== ATIVOS VISUAIS REAIS DESTE DESIGN SYSTEM ===\n' +
+      'Para inserir um ativo REAL da marca (ícone, ilustração/motivo, imagem, logo) num slide, ' +
+      'use uma tag `<img data-ds-asset-id="ID">` com um dos ids abaixo — o renderizador substitui ' +
+      'pelo asset de verdade. Controle o tamanho/posição com CSS (width/height/etc.) como em ' +
+      'qualquer <img>. NUNCA escreva `src="..."` você mesmo nem invente um id fora desta lista ' +
+      '(um id inexistente some do slide). Ícones/ilustrações do DS NÃO são emoji — a marca nunca ' +
+      'usa emoji.'
+    if (template.logoDataUrl) {
+      hint += '\n• LOGO da marca: `<img data-ds-logo>` — use na capa e no encerramento (nunca em todo slide).'
+    }
+    if (icons.length) {
+      hint +=
+        '\n• ÍCONES de produto/conceito (para itens de cards, KPIs, listas — um por item, sem ' +
+        'repetir no mesmo slide; só use o id cujo rótulo REALMENTE combine com o item):\n' +
+        icons.slice(0, 40).map((a) => `  - ${a.id}: "${a.label || 'ícone sem nome'}"`).join('\n')
+    }
+    if (illustrations.length) {
+      hint +=
+        '\n• ILUSTRAÇÕES / MOTIVOS decorativos da marca (a arte gráfica do DS — ex.: padrões nodais) ' +
+        '— em capas, divisores e encerramentos, coloque UMA num canto/lateral (tipicamente ' +
+        '~300–420px) para dar identidade. Use o motivo ORIGINAL do design system; só componha um ' +
+        'motivo novo se o usuário pedir explicitamente. Ids disponíveis:\n' +
+        illustrations.slice(0, 12).map((a) => `  - ${a.id}: "${a.label || 'ilustração'}"`).join('\n')
+    }
+    if (images.length) {
+      hint +=
+        '\n• IMAGENS/FOTOS reais do DS (só quando o rótulo indicar claramente que combina com o ' +
+        'slide; rótulos genéricos como "Imagem 3" não dizem nada — nesse caso não use):\n' +
+        images.slice(0, 12).map((a) => `  - ${a.id}: "${a.label || 'sem rótulo'}"`).join('\n')
+    }
+  } else {
+    hint += '\n\nEste design system não cadastrou ícones/ilustrações reais — não use `<img data-ds-asset-id>` (não há ids) e NUNCA use emoji.'
   }
-  const diagrams = (template.minedStyle?.diagrams || []).filter((d) => d?.id)
-  if (diagrams.length) {
-    hint +=
-      '\nDiagramas vetoriais REAIS minerados dos slides deste design system — em um slide de ' +
-      'layout "image", use o campo `diagramRef` com um destes ids para reproduzir o diagrama ' +
-      'original (redesenhado em vetor, com as fontes do tema). Prefira um destes quando o ' +
-      'assunto do slide corresponder ao rótulo; para arquiteturas novas que não existem no ' +
-      'design system, use o layout "diagram" normal:\n' +
-      diagrams.slice(0, 8).map((d) => `- ${d.id}: "${d.label || 'diagrama sem rótulo'}"`).join('\n')
-  }
+
+  // Hard anti-invention rule — the reported bug (#4/#5): the model invents its
+  // own SVG icons/motifs instead of using the DS's real assets. Applies whether
+  // or not the DS is "rich".
+  hint +=
+    '\n\nDECORAÇÃO E ÍCONES — regra dura: o comportamento PADRÃO é usar os ativos REAIS do design ' +
+    'system acima (via `<img data-ds-asset-id>`). NUNCA invente ícones, logos ou motivos ' +
+    'decorativos desenhando SVG/CSS próprios (círculos, elipses, "blobs", grades de pontos, ' +
+    'lockups falsos) como substituto de um asset da marca — isso destrói a identidade visual. ' +
+    'Se nenhum asset real combinar com o que o slide precisa, deixe o espaço limpo: espaço em ' +
+    'branco intencional é mais elegante que um enfeite inventado. Criação livre de um ícone/motivo ' +
+    'novo só é permitida se o usuário pedir EXPLICITAMENTE. (SVG inline continua correto para ' +
+    'GRÁFICOS de dados — barras, linhas, pizza — que são conteúdo, não decoração de marca.)'
+
   // the composition brief goes last so it sits closest to where the model
   // starts generating — the freshest, most actionable guidance for a rich DS
   hint += templateComposition(template)
@@ -808,6 +649,27 @@ const IMAGE_INTENT_RE = { test: (t) => IMAGE_CREATE_VERB.test(t) && IMAGE_NOUN.t
 const DOC_CREATE_VERB = /\b(escrev\w+|redij\w+|redig\w+|elabor\w+|crie|criar|gere?|gerar|produz\w+|prepar\w+|monte|montar|rascunh\w+|write|draft|compose|create|generate|prepare|author)\b/i
 const DOC_NOUN = /\b(documento|documentos|relat[óo]rios?|artigos?|texto|textos|ensaios?|carta|cartas|ofício|memorando|memorandos|proposta|propostas|contrato|contratos|pol[íi]tica|pol[íi]ticas|manual|manuais|especifica[çc][ãa]o|readme|whitepaper|white\s*paper|briefing|document|documents|reports?|articles?|essays?|letters?|memo|memos|proposals?|contracts?|policy|policies|specs?|specifications?)\b/i
 const DOC_INTENT_RE = { test: (t) => DOC_CREATE_VERB.test(t) && DOC_NOUN.test(t) }
+
+// Signals that the user wants THEIR OWN workspace/company data — the only thing
+// the company-data tools (Genie One / Genie Spaces / UC functions / vector
+// search) are for. Two families: possessives that scope to the user's org
+// ("nossa receita", "our sales") and business-data nouns whose answer plausibly
+// lives in internal tables (revenue, pipeline, churn, inventory…). Deliberately
+// broad: a false positive just leaves the tools attached (prior behavior), while
+// a false negative would strip a tool a data-grounded deck genuinely needed.
+const DATA_POSSESSIVE = /\b(nosso?s?|nossas?|minha?s?|meu?s?|da\s+(minha\s+)?empresa|do\s+(meu\s+)?neg[óo]cio|na\s+(nossa\s+)?base|our|my|company'?s|internal)\b/i
+const DATA_NOUN = /\b(receita|faturamento|vendas?|revenue|sales|pipeline|clientes?|customers?|churn|arr|mrr|ltv|cac|estoque|invent[áa]rio|inventory|m[ée]tricas?|metrics?|kpis?|indicadores?|consumo|usage|transa[çc][õo]es|transactions?|pedidos?|orders?|leads?|oportunidades?|opportunities|assinaturas?|subscriptions?|tabelas?\s+(do|de)|unity\s*catalog|genie|data\s*warehouse|datamart|dashboards?|relat[óo]rio\s+de\s+(vendas|receita|consumo))\b/i
+// The user is asking about their own data when a possessive scopes a data noun,
+// OR a strong business-data noun appears at all (revenue/pipeline/etc. almost
+// never mean anything but the user's numbers here). Bare "dados"/"data" is too
+// generic to count on its own — it needs a possessive.
+const GENERIC_DATA = /\b(dados|data)\b/i
+export function hasDataIntent(userText) {
+  const t = String(userText || '')
+  if (DATA_NOUN.test(t)) return true
+  if (DATA_POSSESSIVE.test(t) && GENERIC_DATA.test(t)) return true
+  return false
+}
 
 function historyHasBlock(history, types) {
   for (const m of history || []) {
@@ -858,7 +720,19 @@ export function detectCapabilities(userText, history, opts = {}) {
   const spreadsheet = sticky(spreadsheetIntent, ['spreadsheet'])
   const image = sticky(imageIntent, ['image'])
   const document = sticky(documentIntent, ['document'])
-  return { deck, spreadsheet, pptxAdjust, image, document }
+  // Company-data tools (Genie One / Genie Spaces / UC / vector search) are for
+  // answering with the user's OWN workspace data. On a turn whose whole point is
+  // generating an artifact (deck/spreadsheet/document/image) and that shows no
+  // sign of needing internal data, those tools are pure risk: the model reaches
+  // for Genie One "just in case" (the reported bug — a spurious connectivity
+  // probe before an institutional deck), adding latency and confusing the user.
+  // Suppress them on such turns. A turn that DOES want data (possessive + data
+  // noun, or a business-data noun) keeps them, even while making a deck — a
+  // data-grounded deck is legitimate. A plain chat turn (no artifact intent)
+  // always keeps them; the tool description handles the general-knowledge case.
+  const artifactOnly = (deck || spreadsheet || image || document) && !hasDataIntent(text)
+  const suppressDataTools = artifactOnly
+  return { deck, spreadsheet, pptxAdjust, image, document, suppressDataTools }
 }
 
 // The product's built-in capabilities, surfaced as read-only "system skills":

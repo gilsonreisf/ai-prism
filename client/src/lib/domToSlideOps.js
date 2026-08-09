@@ -9,6 +9,8 @@
 // Coordinates are in px on the fixed 1280×720 stage; the server scales to the
 // 10×5.625in canvas. Everything stays editable in PowerPoint.
 
+import { resolveDeckAssets, DECK_ASSET_FALLBACK_CSS } from './deckAssets.js'
+
 const STAGE_W = 1280
 const STAGE_H = 720
 // px (on the 1280-wide stage) → points on the 10in-wide pptx canvas:
@@ -414,7 +416,8 @@ function exportSrcDoc(sectionHtml, tokenStyle) {
   return `<!doctype html><html><head><meta charset="utf-8">
 <style data-ds-tokens>${tokenStyle}</style>
 <style>html,body{margin:0;padding:0;width:${STAGE_W}px;height:${STAGE_H}px;overflow:hidden;background:var(--background,#fff);font-family:var(--font-body,var(--font-sans,system-ui));}
-section.slide,section{box-sizing:border-box;width:${STAGE_W}px;height:${STAGE_H}px;position:relative;overflow:hidden;}</style>
+section.slide,section{box-sizing:border-box;width:${STAGE_W}px;height:${STAGE_H}px;position:relative;overflow:hidden;}
+${DECK_ASSET_FALLBACK_CSS}</style>
 </head><body>${sectionHtml || ''}</body></html>`
 }
 
@@ -422,10 +425,14 @@ section.slide,section{box-sizing:border-box;width:${STAGE_W}px;height:${STAGE_H}
 // webfonts, and extracts native paint-ops. Returns [{w,h,ops}] for the server.
 // `tokenStyleBuilder` builds the DS token CSS (buildDeckTokenStyle from
 // HtmlSlideFrame) so brand vars resolve exactly as on screen.
-export async function extractOpsFromSlides(slidesHtml, tokenStyleBuilder, { fontMode = 'universal' } = {}) {
+export async function extractOpsFromSlides(slidesHtml, tokenStyleBuilder, { fontMode = 'universal', assetMap = null } = {}) {
   const tokenStyle = typeof tokenStyleBuilder === 'function' ? tokenStyleBuilder() : tokenStyleBuilder || ''
   const out = []
   for (const html of slidesHtml || []) {
+    // resolve DS asset placeholders to the brand's real inlined art so a
+    // referenced icon/illustration/logo exports as a native picture (an
+    // unresolved id collapses via DECK_ASSET_FALLBACK_CSS instead of 404ing)
+    const resolved = assetMap ? resolveDeckAssets(html, assetMap) : html
     const frame = document.createElement('iframe')
     frame.setAttribute('sandbox', 'allow-same-origin')
     frame.style.cssText = `position:fixed;left:-99999px;top:0;width:${STAGE_W}px;height:${STAGE_H}px;border:0;visibility:hidden;`
@@ -433,7 +440,7 @@ export async function extractOpsFromSlides(slidesHtml, tokenStyleBuilder, { font
     try {
       await new Promise((resolve) => {
         frame.onload = resolve
-        frame.srcdoc = exportSrcDoc(html, tokenStyle)
+        frame.srcdoc = exportSrcDoc(resolved, tokenStyle)
       })
       const doc = frame.contentDocument
       const win = frame.contentWindow

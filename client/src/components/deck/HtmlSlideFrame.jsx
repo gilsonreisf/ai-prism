@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { buildDeckAssetMap, resolveDeckAssets, DECK_ASSET_FALLBACK_CSS } from '../../lib/deckAssets.js'
 
 // Pure-HTML deck engine (feat/deck-html-engine): render ONE model-authored
 // <section> slide as a scaled, sandboxed 1280×720 iframe with the design
@@ -70,6 +71,7 @@ function buildSrcDoc(sectionHtml, tokenStyle) {
   /* the slide fills the stage; the model's own section styles layer on top */
   section.slide,section{box-sizing:border-box;width:${STAGE_W}px;height:${STAGE_H}px;
     position:relative;overflow:hidden;}
+  ${DECK_ASSET_FALLBACK_CSS}
 </style>
 </head><body>${sectionHtml || ''}</body></html>`
 }
@@ -78,7 +80,11 @@ export default function HtmlSlideFrame({ html, template, title = 'slide', classN
   const wrapRef = useRef(null)
   const [scale, setScale] = useState(0.5)
   const tokenStyle = useMemo(() => buildDeckTokenStyle(template), [template])
-  const srcDoc = useMemo(() => buildSrcDoc(html, tokenStyle), [html, tokenStyle])
+  // resolve DS asset placeholders (data-ds-asset-id / data-ds-logo) to the
+  // brand's real inlined art before painting — kept symbolic in the stored HTML
+  const assetMap = useMemo(() => buildDeckAssetMap(template), [template])
+  const resolvedHtml = useMemo(() => resolveDeckAssets(html, assetMap), [html, assetMap])
+  const srcDoc = useMemo(() => buildSrcDoc(resolvedHtml, tokenStyle), [resolvedHtml, tokenStyle])
 
   useEffect(() => {
     if (!wrapRef.current) return
