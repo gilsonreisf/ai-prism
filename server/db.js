@@ -1273,6 +1273,65 @@ const DATABRICKS_PRESET = {
     'Tom confiante e direto, como um colega experiente, não um vendedor. Frases curtas, sentence case (nunca Title Case), sem emojis. Fundos quentes (oat), acentos em coral/lava — nunca gradientes azul/roxo de SaaS genérico.',
 }
 
+// Extract a lean, self-contained "first slide" from a Templates-group specimen
+// for the Settings grid thumbnail. A template card is a whole multi-slide deck
+// (a <deck-stage> web component wrapping N <div class="slide">…</div>), often
+// hundreds of KB with an inline runtime + external <script src> that 404s in a
+// srcdoc. The grid only needs slide 1 as a static picture — so we keep the
+// document's <style> blocks (layout + brand type) and the FIRST `.slide`
+// element, drop every <script> (a plain div needs no runtime), strip embedded
+// webfonts (the token CSS re-declares them from fontAssets) and squeeze
+// whitespace. Result is a few tens of KB that renders slide 1 exactly.
+// Returns '' when there's no recognizable slide (caller falls back to the
+// branded placeholder). Hard cap as a backstop against pathological input.
+const PREVIEW_CARD_CAP = 120_000
+function extractFirstTemplateSlide(html) {
+  if (typeof html !== 'string' || !html) return ''
+  const styles = (html.match(/<style[^>]*>[\s\S]*?<\/style>/gi) || []).join('')
+  // first element with a `slide` class — scan balanced <div> depth from its start
+  const start = /<div[^>]*class="[^"]*\bslide\b[^"]*"[^>]*>/i.exec(html)
+  if (!start) return ''
+  let i = start.index
+  let depth = 0
+  let j = i
+  const n = html.length
+  for (; j < n; ) {
+    if (html.startsWith('<div', j)) {
+      depth++
+      const gt = html.indexOf('>', j)
+      if (gt < 0) break
+      j = gt + 1
+    } else if (html.startsWith('</div>', j)) {
+      depth--
+      j += 6
+      if (depth === 0) break
+    } else {
+      j++
+    }
+  }
+  let slide = html.slice(i, j)
+  if (!slide) return ''
+  // The DS's base typography targets the <section> the <deck-stage> component
+  // wraps each slide in (e.g. `section{font-family:var(--font-sans)}`). We pull
+  // the bare `.slide` div out of that component, so wrap it back in a <section>
+  // — otherwise those inherited rules (font included) never match and the slide
+  // falls back to the browser default serif.
+  let out = `<!doctype html><html><head><meta charset="utf-8">${styles}<style>html,body{margin:0;padding:0;width:1280px;height:720px;overflow:hidden}section,.slide{width:1280px;height:720px;box-sizing:border-box}</style></head><body><section>${slide}</section></body></html>`
+  out = out
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    // embedded webfonts: redundant with the injected token CSS in the preview
+    .replace(/data:(?:font|application)\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, '')
+    // very large base64 rasters (rare full-bleed photos) → light neutral swatch;
+    // small SVGs (logo, nodal motif) stay so the cover still reads as the brand
+    .replace(/data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]{4000,}/gi,
+      'data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%221%22 height=%221%22><rect width=%221%22 height=%221%22 fill=%22%23e6e6e6%22/></svg>')
+    .replace(/>\s+</g, '><')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  if (out.length > PREVIEW_CARD_CAP) return ''
+  return out
+}
+
 function rowToTemplate(x) {
   return {
     id: String(x.id),
@@ -1302,6 +1361,8 @@ function rowToTemplate(x) {
     ...(x.ds_cards_meta !== undefined ? { dsCardsMeta: x.ds_cards_meta || [] } : {}),
     // list rows carry has-flags instead of the payloads (TEMPLATE_LIST_SELECT)
     ...(x.has_ds_cards !== undefined ? { hasDsCards: !!x.has_ds_cards, hasReadme: !!x.has_readme } : {}),
+    // first Templates deck's first slide (extracted + lean) for the grid thumbnail (list rows only)
+    ...(x.preview_card_html !== undefined ? { previewCardHtml: extractFirstTemplateSlide(x.preview_card_html) } : {}),
     // selection lives in user_template_selection (selected_by_user computed
     // via LEFT JOIN); rows fetched without the join fall back to the legacy flag
     isSelected: x.selected_by_user !== undefined ? !!x.selected_by_user : !!x.is_selected,
@@ -1343,6 +1404,18 @@ const templateListSelect = (renderAssets) => `
          (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                    'group', c->>'group', 'title', c->>'title', 'description', c->>'description')), '[]'::jsonb)
             FROM jsonb_array_elements(t.ds_cards) AS c) AS ds_cards_meta,
+         -- The FIRST deck in the Templates section for the Settings grid
+         -- thumbnail (the preview renderer, restored after the semantic-tree
+         -- engine was removed). 'Templates' is the group our importer assigns to
+         -- every multi-slide template deck (dsImport.js), regardless of the DS's
+         -- own naming — so this is positional ("first template deck"), not
+         -- name-matched. extractFirstTemplateSlide (rowToTemplate) pulls just its
+         -- first slide + styles so the payload stays small.
+         (SELECT c->>'html'
+            FROM jsonb_array_elements(t.ds_cards) WITH ORDINALITY AS e(c, ord)
+           WHERE c->>'html' IS NOT NULL AND c->>'group' = 'Templates'
+           ORDER BY ord
+           LIMIT 1) AS preview_card_html,
          (COALESCE(length(t.readme), 0) > 0) AS has_readme,
          (s.template_id IS NOT NULL) AS selected_by_user
   FROM deck_templates t

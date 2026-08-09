@@ -110,11 +110,11 @@ function trimExample(html, cap = 6000) {
 // deck AND the pure-HTML engine is active. Kept separate from the legacy
 // DECK_POLICY (server/blocks.js) so we can A/B and retire the tree path cleanly.
 export const DECK_HTML_POLICY =
-  '\n\n=== GERAÇÃO DE DECK (motor HTML) — SUBSTITUI A ETAPA 2 ACIMA ===\n' +
-  'IMPORTANTE: a Etapa 2 acima descreve um bloco "deck" (árvore de layout). IGNORE aquele ' +
-  'formato para a GERAÇÃO do deck. O fluxo de perguntas (bloco "deck-questions") continua ' +
-  'valendo, mas ao gerar o deck em si você emite um bloco "deck-html" (descrito aqui), NUNCA ' +
-  'um bloco "deck".\n' +
+  '\n\n=== GERAÇÃO DE DECK (motor HTML) — O FORMATO DA ETAPA 2 ===\n' +
+  'A Etapa 2 acima descreveu o CONTEÚDO e a qualidade editorial do deck; esta seção descreve o ' +
+  'FORMATO técnico que materializa esse conteúdo. O fluxo de perguntas (bloco "deck-questions") ' +
+  'continua valendo; ao gerar o deck em si, você SEMPRE emite um bloco "deck-html" (descrito ' +
+  'aqui).\n' +
   'Um deck é um bloco ```prism-block``` do tipo "deck-html". Cada slide é UMA tag ' +
   '<section class="slide">…</section> auto-contida, em HTML que FLUI (flexbox/grid, ' +
   'quebra natural de texto) — NUNCA use position:absolute nem coordenadas fixas para ' +
@@ -140,6 +140,12 @@ export const DECK_HTML_POLICY =
   'visual dos gráficos dos SLIDES DE EXEMPLO do design system — o acabamento (grade, eixos, ' +
   'rótulos, marcadores, cantos, preenchimentos) é o que o DS mostra nesses exemplos, não algo que ' +
   'você define. Nunca entregue um gráfico mais "cru" do que os exemplos do DS.\n' +
+  '- Ativos da marca (ícones, ilustrações/motivos, logo, imagens): use SEMPRE os assets REAIS do ' +
+  'design system via `<img data-ds-asset-id="ID">` (logo: `<img data-ds-logo>`), com os ids ' +
+  'listados na seção de ativos do design system — o renderizador injeta a arte real. NUNCA ' +
+  'desenhe seu próprio ícone/logo/motivo em SVG ou CSS como substituto de um asset da marca, e ' +
+  'NUNCA escreva `src="..."` à mão. SVG inline é só para GRÁFICOS de dados (conteúdo), nunca para ' +
+  'decoração de marca. Se não houver asset adequado, deixe o espaço limpo.\n' +
   '- Texto SEMPRE flui e quebra naturalmente. Se um slide tem muito conteúdo, reduza o conteúdo ' +
   'ou divida em dois — jamais espremer numa caixa estreita.\n' +
   '- Honestidade de dados: só use números presentes nesta conversa (pedido, respostas, anexos, ' +

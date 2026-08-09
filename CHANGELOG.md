@@ -9,6 +9,43 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 <!-- Adicione aqui as mudanças ainda não lançadas, em Added / Changed / Fixed / Removed. -->
 
+## [1.0.1] - 2026-08-09
+
+Rodada de qualidade nos decks e nas ferramentas: assets reais do design system,
+menos ruído de ferramentas de dados, preview do DS de volta e prompt de deck mais leve.
+
+### Added
+
+- **Ativos reais do design system nos decks HTML**: o modelo referencia ícones,
+  ilustrações/motivos e logo REAIS da marca via `<img data-ds-asset-id="ID">`
+  (`<img data-ds-logo>`), resolvidos para a arte inline do DS na preview, no
+  editor e no export `.pptx`. O HTML salvo guarda só o id simbólico (re-tematizável).
+- **Indicador de progresso por artefato**: durante uma geração longa e silenciosa
+  o chat mostra "Montando sua apresentação… / planilha… / documento… Ns" em vez de
+  um "Thinking…" mudo.
+
+### Changed
+
+- **Genie One / ferramentas de dados suprimidas em turnos de artefato**: quando o
+  turno é claramente sobre gerar um deck/planilha/documento/imagem e não há
+  intenção de dados internos, as tools de dados do workspace não são anexadas —
+  elimina a chamada espúria da Genie One (o "teste de conectividade") que atrasava
+  e confundia a geração. Turnos que pedem dados da empresa continuam com elas.
+- **Prompt de deck ~40–50% menor**: removido o schema morto do antigo motor de
+  árvore semântica da `DECK_POLICY`/`templateHint`; o conteúdo/editorial ficou
+  engine-agnóstico e o formato passou a ser exclusivamente o do motor HTML —
+  menos time-to-first-token e menos custo por turno.
+
+### Fixed
+
+- **Preview do design system restaurado**: o card de "Modelos" voltou a renderizar
+  o primeiro slide do primeiro template do DS (extraído e enxuto no endpoint de
+  lista) em vez do placeholder de círculo + título que sobrou da remoção do motor
+  de árvore.
+- **Motifs/ícones inventados**: o motor HTML agora tem um canal para os assets
+  reais do DS + regra dura anti-invenção — o comportamento padrão é usar o motif/
+  ícone original da marca; criação livre só a pedido explícito do usuário.
+
 ## [1.0.0] - 2026-08-09
 
 Primeira versão consolidada: chat multimodelo com artefatos e ferramentas sobre o

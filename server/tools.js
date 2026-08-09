@@ -317,7 +317,10 @@ function genieOneToolDef() {
         'descobriu o Brasil?", "Quanto é 2+2?", "O que é um data lakehouse?" → responda direto, ' +
         'JAMAIS chame o Genie One. Chamar esta tool para esse tipo de pergunta é um ERRO caro e ' +
         'lento. Na dúvida sobre se a pergunta é sobre os dados internos do usuário, responda ' +
-        'direto; só recorra ao Genie One quando estiver claro que a resposta vive nas tabelas dele.',
+        'direto; só recorra ao Genie One quando estiver claro que a resposta vive nas tabelas dele.\n' +
+        'NUNCA chame esta tool para "testar conexão", "verificar disponibilidade" ou qualquer sondagem ' +
+        'que não seja uma pergunta real de dados do usuário — não existe caso de uso de teste; se não há ' +
+        'uma pergunta concreta sobre os dados internos para fazer, simplesmente NÃO chame a tool.',
       parameters: {
         type: 'object',
         properties: {
@@ -361,11 +364,20 @@ async function listMcpToolsCached(url, token, email) {
 // the whole group from users and blocks it server-side.
 export const TOOL_GROUP_KEYS = ['python', 'genie-one', 'image-gen', 'web-search', 'genie', 'vector-search', 'uc', 'mcp-external']
 
+// Company-data tool groups: they answer with the user's own workspace data
+// (Genie translates NL→SQL over UC tables / Genie Spaces; vector search over
+// their indexes; UC functions they attached). On an artifact-generation turn
+// with no data intent, the router asks to suppress these (see
+// detectCapabilities → suppressDataTools) so the model can't misfire a Genie
+// call while building an unrelated deck. `python`, `image-gen`, `web-search`,
+// and `mcp-external` are NOT data tools and are never suppressed here.
+const DATA_TOOL_KINDS = new Set(['genie-one', 'genie', 'vector-search', 'uc'])
+
 export async function buildToolDefs(
   enabledRefs,
   token,
   email,
-  { includePython = true, includeImage = false, includeWebSearch = true, toolPolicy = {} } = {}
+  { includePython = true, includeImage = false, includeWebSearch = true, toolPolicy = {}, suppressDataTools = false } = {}
 ) {
   const tools = []
   const resolvers = new Map()
@@ -401,6 +413,8 @@ export async function buildToolDefs(
   for (const ref of enabledRefs || []) {
     // skip any ref whose group the admin disabled for the org
     if (ref?.kind && !allowed(ref.kind)) continue
+    // skip company-data tools on an artifact-only turn (see suppressDataTools)
+    if (suppressDataTools && DATA_TOOL_KINDS.has(ref?.kind)) continue
     if (ref?.kind === 'genie' && ref.spaceId) {
       const toolName = genieToolName(ref.spaceId)
       tools.push({

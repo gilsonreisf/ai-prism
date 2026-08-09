@@ -157,7 +157,25 @@ function useElapsedSeconds(active) {
   return Math.floor((now - startRef.current) / 1000)
 }
 
-function ThinkingIndicator({ compact = false, hint }) {
+// Which built-in artifact a turn is generating, from the active-skill names the
+// router emits (see server SYSTEM_SKILLS). Used to turn a long, silent
+// "Thinking…" into a purposeful "Designing your deck…" so a heavy generation
+// (which streams no prose until the block is ready) never reads as frozen.
+const BUILDING_LABEL = {
+  'deck-generation': 'message.building.deck',
+  'pptx-adjust': 'message.building.deck',
+  'spreadsheet-generation': 'message.building.spreadsheet',
+  'document-generation': 'message.building.document',
+  'image-generation': 'message.building.image',
+}
+function buildingKeyFrom(activeSkills) {
+  for (const sk of activeSkills || []) {
+    if (BUILDING_LABEL[sk?.name]) return BUILDING_LABEL[sk.name]
+  }
+  return null
+}
+
+function ThinkingIndicator({ compact = false, hint, buildingKey }) {
   const t = useT()
   const secs = useElapsedSeconds(true)
   // the reasoning tail (if any) is multi-line; show only the last non-empty
@@ -165,6 +183,10 @@ function ThinkingIndicator({ compact = false, hint }) {
   const line = hint
     ? hint.split('\n').map((s) => s.trim()).filter(Boolean).slice(-1)[0]?.slice(0, 140)
     : ''
+  // priority: live reasoning tail > "building <artifact>" (heavy silent gen) >
+  // generic "Thinking…". The building label keeps the wait legible even when the
+  // gateway streams no reasoning summary.
+  const label = line || (buildingKey ? t(buildingKey) : t('message.thinking'))
   return (
     <span className="inline-flex items-center gap-2 text-[var(--muted)] text-sm min-w-0">
       <span className="inline-flex gap-1 shrink-0" aria-hidden>
@@ -174,7 +196,7 @@ function ThinkingIndicator({ compact = false, hint }) {
       </span>
       {!compact && (
         <span className="inline-flex items-center gap-2 min-w-0">
-          <span className="shrink-0">{line || t('message.thinking')}</span>
+          <span className="shrink-0">{label}</span>
           {secs >= 3 && <span className="text-[var(--faint)] tabular-nums shrink-0">{secs}s</span>}
         </span>
       )}
@@ -423,6 +445,9 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
   const text = stripAttachments(msg.content)
   const toolCalls = msg.toolCalls || msg.tool_calls
   const segments = isUser ? [] : splitSegments(text, msg.blocks, toolCalls, streaming)
+  // which heavy artifact (if any) this turn is generating — turns a silent
+  // "Thinking…" into a purposeful "Designing your deck…" during long generations
+  const buildingKey = buildingKeyFrom(msg.activeSkills)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(text)
   const exportRef = useRef(null)
@@ -614,7 +639,7 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
                 return null
               })
             ) : streaming ? (
-              <ThinkingIndicator hint={msg.reasoning} />
+              <ThinkingIndicator hint={msg.reasoning} buildingKey={buildingKey} />
             ) : null}
             {/* Streaming indicator keyed off the LAST segment, not `text` —
                 `text` still contains the {{toolcall:ID}} markers, so it's
@@ -628,7 +653,7 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
               <span className="stream-cursor" />
             )}
             {streaming && segments.length > 0 && segments[segments.length - 1].kind !== 'md' && (
-              <div className="mt-2"><ThinkingIndicator hint={msg.reasoning} /></div>
+              <div className="mt-2"><ThinkingIndicator hint={msg.reasoning} buildingKey={buildingKey} /></div>
             )}
           </div>
         </div>

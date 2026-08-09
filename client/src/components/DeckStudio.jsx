@@ -6,6 +6,7 @@ import HtmlSlideInspector from './deck/HtmlSlideInspector.jsx'
 import HtmlEditToolbar from './deck/HtmlEditToolbar.jsx'
 import HtmlEditContextMenu from './deck/HtmlEditContextMenu.jsx'
 import { extractOpsFromSlides } from '../lib/domToSlideOps.js'
+import { buildDeckAssetMap } from '../lib/deckAssets.js'
 import { getJSON, patchJSON, postJSON } from '../api.js'
 import { useT } from '../lib/i18n.jsx'
 import CostBadge from './CostBadge.jsx'
@@ -619,7 +620,10 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
       // Render every slide full-size off-screen, extract paint-ops off the DOM,
       // and POST them; the server assembles the .pptx with pptxgenjs.
       const slidesHtml = (deck.slides || []).map((s) => (typeof s === 'string' ? s : s?.html))
-      const slidesOps = await extractOpsFromSlides(slidesHtml, () => buildDeckTokenStyle(template), { fontMode })
+      const slidesOps = await extractOpsFromSlides(slidesHtml, () => buildDeckTokenStyle(template), {
+        fontMode,
+        assetMap: buildDeckAssetMap(template),
+      })
       const res = await fetch(`/api/decks/${deck.id}/export-html`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

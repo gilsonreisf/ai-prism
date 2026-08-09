@@ -514,26 +514,58 @@ function withTokens(html, tokenStyle) {
   return inject + html
 }
 
-// Self-contained HTML preview thumbnail (or branded placeholder if no dsCards)
+// One DS slide (authored at the 1280×720 stage) scaled to fill its container
+// width — the same transform:scale trick the inspector's SpecimenFrame uses, so
+// the mini-slide reads correctly instead of showing an unscaled 1280px corner.
+function MiniSlide({ html, title, allowScripts = false }) {
+  const wrapRef = useRef(null)
+  const [scale, setScale] = useState(0.15)
+  useEffect(() => {
+    if (!wrapRef.current) return
+    const el = wrapRef.current
+    const update = () => setScale(el.clientWidth / 1280)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  return (
+    <div ref={wrapRef} className="overflow-hidden rounded-md bg-[#0e1a1f]" style={{ aspectRatio: '16/9', flex: '1 1 0', minWidth: 0 }}>
+      <iframe
+        title={title}
+        sandbox={allowScripts ? 'allow-scripts' : undefined}
+        srcDoc={html}
+        className="border-0 origin-top-left pointer-events-none"
+        style={{ width: 1280, height: 720, transform: `scale(${scale})` }}
+      />
+    </div>
+  )
+}
+
+// Grid thumbnail: the first slide of the DS's first template, rendered as a
+// scaled mini-slide (restored after the semantic-tree engine was removed).
+// List rows ship previewCardHtml (minified first slide specimen); the inspector
+// passes the full template, so fall back to its dsCards there. No specimen →
+// branded placeholder.
 function TemplatePreviewThumb({ template }) {
   const t = useT()
   useTemplateFonts(template)
   const tokenStyle = buildTokenStyle(template)
 
-  if (template.hasDsCards && template.dsCards?.length) {
-    // Find first specimen card (prefer 'Slides'/'Templates' group, else first)
-    const card = (template.dsCards.find((c) => c.group === 'Slides' || c.group === 'Templates') || template.dsCards[0])
-    if (card?.html) {
-      const html = withTokens(card.html, tokenStyle)
-      return (
-        <iframe
-          title={template.name}
-          sandbox="allow-scripts"
-          srcDoc={html}
-          className="w-full h-full border-0 rounded-lg"
-        />
-      )
-    }
+  // list rows ship previewCardHtml (server-extracted first Templates slide);
+  // the inspector passes full dsCards, so fall back to the first Templates deck
+  // there (its <deck-stage> shows slide 1). 'Templates' is our importer's group
+  // for template decks — positional, not name-matched to any specific DS.
+  const cardHtml =
+    template.previewCardHtml ||
+    (template.dsCards?.find((c) => c.group === 'Templates' && c.html)?.html) ||
+    ''
+  if (cardHtml) {
+    return (
+      <div className="w-full h-full flex items-center justify-center p-1.5 bg-[var(--surface-2)]">
+        <MiniSlide html={withTokens(cardHtml, tokenStyle)} title={template.name} allowScripts={!template.previewCardHtml} />
+      </div>
+    )
   }
 
   // Fallback: lightweight branded placeholder at 16:9

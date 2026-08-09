@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { buildDeckTokenStyle } from './HtmlSlideFrame.jsx'
+import { buildDeckAssetMap, resolveDeckAssets, DECK_ASSET_FALLBACK_CSS } from '../../lib/deckAssets.js'
 
 // Editable variant of HtmlSlideFrame (manual HTML editing, Claude Design "Pro"
 // parity). The sandboxed slide iframe becomes a full design surface: the DOM IS
@@ -179,6 +180,12 @@ const RUNTIME = `
   function serialize(){
     var clone = root.cloneNode(true);
     clone.querySelectorAll('[contenteditable]').forEach(function(n){ n.removeAttribute('contenteditable'); });
+    // DS asset <img>s render with a resolved data-URI src for WYSIWYG, but the
+    // STORED html must keep only the symbolic id (data-ds-asset-id/data-ds-logo)
+    // so it stays small and re-themeable — strip the baked src on the way out.
+    clone.querySelectorAll('img[data-ds-asset-id],img[data-ds-logo]').forEach(function(n){
+      n.removeAttribute('src'); n.removeAttribute('data-ds-missing');
+    });
     send({ kind:'html', html: clone.outerHTML });
   }
   function emitSelect(){
@@ -470,6 +477,7 @@ function buildEditableSrcDoc(sectionHtml, tokenStyle) {
     background:var(--background,#fff);font-family:var(--font-body,var(--font-sans,system-ui));cursor:default;}
   section.slide,section{box-sizing:border-box;width:${STAGE_W}px;height:${STAGE_H}px;position:relative;overflow:hidden;}
   [contenteditable]{outline:none;cursor:text;}
+  ${DECK_ASSET_FALLBACK_CSS}
 </style>
 </head><body>${sectionHtml || ''}${RUNTIME}</body></html>`
 }
@@ -482,6 +490,7 @@ const HtmlSlideEditor = forwardRef(function HtmlSlideEditor(
   const frameRef = useRef(null)
   const [scale, setScale] = useState(0.5)
   const tokenStyle = useMemo(() => buildDeckTokenStyle(template), [template])
+  const assetMap = useMemo(() => buildDeckAssetMap(template), [template])
   // srcDoc rebuilds only when HTML changes from OUTSIDE (slide switch, AI tweak,
   // undo/redo through the parent). Self-originated edits echo back and must not
   // reset the doc — track the last html we emitted and skip re-render on a match.
@@ -493,7 +502,13 @@ const HtmlSlideEditor = forwardRef(function HtmlSlideEditor(
       lastEmitted.current = html
     }
   }, [html])
-  const srcDoc = useMemo(() => buildEditableSrcDoc(srcHtml, tokenStyle), [srcHtml, tokenStyle])
+  // resolve DS asset ids to real art for the editable view, but KEEP the marker
+  // so serialize() can strip the baked src and store the symbolic id (WYSIWYG in
+  // the editor, small/re-themeable on disk).
+  const srcDoc = useMemo(
+    () => buildEditableSrcDoc(resolveDeckAssets(srcHtml, assetMap, { keepMarker: true }), tokenStyle),
+    [srcHtml, assetMap, tokenStyle]
+  )
 
   useEffect(() => {
     if (!wrapRef.current) return
