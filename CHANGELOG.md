@@ -9,58 +9,16 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 <!-- Adicione aqui as mudanças ainda não lançadas, em Added / Changed / Fixed / Removed. -->
 
-### Added
-
-- **Motor de deck HTML puro como único caminho**: a geração de slides passa a ser 100% HTML
-  (o modelo escreve `<section>` HTML que flui, contra o design system ativo), com streaming
-  slide-a-slide, edição manual do DOM (estilo Claude Design) e export `.pptx` de **objetos
-  nativos** (DOM→shapes via `renderPptxFromOps`), incluindo o embed opcional das **fontes da
-  marca** para máxima fidelidade. Um novo `scripts/deck-html-qa.mjs` cobre `sanitizeHtmlDeck` +
-  export nativo + embed de fontes.
-- **Ambiente de desenvolvimento 100% local** sem Lakebase/OAuth: PostgreSQL 17 + pgvector
-  do Homebrew (`scripts/local-postgres.sh`, `.env.local.example`, `scripts/seed-local.mjs`)
-  e scripts npm `local:up|down|status|reset|seed` + `dev:local`.
-- **Editor WYSIWYG no Document Studio**: edição visual (clique-e-digite) de documentos
-  com barra de formatação (títulos, negrito/itálico/tachado, listas, citação, link),
-  mantendo o Markdown puro como modo avançado. Fecha o gap de edição manual só-Markdown
-  apontado no benchmark vs. Claude.
-
-### Changed
-
-- **Catálogo de modelos** atualizado (sondado no gateway): Claude Opus 4.8 → **Opus 5**,
-  Gemini 3.5 Flash → **3.6 Flash** e novo **Kimi K3** (Moonshot AI); modelo de mídia padrão
-  passa a `gemini-3-6-flash`.
-- **Document Studio**: o editor de markdown ganha split-pane com **preview rich text ao vivo**.
-- **Editor de slides**: os controles de zoom saíram de cima do slide (não cobrem mais o conteúdo).
-
-### Fixed
-
-- `server/db.js`: `PGSSLMODE` respeitado (permite Postgres local sem SSL) e `PGUSER` desacopla
-  o role do banco do e-mail app-level; fallback de embeddings sem a extensão `vector` no modo local.
-- **Studio não persiste entre conversas**: abrir uma nova conversa ou trocar de sessão agora fecha
-  o Deck/Planilha/Documento Studio aberto (antes ele "grudava" na conversa nova).
-- **Decks em formato antigo** (gerados pelo motor de árvore, agora removido) mostram um aviso claro
-  no Studio e no card do chat, em vez de renderizar em branco.
-
-### Removed
-
-- **Motor de deck semântico (árvore de elementos) removido por completo**, junto com o motor HTML
-  ficando como único caminho: a flag `DECK_HTML_ENGINE` (que ficava OFF por padrão e revertia os
-  decks ao motor antigo), o render `.pptx` em árvore (`renderPptx`/builders em `server/decks.js`),
-  a validação/auto-revisão em árvore (`sanitizeDeck`, `reviewDeckBlock`) e o canvas de elementos
-  freeform no cliente (`ElementCanvas`, `ElementInspector`, `LayerTree`, `deckTree`). Módulos
-  compartilhados só-árvore (`shared/deckLayout.js`, `deckReview.js`, `deckIcons.js`, `deckHtml.js`)
-  e os QA correspondentes foram excluídos. `shared/deckTheme.js` foi mantido (usado pelas planilhas).
-
-## [1.0.0] - 2026-07-29
+## [1.0.0] - 2026-08-09
 
 Primeira versão consolidada: chat multimodelo com artefatos e ferramentas sobre o
-Databricks AI Gateway, deployável via Asset Bundle em qualquer cloud.
+Databricks AI Gateway, deployável via Asset Bundle em qualquer cloud (AWS/Azure/GCP).
 
 ### Added
 
 - **Chat multimodelo** sobre o Databricks AI Gateway, com streaming de respostas e
-  reasoning nativo.
+  reasoning nativo. Catálogo curado com Claude **Opus 5**, Gemini **3.6 Flash** e
+  **Kimi K3** (Moonshot AI), entre outros, sondados ao vivo no gateway.
 - **Sessões e histórico** persistidos no Lakebase, com **busca semântica** via pgvector
   (flag `HISTORY_RETRIEVAL`).
 - **Anexos multimodais**: documentos, imagens e **áudio/vídeo** (transcrição/entendimento
@@ -68,8 +26,14 @@ Databricks AI Gateway, deployável via Asset Bundle em qualquer cloud.
 - **Mensagens estruturadas e gráficos interativos** (prism-blocks), incluindo blocos de
   gráfico com série em linha.
 - **Ferramentas nativas do workspace** (tool calling): UC Functions e UDF Python embutida.
-- **Estúdios de artefato**: Slides (decks), Planilhas (.xlsx) e Documentos de texto, com
-  fluxo bloco → tabela → estúdio → tweak → export.
+- **Estúdios de artefato** — Slides, Planilhas (.xlsx) e Documentos — com fluxo
+  bloco → tabela → estúdio → tweak → export:
+  - **Slides**: **motor de deck HTML puro** — o modelo escreve `<section>` HTML que flui
+    contra o design system ativo, com streaming slide-a-slide, **edição manual do DOM**
+    (estilo Claude Design) e export `.pptx` de **objetos nativos** (DOM→shapes), incluindo
+    o embed opcional das **fontes da marca** para máxima fidelidade.
+  - **Documentos**: **editor WYSIWYG** (clique-e-digite, com barra de formatação) e
+    split-pane com preview rich text ao vivo, mantendo o Markdown puro como modo avançado.
 - **Geração e edição de imagens** via modelos de imagem do gateway.
 - **Voz**, personalização, i18n da UI e diretiva de idioma de resposta.
 - **Skill "Ajuste de apresentação"**: .pptx anexado vira deck no design system.
@@ -79,6 +43,9 @@ Databricks AI Gateway, deployável via Asset Bundle em qualquer cloud.
 - **Deploy via Databricks Asset Bundle** que provisiona a stack completa (Lakebase
   serverless, Serverless SQL Warehouse, a App e o dashboard), com job pós-deploy de
   auto-configuração (role PG do service principal, UDF, volume de imagens, admin bootstrap).
+- **Ambiente de desenvolvimento 100% local** sem Lakebase/OAuth: PostgreSQL + pgvector
+  do Homebrew (`scripts/local-postgres.sh`, `.env.local.example`, `scripts/seed-local.mjs`)
+  e scripts npm `local:up|down|status|reset|seed` + `dev:local`.
 - **Documentação**: README, onboarding/deploy, custos e posicionamento, conexão de MCPs
   e Microsoft 365 via Microsoft Graph.
 
