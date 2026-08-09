@@ -85,13 +85,10 @@ import {
   extractPrismBlocks,
   stripBlockPlaceholders,
   buildNewCandidatesHint,
-  sanitizeDeck,
   sanitizeHtmlDeck,
   sanitizeSpreadsheet,
   sanitizeDocument,
   sanitizeQuestionAnswers,
-  usableIconAssets,
-  reviewDeckBlock,
 } from './blocks.js'
 import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool, TOOL_GROUP_KEYS } from './tools.js'
 import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
@@ -102,7 +99,7 @@ import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
 import { listChatEndpoints, buildAdminCatalog, buildUserModels, buildUserImageModels } from './serving.js'
 import { getImageBytes, deleteImageFile } from './imageStore.js'
-import { renderPptx, renderPptxFromOps } from './decks.js'
+import { renderPptxFromOps } from './decks.js'
 import { renderXlsx } from './xlsx-export.js'
 import { renderDocx } from './docx-export.js'
 
@@ -826,13 +823,10 @@ function applyStoppedEarlyNotice(stoppedEarly, content, send, lang = 'pt') {
 // attach the new `deckId`.
 async function persistDeckBlocks(req, sessionId, blocks) {
   for (const b of blocks) {
-    if (b.type === 'deck') {
-      const meta = { audience: b.audience, author: b.author, narrative: b.narrative }
-      b.deckId = await createDeck(req.email, req.token, sessionId, b.title, b.slides, meta)
-    } else if (b.type === 'deck-html') {
+    if (b.type === 'deck-html') {
       // pure-HTML deck: slides is an array of self-contained <section> strings.
-      // Stored in the same chat_decks table; meta.format discriminates it from
-      // the semantic tree deck on reload (see the Studio render path).
+      // Stored in the same chat_decks table; meta.format='html' marks the format
+      // on reload (see the Studio render path).
       const meta = { audience: b.audience, author: b.author, format: 'html' }
       b.deckId = await createDeck(req.email, req.token, sessionId, b.title, b.slides, meta)
     } else if (b.type === 'spreadsheet') {
@@ -844,87 +838,6 @@ async function persistDeckBlocks(req, sessionId, blocks) {
       // persist the markdown so the Document Studio can reload/edit/export it
       b.documentId = await createDocument(req.email, req.token, sessionId, b.title, b.markdown)
     }
-  }
-}
-
-// Visual self-review loop for a freshly generated deck. Mirrors what Claude
-// Design does when it "checks the design for issues" — except the inspection is
-// deterministic geometry (shared/deckReview via reviewDeckBlock) rather than a
-// screenshot+vision pass, because the app runtime has no rasterizer (the only
-// one, pptx-to-png.sh, drives macOS PowerPoint). We inspect the SAME paint
-// geometry both renderers use, hand the model a precise defect list, and ask it
-// to repair — the exact class of defect the benchmark caught (a clipped title,
-// off-canvas element, low contrast) but exact and instant.
-//
-// Returns the (possibly repaired) blocks. Bounded to MAX_REVIEW_ROUNDS repair
-// attempts so a stubborn defect never stalls the turn; if it can't be fixed we
-// deliver the best version rather than block. Best-effort: any failure logs and
-// returns the original blocks unchanged (a review must never break a turn).
-const MAX_REVIEW_ROUNDS = 1
-async function reviewAndRepairDeckBlocks({ req, model, blocks, template, apiMessages, answer, send, chartState, imageRefs }) {
-  const hasDeck = blocks.some((b) => b.type === 'deck')
-  if (!hasDeck) return { blocks, usage: null }
-  let current = blocks
-  let repairUsage = null
-  for (let round = 0; round < MAX_REVIEW_ROUNDS; round++) {
-    // collect defects across every deck block this turn
-    const reviews = current
-      .map((b, i) => (b.type === 'deck' ? { i, review: reviewDeckBlock(b, template) } : null))
-      .filter((r) => r && !r.review.clean)
-    if (!reviews.length) return { blocks: current, usage: repairUsage }
-
-    // signal the pass to the client (same ephemeral badge decks/skills use)
-    emitActiveSkills(send, [{ name: 'deck-review', title: 'Revisão visual do deck', description: 'Conferindo o layout dos slides' }])
-
-    const defectText = reviews
-      .map((r) => reviewDeckBlock(current[r.i], template).text)
-      .filter(Boolean)
-      .join('\n\n')
-    const repairSystem =
-      'Você acabou de gerar um deck (bloco ```prism-block``` do tipo "deck") e uma revisão automática de ' +
-      'layout encontrou os problemas visuais abaixo. Gere NOVAMENTE o mesmo deck, íntegro, corrigindo ' +
-      'APENAS esses problemas (reposicione/redimensione caixas, ajuste cores para contraste, encurte ' +
-      'textos que estouram a caixa) e preservando todo o conteúdo, dados e a intenção. Responda SOMENTE ' +
-      'com o bloco ```prism-block``` do deck corrigido — sem texto fora do bloco. NUNCA invente dados novos.'
-    const repairUser = `Problemas encontrados na revisão de layout:\n${defectText}`
-    let repaired
-    try {
-      const { text, usage } = await completeWithUsage(
-        req.token,
-        model,
-        [
-          ...apiMessages,
-          { role: 'assistant', content: answer },
-          { role: 'system', content: repairSystem },
-          { role: 'user', content: repairUser },
-        ],
-        { maxTokens: modelById(model).maxOut || 8192, temperature: 0.2 }
-      )
-      repaired = text
-      repairUsage = mergeUsage(repairUsage, usage)
-    } catch (e) {
-      console.warn('deck visual review: repair call failed (delivering original):', e.message)
-      return { blocks: current, usage: repairUsage }
-    }
-    // re-extract the repaired deck through the same validated path
-    const { blocks: newBlocks } = extractPrismBlocks(repaired, chartState.items, template, imageRefs)
-    const newDeck = newBlocks.find((b) => b.type === 'deck')
-    if (!newDeck) return { blocks: current, usage: repairUsage } // model didn't return a usable deck — keep what we had
-    // splice the repaired deck back in, preserving any non-deck blocks
-    current = current.map((b) => (b.type === 'deck' ? newDeck : b))
-  }
-  return { blocks: current, usage: repairUsage }
-}
-
-// Adds two token-usage objects (either may be null). Used to fold a repair
-// round's cost into the turn's reported usage.
-function mergeUsage(a, b) {
-  if (!a) return b || null
-  if (!b) return a
-  return {
-    prompt_tokens: (a.prompt_tokens || 0) + (b.prompt_tokens || 0),
-    completion_tokens: (a.completion_tokens || 0) + (b.completion_tokens || 0),
-    total_tokens: (a.total_tokens || 0) + (b.total_tokens || 0),
   }
 }
 
@@ -1806,12 +1719,11 @@ app.patch('/api/decks/:id', auth, async (req, res) => {
   try {
     await ensureReady(req)
     const body = req.body || {}
-    // Pure-HTML deck (manual editing path, task #28): its slides are <section>
-    // HTML strings, not the semantic tree sanitizeDeck expects. Route those
-    // through sanitizeHtmlDeck (which preserves inline styles — the whole point
-    // of DOM editing — and only strips <script>) so a manual style/text edit
-    // round-trips intact. Detected structurally: every slide is a string or a
-    // {html} object. meta.format='html' is preserved so reloads keep the format.
+    // Pure-HTML deck (manual editing path): its slides are <section> HTML
+    // strings. sanitizeHtmlDeck preserves inline styles — the whole point of DOM
+    // editing — and only strips <script>, so a manual style/text edit round-trips
+    // intact. Detected structurally: every slide is a string or a {html} object.
+    // meta.format='html' is preserved so reloads keep the format.
     const slides = Array.isArray(body.slides) ? body.slides : []
     const isHtmlDeck =
       slides.length > 0 && slides.every((s) => typeof s === 'string' || (s && typeof s === 'object' && typeof s.html === 'string'))
@@ -1829,11 +1741,9 @@ app.patch('/api/decks/:id', auth, async (req, res) => {
       await updateDeckSlides(req.email, req.token, req.params.id, sanitized.title, finalSlides, meta)
       return res.json({ ok: true })
     }
-    const sanitized = sanitizeDeck(body)
-    if (!sanitized) return res.status(400).json({ error: 'deck inválido' })
-    const meta = { audience: sanitized.audience, author: sanitized.author, narrative: sanitized.narrative }
-    await updateDeckSlides(req.email, req.token, req.params.id, sanitized.title, sanitized.slides, meta)
-    res.json({ ok: true })
+    // Every deck is pure-HTML now; a payload that isn't is a legacy semantic-tree
+    // deck whose editor has been removed.
+    return res.status(410).json({ error: 'este deck está num formato antigo que não é mais editável — gere um novo deck' })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -1845,44 +1755,6 @@ app.patch('/api/decks/:id', auth, async (req, res) => {
 // sanitizers as generation, then persisted. Small, synchronous, non-streaming:
 // a tweak is one focused edit, not a chat turn.
 const TWEAK_MAX_TOKENS = 16384
-// Data-URLs (images/fonts baked into slides) never travel to the tweak model:
-// they're swapped for __ASSET_n__ sentinels before serializing and restored
-// after the parse — cutting both cost and the chance of the model mangling
-// megabytes of base64.
-function stripDataUrls(value) {
-  const assets = []
-  const walk = (v) => {
-    if (Array.isArray(v)) return v.map(walk)
-    if (v && typeof v === 'object') {
-      const out = {}
-      for (const [k, val] of Object.entries(v)) out[k] = walk(val)
-      return out
-    }
-    if (typeof v === 'string' && v.startsWith('data:') && v.length > 200) {
-      assets.push(v)
-      return `__ASSET_${assets.length - 1}__`
-    }
-    return v
-  }
-  return { stripped: walk(value), assets }
-}
-
-function restoreDataUrls(value, assets) {
-  const walk = (v) => {
-    if (Array.isArray(v)) return v.map(walk)
-    if (v && typeof v === 'object') {
-      const out = {}
-      for (const [k, val] of Object.entries(v)) out[k] = walk(val)
-      return out
-    }
-    if (typeof v === 'string') {
-      const m = /^__ASSET_(\d+)__$/.exec(v)
-      if (m && assets[+m[1]] !== undefined) return assets[+m[1]]
-    }
-    return v
-  }
-  return walk(value)
-}
 
 // Robust JSON extraction from a model reply: tolerates a prose preamble/note,
 // markdown fences placed anywhere, and trailing text by scanning for the first
@@ -1925,66 +1797,6 @@ function extractJson(text) {
     }
   }
   return null
-}
-
-// Immutable set-by-path (server mirror of DeckStudio's setDeep): splices a new
-// value into a slide at a dotted/bracketed path like "cards[2].heading" without
-// mutating the original — used to apply a field-scoped tweak deterministically.
-function setDeepPath(obj, path, value) {
-  const tokens = (String(path).match(/[^.[\]]+/g) || []).map((t) => (/^\d+$/.test(t) ? Number(t) : t))
-  if (!tokens.length) return obj
-  const clone = Array.isArray(obj) ? [...obj] : { ...obj }
-  let cur = clone
-  for (let i = 0; i < tokens.length - 1; i++) {
-    const k = tokens[i]
-    const next = cur[k]
-    cur[k] = Array.isArray(next) ? [...next] : { ...(next || {}) }
-    cur = cur[k]
-  }
-  cur[tokens[tokens.length - 1]] = value
-  return clone
-}
-
-// compact element-schema description for tweaks on freeform slides — must
-// stay in sync with the DECK_POLICY freeform section in server/blocks.js
-const FREEFORM_TWEAK_SCHEMA =
-  'Este slide é FREEFORM: {"layout":"freeform","background"?,"elements":[...]}. Cada elemento: ' +
-  '{"id","name"?,"hidden"?,"type":"text|shape|line|icon|image|chart|group","box":{"x","y","w","h" em ' +
-  'polegadas num canvas de 10×5.625},"rotate"?,"grow"?,"style":{...},"text"?/"shape"?/"icon"?/' +
-  '"imageDataUrl"?/"chart"?/"children"?+"stack"?}. A ordem do array é a ordem de empilhamento (z). ' +
-  'Grupos: {"type":"group","children":[...] (boxes relativos à origem do grupo),"stack"?:{"direction":' +
-  '"column|row","gap","padding","align":"start|center|end|stretch","justify":"start|center|end|between"}} ' +
-  '— num stack os x/y dos filhos são ignorados, a altura de textos é automática e "grow":1 absorve o ' +
-  'espaço restante; style do grupo (fill/radius/borderColor) desenha um painel de fundo. ' +
-  'Charts: {"type":"chart","chart":{"kind":"bar|barH|line|area|pie|doughnut|scatter|heatmap|gantt",' +
-  '"series":[{"name","data":[{"label","value"}]}] (scatter usa points:[{x,y}]; heatmap usa ' +
-  'heatmap:{xLabels,yLabels,values}; gantt usa gantt:{tasks:[{label,start,end}],axis:[...]})}} — nunca ' +
-  'invente números novos. Style aceita: fill (#hex|"@tokenDoTema"|"none"), opacity 0-100, ' +
-  'borderColor/Width/Dash, radius (pol), shadow, overflow, fontRole ("heading"|"body"), fontFamily, ' +
-  'fontSize (pt), color, bold, italic, underline, uppercase, bullet, align, valign, lineHeight, ' +
-  'letterSpacing, lineColor/Width, dash, arrowStart/End. Cores como tokens do tema (@primary @accent ' +
-  '@background @heading @bodyText @muted @faint @hairline @accentSoft @cardFill @deep @onPrimary ' +
-  '@onAccent @onPrimaryMuted @onPrimaryFaint) sempre que possível — hex literal congela a cor. ' +
-  'PRESERVE os "id" existentes e todos os campos que não precisar mudar (inclusive sentinelas __ASSET_n__).'
-
-// freeform element tree lookup/splice for layer-scoped tweaks
-function findElementById(els, id) {
-  for (const el of els || []) {
-    if (el?.id === id) return el
-    if (Array.isArray(el?.children)) {
-      const hit = findElementById(el.children, id)
-      if (hit) return hit
-    }
-  }
-  return null
-}
-
-function replaceElementById(els, id, next) {
-  return (els || []).map((el) => {
-    if (el?.id === id) return next
-    if (Array.isArray(el?.children)) return { ...el, children: replaceElementById(el.children, id, next) }
-    return el
-  })
 }
 
 // Compact digest of the conversation a deck came from, for grounding an AI
@@ -2125,184 +1937,9 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
       return res.json({ deck: updated, preview, usage, model })
     }
 
-    const icons = usableIconAssets(template)
-    const scopedFreeform = scoped?.layout === 'freeform'
-
-    // Field-scoped fast path: a selected text field on a SEMANTIC slide (the
-    // most common tweak — e.g. rewording a cover title). Reserializing the
-    // whole slide to JSON just to change one string is fragile: any preamble
-    // or note from the model breaks JSON.parse and the edit fails hard. Instead
-    // ask for the new text ONLY (plain string, no JSON) and splice it into the
-    // slide deterministically via setDeepPath — the same guarantee the freeform
-    // element path already gives. A text edit must never fail on JSON parsing.
-    if (scoped && !scopedFreeform && selection?.path) {
-      const fieldSystem =
-        'Você reescreve UM campo de texto de um slide de apresentação, seguindo a instrução do usuário. ' +
-        'Responda com o TEXTO NOVO desse campo e nada mais — sem aspas, sem JSON, sem cercas de markdown, ' +
-        'sem preâmbulo, sem explicação. Mantenha o mesmo idioma do texto atual. Nunca invente dados numéricos novos. ' +
-        'Se a instrução não pedir mudança de conteúdo, devolva o texto atual inalterado.'
-      const fieldUser =
-        `Campo: ${selection.label || selection.path}\n` +
-        `Texto atual: ${JSON.stringify(selection.text || '')}\n\n` +
-        `Instrução: ${instruction}\n\nTexto novo:`
-      await getUserModels(req)
-    const model = resolveModelId(req.body?.model)
-      const { text: raw, usage: fieldUsage } = await completeWithUsage(req.token, model, [
-        { role: 'system', content: fieldSystem },
-        { role: 'user', content: fieldUser },
-      ], { maxTokens: 2000, temperature: 0.2 })
-      const newText = String(raw || '')
-        .replace(/```[a-z]*\n?/gi, '')
-        .trim()
-        .replace(/^["'`]+|["'`]+$/g, '')
-        .slice(0, 4000)
-      if (!newText) return res.status(422).json({ error: 'a edição resultou em um texto vazio — tente reformular a instrução' })
-      const nextSlide = setDeepPath(scoped, selection.path, newText)
-      const revalidated = sanitizeDeck({ title: deck.title, slides: [nextSlide] }, new Map(), template)
-      if (!revalidated?.slides?.length) return res.status(422).json({ error: 'a edição resultou em um slide inválido' })
-      const slides = [...deck.slides]
-      slides[slideIndex] = revalidated.slides[0]
-      const updated = { ...deck, slides }
-      if (!preview) {
-        const meta = { audience: updated.audience, author: updated.author, narrative: updated.narrative }
-        await updateDeckSlides(req.email, req.token, req.params.id, updated.title, updated.slides, meta)
-      }
-      return res.json({ deck: updated, preview, usage: fieldUsage, model })
-    }
-    // freeform layer scoping: with a selected element the model answers with
-    // the JSON of THAT element only and the server splices it back into the
-    // slide — a hard guarantee the rest of the slide survives untouched
-    const elementId = scopedFreeform && typeof sel?.elementId === 'string' ? sel.elementId.slice(0, 80) : null
-    const selEl = elementId ? findElementById(scoped.elements || [], elementId) : null
-    // region scoping: a MULTI-element selection edits only those elements.
-    // The model gets their JSON as an array and answers with an array we
-    // splice back by id — siblings outside the region stay byte-identical.
-    const elementIds =
-      scopedFreeform && Array.isArray(sel?.elementIds)
-        ? sel.elementIds.filter((x) => typeof x === 'string').slice(0, 40).map((x) => x.slice(0, 80))
-        : null
-    const selEls = elementIds ? elementIds.map((id) => findElementById(scoped.elements || [], id)).filter(Boolean) : null
-    const regionScope = selEls && selEls.length > 1
-    const system =
-      (regionScope
-        ? `Você edita uma REGIÃO (${selEls.length} elementos selecionados) de um slide freeform de um deck de apresentação. Você receberá um ARRAY com o JSON de cada elemento selecionado — só eles existem para você; nada fora da região muda.`
-        : selEl
-        ? 'Você edita UM ELEMENTO de um slide freeform de um deck de apresentação. Você receberá o JSON APENAS desse elemento (é tudo o que você precisa — nada fora dele existe para você).'
-        : scoped
-          ? 'Você edita UM slide de um deck de apresentação, representado em JSON (o schema é o mesmo dos blocos `deck` do AI Prism: layout, heading, subheading, kicker, bullets, cards, stats, phases, items, columns, callout, footnote, notes, styles...).'
-          : 'Você edita um deck de apresentação inteiro, representado em JSON ({"title","slides":[...]}, schema dos blocos `deck` do AI Prism; slides com layout "freeform" carregam uma lista `elements` posicionada — preserve ids e boxes que a instrução não pedir para mudar).') +
-      (scopedFreeform ? `\n${FREEFORM_TWEAK_SCHEMA}` : '') +
-      (regionScope
-        ? ' Aplique a instrução aos elementos da região (e aos filhos deles, se forem grupos) — nada fora da região muda. ' +
-          'Nunca invente dados numéricos novos. Responda APENAS com um ARRAY JSON contendo o JSON atualizado de CADA elemento selecionado, mantendo os mesmos "id" (um objeto por id recebido) e preservando os campos que não precisar mudar (inclusive sentinelas __ASSET_n__; nunca as invente nem remova), sem cercas de markdown e sem comentários.'
-        : selEl
-        ? ' Aplique a instrução SOMENTE ao elemento selecionado (e aos filhos dele, se for um grupo) — nada fora dele muda. ' +
-          'Nunca invente dados numéricos novos. Responda APENAS com o JSON atualizado DESSE elemento, mantendo o mesmo "id" e preservando os campos que não precisar mudar (inclusive sentinelas __ASSET_n__; nunca as invente nem remova), sem cercas de markdown e sem comentários.'
-        : ' Aplique SOMENTE a alteração pedida pelo usuário, preservando todo o resto intacto — incluindo campos que você não conhece (styles, iconAssetId, diagramSpec, imageDataUrl, series) e sentinelas __ASSET_n__ (referências a imagens; nunca as invente nem remova). ' +
-          'Nunca invente dados numéricos novos. Responda APENAS com o JSON atualizado' +
-          (scoped ? ' do slide' : ' do deck') +
-          ', sem cercas de markdown e sem comentários.') +
-      (icons.length
-        ? '\nÍcones reais disponíveis (para itens de cards/stats/phases use `iconRef` com um destes ids; nunca emoji):\n' +
-          icons.slice(0, 30).map((a) => `- ${a.id}: "${a.label || 'ícone'}"`).join('\n')
-        : '')
-    // element-scoped tweak: send ONLY the selected element's JSON as context
-    // (not the whole slide) — the model edits one element, siblings are
-    // irrelevant, and a smaller prompt is materially faster + cheaper. Other
-    // scopes still serialize their full target (slide or deck).
-    const { stripped, assets } = stripDataUrls(regionScope ? selEls : selEl || scoped || { title: deck.title, slides: deck.slides })
-    const strippedJson = JSON.stringify(stripped)
-    if (!scoped && strippedJson.length > 60_000) {
-      return res.status(422).json({
-        error: 'o deck é grande demais para uma alteração de uma vez — desmarque "aplicar ao deck inteiro" e edite slide a slide',
-      })
-    }
-    const user = regionScope
-      ? `Região selecionada (${selEls.length} elementos, ids ${selEls.map((e) => `"${e.id}"`).join(', ')}):\n${strippedJson}\n\n` +
-        `Instrução: ${instruction}\n\nResponda com um ARRAY JSON com o JSON atualizado de cada elemento, mantendo os mesmos "id".`
-      : selEl
-      ? `JSON do elemento selecionado (id "${elementId}"` +
-        (sel?.label ? `, ${String(sel.label).slice(0, 120)}` : '') +
-        `):\n${strippedJson}\n\n` +
-        `Instrução: ${instruction}\n\nResponda com o JSON atualizado apenas desse elemento, mantendo o mesmo "id".`
-      : `JSON atual:\n${strippedJson}\n\n` +
-        (selection
-          ? `Elemento selecionado pelo usuário: ${selection.label || selection.path} (path: ${selection.path}` +
-            (selection.text ? `, texto atual: ${JSON.stringify(selection.text)}` : '') +
-            '). A instrução se refere a ESTE elemento, salvo indicação em contrário.\n\n'
-          : '') +
-        `Instrução: ${instruction}`
-
-    await getUserModels(req)
-    const model = resolveModelId(req.body?.model)
-    const { text: out, usage: tweakUsage } = await completeWithUsage(req.token, model, [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ], { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.2 })
-
-    const extracted = extractJson(out)
-    if (extracted == null) {
-      return res.status(422).json({ error: 'o modelo não devolveu um JSON válido — tente reformular a instrução' })
-    }
-    let parsed = restoreDataUrls(extracted, assets)
-
-    // region-scoped answer: an array of revised elements — splice each back
-    // into the ORIGINAL slide by id (only the region changes). Accept a whole
-    // freeform slide too, in case the model over-answered.
-    if (regionScope) {
-      if (Array.isArray(parsed)) {
-        let els = scoped.elements || []
-        for (const revised of parsed) {
-          if (revised && typeof revised === 'object' && typeof revised.id === 'string' && elementIds.includes(revised.id)) {
-            els = replaceElementById(els, revised.id, revised)
-          }
-        }
-        parsed = { ...scoped, elements: els }
-      } else if (!(parsed?.layout === 'freeform' && Array.isArray(parsed?.elements))) {
-        return res.status(422).json({ error: 'o modelo não devolveu o array de elementos esperado — tente reformular a instrução' })
-      }
-    } else if (selEl && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      // element-scoped answer: splice the revised element back into the
-      // ORIGINAL slide (if the model answered with the whole slide anyway,
-      // accept it — the scoped path below validates either)
-      if (!(parsed.layout === 'freeform' && Array.isArray(parsed.elements))) {
-        parsed = { ...scoped, elements: replaceElementById(scoped.elements || [], elementId, { ...parsed, id: elementId }) }
-      }
-    }
-
-    let updated
-    if (scoped) {
-      const revalidated = sanitizeDeck({ title: deck.title, slides: [parsed] }, new Map(), template)
-      if (!revalidated?.slides?.length) return res.status(422).json({ error: 'a edição resultou em um slide inválido' })
-      const slides = [...deck.slides]
-      slides[slideIndex] = revalidated.slides[0]
-      updated = { ...deck, slides }
-    } else {
-      const revalidated = sanitizeDeck(parsed, new Map(), template)
-      if (!revalidated) return res.status(422).json({ error: 'a edição resultou em um deck inválido' })
-      updated = { ...deck, title: revalidated.title, slides: revalidated.slides }
-    }
-    if (!preview) {
-      const meta = { audience: updated.audience, author: updated.author, narrative: updated.narrative }
-      await updateDeckSlides(req.email, req.token, req.params.id, updated.title, updated.slides, meta)
-    }
-    res.json({ deck: updated, preview, usage: tweakUsage, model })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-app.get('/api/decks/:id/export', auth, async (req, res) => {
-  try {
-    await ensureReady(req)
-    const deck = await getDeck(req.email, req.token, req.params.id)
-    if (!deck) return res.status(404).json({ error: 'deck não encontrado' })
-    const template = await getSelectedDeckTemplate(req.email, req.token)
-    const buf = await renderPptx(deck, template)
-    const safeName = (deck.title || 'apresentacao').replace(/[^\w-]+/g, '_').slice(0, 60) || 'apresentacao'
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation')
-    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`)
-    res.send(buf)
+    // Every deck is pure-HTML now (handled above); a non-HTML deck is a legacy
+    // semantic-tree deck whose editor has been removed.
+    return res.status(410).json({ error: 'este deck está num formato antigo que não é mais editável — gere um novo deck' })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -2822,23 +2459,6 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // placeholder right where the model put it, so the frontend renders it inline.
     // imageRefs resolve `image` fences against images the tool generated this turn.
     let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
-    // Visual self-review: inspect the generated deck's paint geometry and, if a
-    // slide has a layout defect (clipped text, off-canvas, low contrast), ask
-    // the model to repair before we persist. Splices the fixed deck back into
-    // `blocks` at its original position, so `finalContent`'s block placeholder
-    // still resolves to it. Best-effort — never blocks the turn.
-    {
-      const reviewed = await reviewAndRepairDeckBlocks({
-        req, model, blocks, template: selectedTemplate, apiMessages, answer, send, chartState, imageRefs,
-      })
-      blocks = reviewed.blocks
-      // fold the repair round's tokens into the turn's reported usage (cost stays honest)
-      if (reviewed.usage && hadUsage && usage) {
-        usage.prompt_tokens = (usage.prompt_tokens || 0) + (reviewed.usage.prompt_tokens || 0)
-        usage.completion_tokens = (usage.completion_tokens || 0) + (reviewed.usage.completion_tokens || 0)
-        if (usage.total_tokens != null) usage.total_tokens += reviewed.usage.total_tokens || 0
-      }
-    }
     finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
     finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)
@@ -3047,23 +2667,6 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
     })
 
     let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
-    // Visual self-review: inspect the generated deck's paint geometry and, if a
-    // slide has a layout defect (clipped text, off-canvas, low contrast), ask
-    // the model to repair before we persist. Splices the fixed deck back into
-    // `blocks` at its original position, so `finalContent`'s block placeholder
-    // still resolves to it. Best-effort — never blocks the turn.
-    {
-      const reviewed = await reviewAndRepairDeckBlocks({
-        req, model, blocks, template: selectedTemplate, apiMessages, answer, send, chartState, imageRefs,
-      })
-      blocks = reviewed.blocks
-      // fold the repair round's tokens into the turn's reported usage (cost stays honest)
-      if (reviewed.usage && hadUsage && usage) {
-        usage.prompt_tokens = (usage.prompt_tokens || 0) + (reviewed.usage.prompt_tokens || 0)
-        usage.completion_tokens = (usage.completion_tokens || 0) + (reviewed.usage.completion_tokens || 0)
-        if (usage.total_tokens != null) usage.total_tokens += reviewed.usage.total_tokens || 0
-      }
-    }
     finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
     finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)
@@ -3186,23 +2789,6 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
     })
 
     let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
-    // Visual self-review: inspect the generated deck's paint geometry and, if a
-    // slide has a layout defect (clipped text, off-canvas, low contrast), ask
-    // the model to repair before we persist. Splices the fixed deck back into
-    // `blocks` at its original position, so `finalContent`'s block placeholder
-    // still resolves to it. Best-effort — never blocks the turn.
-    {
-      const reviewed = await reviewAndRepairDeckBlocks({
-        req, model, blocks, template: selectedTemplate, apiMessages, answer, send, chartState, imageRefs,
-      })
-      blocks = reviewed.blocks
-      // fold the repair round's tokens into the turn's reported usage (cost stays honest)
-      if (reviewed.usage && hadUsage && usage) {
-        usage.prompt_tokens = (usage.prompt_tokens || 0) + (reviewed.usage.prompt_tokens || 0)
-        usage.completion_tokens = (usage.completion_tokens || 0) + (reviewed.usage.completion_tokens || 0)
-        if (usage.total_tokens != null) usage.total_tokens += reviewed.usage.total_tokens || 0
-      }
-    }
     finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
     finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)

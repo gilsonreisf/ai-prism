@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Icon from './Icons.jsx'
-import DeckSlidePreview from './DeckSlidePreview.jsx'
 import DeckTemplateInspector from './DeckTemplateInspector.jsx'
 import { getJSON, postJSON, patchJSON, del } from '../api.js'
 import { EMPTY_TEMPLATE, extractFromFiles, mergeTemplate, stripExt, rasterizeToPng } from '../lib/pptxMining.js'
@@ -457,15 +456,118 @@ function TemplateForm({ initial, onCancel, onSave, saving, onCreateNew }) {
   )
 }
 
-const PREVIEW_TITLE = { layout: 'title', heading: null }
+// Self-hosted design-system webfonts (template.fontAssets, from a bundle
+// import) registered once per family/weight/style
+const loadedFonts = new Set()
+function useTemplateFonts(template) {
+  useEffect(() => {
+    if (typeof FontFace === 'undefined') return
+    for (const f of template?.fontAssets || []) {
+      const key = `${f.family}|${f.weight}|${f.style}`
+      if (!f.dataUrl || loadedFonts.has(key)) continue
+      loadedFonts.add(key)
+      try {
+        const face = new FontFace(f.family, `url(${f.dataUrl})`, { weight: f.weight || '400', style: f.style || 'normal' })
+        face.load().then((ff) => document.fonts.add(ff)).catch(() => {})
+      } catch {
+        // malformed font data
+      }
+    }
+  }, [template])
+}
+
+// Build token styles for injecting into specimen iframes
+function buildTokenStyle(template) {
+  if (!template) return ''
+  const parts = []
+  const fonts = template.fontAssets || []
+  for (const f of fonts) {
+    if (!f?.family || !f?.dataUrl) continue
+    parts.push(
+      `@font-face{font-family:'${f.family.replace(/'/g, '')}';` +
+        `font-weight:${f.weight || 400};font-style:${f.style || 'normal'};` +
+        `font-display:swap;src:url(${f.dataUrl});}`,
+    )
+  }
+  const vars = []
+  for (const t of template.palette || []) {
+    if (t?.varName && typeof t.value === 'string') vars.push(`${t.varName}:${t.value};`)
+  }
+  const families = [...new Set(fonts.map((f) => f.family).filter(Boolean))]
+  const heading = template.headingFont || families[0]
+  if (heading) vars.push(`--font-sans:'${heading.replace(/'/g, '')}',system-ui,-apple-system,sans-serif;`)
+  const mono = families.find((f) => /mono/i.test(f))
+  if (mono) vars.push(`--font-mono:'${mono.replace(/'/g, '')}',ui-monospace,'SF Mono',Menlo,monospace;`)
+  vars.push('--shadow-sm:0 1px 2px rgba(27,49,57,.06),0 1px 3px rgba(27,49,57,.08);')
+  vars.push('--shadow-md:0 2px 6px rgba(27,49,57,.08),0 8px 20px rgba(27,49,57,.08);')
+  vars.push('--shadow-lg:0 8px 24px rgba(27,49,57,.10),0 24px 48px rgba(27,49,57,.10);')
+  if (vars.length) parts.push(`:root{${vars.join('')}}`)
+  return parts.join('')
+}
+
+// Prepend token styles to card HTML
+function withTokens(html, tokenStyle) {
+  if (!tokenStyle || typeof html !== 'string') return html
+  const inject = `<style data-ds-tokens>${tokenStyle}</style>`
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (m) => m + inject)
+  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (m) => m + inject)
+  return inject + html
+}
+
+// Self-contained HTML preview thumbnail (or branded placeholder if no dsCards)
+function TemplatePreviewThumb({ template }) {
+  const t = useT()
+  useTemplateFonts(template)
+  const tokenStyle = buildTokenStyle(template)
+
+  if (template.hasDsCards && template.dsCards?.length) {
+    // Find first specimen card (prefer 'Slides'/'Templates' group, else first)
+    const card = (template.dsCards.find((c) => c.group === 'Slides' || c.group === 'Templates') || template.dsCards[0])
+    if (card?.html) {
+      const html = withTokens(card.html, tokenStyle)
+      return (
+        <iframe
+          title={template.name}
+          sandbox="allow-scripts"
+          srcDoc={html}
+          className="w-full h-full border-0 rounded-lg"
+        />
+      )
+    }
+  }
+
+  // Fallback: lightweight branded placeholder at 16:9
+  const primary = template.primaryColor || '#1A1A1A'
+  const accent = template.accentColor || '#0099FF'
+  const bg = template.backgroundColor || '#FFFFFF'
+  return (
+    <div
+      className="w-full h-full rounded-lg flex items-center justify-center text-center p-3 font-semibold"
+      style={{
+        background: bg,
+        color: primary,
+        fontSize: '13px',
+      }}
+    >
+      <div>
+        <div
+          style={{
+            width: '24px',
+            height: '24px',
+            borderRadius: '50%',
+            background: accent,
+            margin: '0 auto 8px',
+            opacity: 0.8,
+          }}
+        />
+        {template.name || t('templates.untitled')}
+      </div>
+    </div>
+  )
+}
 
 export default function DeckTemplatesSettings({ open, isAdmin = false }) {
   const t = useT()
-  const PREVIEW_BULLETS = {
-    layout: 'bullets',
-    heading: t('templates.previewSlideTitle'),
-    bullets: [t('templates.previewBullet1'), t('templates.previewBullet2')],
-  }
   const [templates, setTemplates] = useState([])
   const [loading, setLoading] = useState(false)
   const [editing, setEditing] = useState(null) // null | { id?, ...fields }
@@ -629,9 +731,8 @@ export default function DeckTemplatesSettings({ open, isAdmin = false }) {
                 } ${deletingId === tpl.id ? 'opacity-60' : ''}`}
               >
                 <button onClick={() => select(tpl.id)} className="w-full text-left">
-                  <div className="grid grid-cols-2 gap-1">
-                    <DeckSlidePreview slide={PREVIEW_TITLE} template={tpl} deckTitle={tpl.name || t('templates.untitled')} variant="card" />
-                    <DeckSlidePreview slide={PREVIEW_BULLETS} template={tpl} variant="card" />
+                  <div style={{ aspectRatio: '16/9', overflow: 'hidden', borderRadius: '8px' }}>
+                    <TemplatePreviewThumb template={tpl} />
                   </div>
                   <div className="flex items-center gap-1.5 mt-1.5 px-0.5">
                     {tpl.isSelected && <Icon.Check size={13} className="text-[var(--accent)] shrink-0" />}
