@@ -73,6 +73,9 @@ export const DEFAULT_IMAGE_MODEL = 'databricks-gemini-3-1-flash-image'
 // A fast, non-reasoning model: reasoning models can burn the whole token
 // budget on hidden thinking and return empty content for tiny outputs.
 const FAST_TITLE_MODEL = 'databricks-claude-haiku-4-5'
+// Same class of model for the per-turn intent classifier (see classifyIntent).
+const FAST_INTENT_MODEL = 'databricks-claude-haiku-4-5'
+export const INTENT_MODEL = FAST_INTENT_MODEL
 
 // Multilingual embedding model — far better Portuguese discrimination than the
 // English-tuned gte/bge endpoints.
@@ -546,4 +549,90 @@ export async function generateTitle(token, firstUserMessage, assistantAnswer = '
   }
   const fallback = snippet.replace(/\s+/g, ' ').trim().slice(0, 40)
   return `💬 ${fallback || 'Nova conversa'}`
+}
+
+/**
+ * Per-turn INTENT CLASSIFIER. The regex router (detectCapabilities in
+ * blocks.js) is fast and free but bag-of-words: it can't tell a deck briefing
+ * that NARRATES "geração de slides, planilhas, documentos" (all product
+ * features — one artifact: a deck) from a genuine multi-artifact request, and
+ * it fired Genie One on a deck that never touched data. That's a SEMANTIC call,
+ * so we make it with a cheap, fast model and fold its (tiny) cost into the
+ * turn's estimate. The caller decides WHEN to spend this (see the hybrid gating
+ * in index.js — trivial chat and obvious tweaks skip it); this function just
+ * answers "what does the user actually want produced THIS turn?".
+ *
+ * Returns { intents: {deck,spreadsheet,image,document,data} booleans, usage } or
+ * null on any failure/timeout so the caller falls back to the regex result.
+ */
+export async function classifyIntent(token, userText, { timeoutMs = 4000 } = {}) {
+  const text = String(userText || '').slice(0, 6000)
+  if (!text.trim()) return null
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const body = {
+      model: FAST_INTENT_MODEL,
+      max_tokens: 60,
+      temperature: 0,
+      // stop as soon as the JSON object closes — without this the model emits
+      // the JSON and then keeps going (answering the question, burning tokens
+      // and hitting the length cap). The closing brace is the JSON's last char.
+      stop: ['}'],
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are an intent router for a multimodel AI workspace. Decide what the user wants ' +
+            'PRODUCED in THIS message, and whether answering needs their OWN company data.\n' +
+            'Return ONLY the JSON object and NOTHING before or after it (no prose, no code fence): ' +
+            '{"deck":bool,"spreadsheet":bool,"image":bool,"document":bool,"data":bool}.\n' +
+            '- deck: a slide deck / presentation / pitch.\n' +
+            '- spreadsheet: an .xlsx / sheet / financial model / budget.\n' +
+            '- image: a generated picture / illustration / logo / icon as an image.\n' +
+            '- document: a written text doc (report, article, letter, contract, memo).\n' +
+            '- data: the request needs the user\'s OWN workspace/company data — querying their tables, ' +
+            'metrics, revenue, customers, etc. via a data tool. TRUE only when the answer requires ' +
+            'pulling/analyzing their real internal data, NOT when business terms merely appear as ' +
+            'narrative or as the SUBJECT of a deck/document.\n' +
+            'CRITICAL: set a flag TRUE only for what the user asks to CREATE now. If they ask for a deck ' +
+            'and the deck\'s CONTENT happens to describe spreadsheets, documents, images or business ' +
+            'metrics, those are NOT separate requests — only "deck" is true. Multiple flags are true ' +
+            'ONLY when the user explicitly asks for multiple artifacts.',
+        },
+        { role: 'user', content: text },
+      ],
+    }
+    const res = await fetch(chatUrl(), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(withUsageContext(body)),
+      signal: ctrl.signal,
+    })
+    if (!res.ok) return null
+    const json = await res.json()
+    let out = extractContent(json.choices?.[0]?.message?.content) || ''
+    // the `stop: ['}']` sequence is stripped from the output, so re-add the
+    // closing brace(s) the model didn't get to emit. Grab from the first '{'.
+    const open = out.indexOf('{')
+    if (open === -1) return null
+    out = out.slice(open)
+    if (!out.trimEnd().endsWith('}')) out = out + '}'
+    const parsed = JSON.parse(out)
+    const b = (v) => v === true
+    return {
+      intents: {
+        deck: b(parsed.deck),
+        spreadsheet: b(parsed.spreadsheet),
+        image: b(parsed.image),
+        document: b(parsed.document),
+        data: b(parsed.data),
+      },
+      usage: json.usage || null,
+    }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
 }

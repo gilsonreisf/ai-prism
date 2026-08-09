@@ -502,12 +502,15 @@ function templateComposition(template) {
     lines.join('\n') +
     '\n\nDENSIDADE (calibre de deck profissional) — abaixo do título, a área de conteúdo deve ser ' +
     'preenchida com uma COMPOSIÇÃO estruturada (flexbox/grid), não um bloco de texto solto. ' +
-    'Prefira, conforme o conteúdo: grade de 2–4 cards (cada um com ícone REAL do DS + rótulo curto ' +
-    '+ 1 linha de apoio) para pilares/capacidades; faixa de 2–4 métricas grandes para KPIs; ' +
-    'diagrama multi-coluna ligado por setas para arquiteturas/fluxos; matriz de comparação para ' +
-    'trade-offs. Distribua os blocos pela largura toda, mantenha gaps/paddings consistentes e ' +
-    'alinhe as bordas. Cada slide de conteúdo deve sair CHEIO de conteúdo real — um slide com só um ' +
-    'título ou uma placa vazia é uma falha.'
+    'Prefira, conforme o conteúdo: grade de 2–4 cards para pilares/capacidades; faixa de 2–4 ' +
+    'métricas grandes para KPIs; diagrama multi-coluna ligado por setas para arquiteturas/fluxos; ' +
+    'matriz de comparação para trade-offs. Distribua os blocos pela largura toda, mantenha ' +
+    'gaps/paddings consistentes e alinhe as bordas. Cada slide de conteúdo deve sair CHEIO de ' +
+    'conteúdo real — um slide com só um título ou uma placa vazia é uma falha. ' +
+    'ÍCONES são OPCIONAIS, não obrigatórios: um ícone só entra num card quando existe um ativo do ' +
+    'DS (ou, na falta dele, um glifo simples) que representa DE VERDADE aquele item — caso contrário, ' +
+    'o card fica só com rótulo + texto, o que é perfeitamente profissional. Um bom deck do DS usa ' +
+    'ícones com PARCIMÔNIA; não force um ícone em cada card só para preencher.'
   )
 }
 
@@ -569,16 +572,24 @@ function templateHint(template) {
     }
     if (icons.length) {
       hint +=
-        '\n• ÍCONES de produto/conceito (para itens de cards, KPIs, listas — um por item, sem ' +
-        'repetir no mesmo slide; só use o id cujo rótulo REALMENTE combine com o item):\n' +
+        '\n• ÍCONES do design system (para itens de cards, KPIs, listas — um por item, sem repetir ' +
+        'no mesmo slide). REGRA DE PERTINÊNCIA (crítica): só use um id quando o rótulo dele for uma ' +
+        'correspondência SEMÂNTICA REAL do conteúdo daquele item. Muitos destes são ícones de ' +
+        'PRODUTO/marca (ex.: um produto específico, um logo); um ícone de produto SÓ entra quando o ' +
+        'item fala literalmente daquele produto. NÃO pegue um ícone de produto só porque "tem um ' +
+        'ícone disponível" — um ícone que não tem relação com o texto confunde mais do que ajuda e ' +
+        'parece amador. Na dúvida, não use ícone naquele item. Ids disponíveis (com rótulo):\n' +
         icons.slice(0, 40).map((a) => `  - ${a.id}: "${a.label || 'ícone sem nome'}"`).join('\n')
     }
     if (illustrations.length) {
       hint +=
         '\n• ILUSTRAÇÕES / MOTIVOS decorativos da marca (a arte gráfica do DS — ex.: padrões nodais) ' +
-        '— em capas, divisores e encerramentos, coloque UMA num canto/lateral (tipicamente ' +
-        '~300–420px) para dar identidade. Use o motivo ORIGINAL do design system; só componha um ' +
-        'motivo novo se o usuário pedir explicitamente. Ids disponíveis:\n' +
+        '— use com MUITA PARCIMÔNIA, como o próprio DS faz: um motivo entra APENAS na capa, num ' +
+        'divisor de seção ou no encerramento, para dar identidade — NUNCA em slides de conteúdo ' +
+        '(cards, tabelas, KPIs, listas). No MÁXIMO um motivo por slide, e na maioria dos slides ' +
+        'NENHUM. Quando usar, coloque UMA num canto/lateral (tipicamente ~300–420px). Use o motivo ' +
+        'ORIGINAL do design system; só componha um motivo novo se o usuário pedir explicitamente. ' +
+        'Ids disponíveis:\n' +
         illustrations.slice(0, 12).map((a) => `  - ${a.id}: "${a.label || 'ilustração'}"`).join('\n')
     }
     if (images.length) {
@@ -591,18 +602,27 @@ function templateHint(template) {
     hint += '\n\nEste design system não cadastrou ícones/ilustrações reais — não use `<img data-ds-asset-id>` (não há ids) e NUNCA use emoji.'
   }
 
-  // Hard anti-invention rule — the reported bug (#4/#5): the model invents its
-  // own SVG icons/motifs instead of using the DS's real assets. Applies whether
-  // or not the DS is "rich".
+  // Anti-invention + anti-misuse rule — the reported bugs (#4/#5): the model
+  // used to invent its own brand SVG/motifs; the over-correction then slapped
+  // MISMATCHED product icons everywhere. The rule now distinguishes BRAND
+  // identity assets (never invent) from CONTENT icons (a plain, on-topic glyph
+  // beats a mismatched product icon). Applies whether or not the DS is "rich".
   hint +=
-    '\n\nDECORAÇÃO E ÍCONES — regra dura: o comportamento PADRÃO é usar os ativos REAIS do design ' +
-    'system acima (via `<img data-ds-asset-id>`). NUNCA invente ícones, logos ou motivos ' +
-    'decorativos desenhando SVG/CSS próprios (círculos, elipses, "blobs", grades de pontos, ' +
-    'lockups falsos) como substituto de um asset da marca — isso destrói a identidade visual. ' +
-    'Se nenhum asset real combinar com o que o slide precisa, deixe o espaço limpo: espaço em ' +
-    'branco intencional é mais elegante que um enfeite inventado. Criação livre de um ícone/motivo ' +
-    'novo só é permitida se o usuário pedir EXPLICITAMENTE. (SVG inline continua correto para ' +
-    'GRÁFICOS de dados — barras, linhas, pizza — que são conteúdo, não decoração de marca.)'
+    '\n\nÍCONES, LOGOS E MOTIVOS — regra dura, com uma hierarquia clara de decisão por item:\n' +
+    '1. Marca (LOGO e MOTIVOS decorativos): use SEMPRE o ativo REAL do DS (`<img data-ds-logo>` / ' +
+    '`<img data-ds-asset-id>`). NUNCA desenhe um logo, um motivo ou um "lockup" da marca em ' +
+    'SVG/CSS próprio (círculos, elipses, "blobs", grades de pontos) — isso destrói a identidade ' +
+    'visual. Motivos, só com parcimônia e nunca em slides de conteúdo (ver acima).\n' +
+    '2. Ícone de um item de conteúdo (card/KPI/lista): PRIMEIRO procure um ícone do DS cujo rótulo ' +
+    'combine DE VERDADE com o item e use-o. Se NENHUM ícone do DS combina, você tem duas opções — ' +
+    'nesta ordem de preferência: (a) NÃO usar ícone naquele item (rótulo + texto já é profissional); ' +
+    '(b) desenhar um ícone SVG SIMPLES, de traço, monocromático na cor de texto/acento do tema, que ' +
+    'represente o CONCEITO do item (ex.: um cadeado p/ segurança, uma engrenagem p/ processo). ' +
+    'O que você NUNCA deve fazer é forçar um ícone de PRODUTO/marca do DS num item que não fala ' +
+    'daquele produto só para "ter um ícone" — um ícone de produto fora de contexto é pior que ' +
+    'nenhum ícone. Consistência: se um slide usa ícones SVG próprios, todos os itens daquele grupo ' +
+    'seguem o mesmo estilo (não misture ícone de produto do DS com glifo desenhado no mesmo grupo).\n' +
+    '(SVG inline sempre correto para GRÁFICOS de dados — barras, linhas, pizza — que são conteúdo.)'
 
   // the composition brief goes last so it sits closest to where the model
   // starts generating — the freshest, most actionable guidance for a rich DS
@@ -628,46 +648,87 @@ function templateHint(template) {
 // unrenderable Plotly/HTML code for the very common "faça um gráfico" ask.
 const DECK_INTENT_RE =
   /\b(apresenta[çc][ãa]o|apresenta[çc][õo]es|apresentar|slides?|slide\s*deck|deck|decks|pitch|pptx|powerpoint|power\s*point|keynote|present(ation|e)|capa\s+do\s+deck)\b/i
-const SPREADSHEET_INTENT_RE =
-  /\b(planilhas?|xlsx?|excel|google\s*sheets?|sheets?|workbook|spreadsheet|or[çc]amento|valuation|dcf|proje[çc][ãa]o\s+financeira|modelo\s+(de\s+)?(c[áa]lculo|financeiro|valuation)|fluxo\s+de\s+caixa|planejamento\s+financeiro)\b/i
+// Standalone spreadsheet tokens — specific enough that their bare presence is a
+// real request (they don't show up as institutional-deck narrative the way
+// "planilha"/"clientes" do).
+const SPREADSHEET_STRONG_RE =
+  /\b(xlsx|excel|workbook|valuation|dcf|fluxo\s+de\s+caixa|proje[çc][ãa]o\s+financeira|modelo\s+(de\s+)?(c[áa]lculo|financeiro|valuation))\b/i
+const SPREADSHEET_NOUN_SRC = 'planilhas?|google\\s*sheets?|sheets?|spreadsheet|or[çc]amento|planejamento\\s+financeiro'
+const SPREADSHEET_NOUN = new RegExp(`\\b(?:${SPREADSHEET_NOUN_SRC})\\b`, 'i')
 // "adjust this presentation to the template/design system" — captures the
 // re-theming intent even when the word "deck/apresentação" isn't repeated
 // (the .pptx attachment already implies the artifact).
 const ADJUST_INTENT_RE =
   /\b(ajust\w+|adapt\w+|aplic\w+|reestrutur\w+|padroniz\w+|formatar|reformatar|refazer|converter|transform\w+|adjust|adapt|apply|restructure|reformat|convert|rework)\b/i
-// "generate/create/draw an image/illustration/logo/…" — the trigger for the
-// image-generation tool + policy. Requires BOTH a create-verb AND an image-noun
-// nearby so "crie uma tabela" or "desenhe o fluxo em texto" don't false-fire;
-// the verb and noun can appear in either order (e.g. "uma ilustração de ...").
-const IMAGE_CREATE_VERB = /\b(gere?|gerar|cri[ae]r?|desenh\w+|ilustr\w+|fa[çc]a|fazer|produz\w+|render\w+|generate|create|draw|make|render|design|paint|imagine)\b/i
-const IMAGE_NOUN = /\b(imagem|imagens|ilustra[çc][õo]es|ilustra[çc][ãa]o|figuras?|fotos?|fotografias?|desenhos?|arte|artwork|logotipos?|logos?|[íi]cones?|banner|p[ôo]ster|wallpaper|thumbnail|images?|illustrations?|pictures?|photos?|drawings?|logo|icons?|posters?)\b/i
-const IMAGE_INTENT_RE = { test: (t) => IMAGE_CREATE_VERB.test(t) && IMAGE_NOUN.test(t) }
-// "write/draft a document/report/article/letter/…" — the trigger for the
-// document-writing capability (rich-text Studio + DOCX/MD/PDF export). Needs a
-// write-verb AND a document-noun so "escreva um resumo" (a chat reply) doesn't
-// force a document, but "escreva um DOCUMENTO/relatório/artigo" does.
-const DOC_CREATE_VERB = /\b(escrev\w+|redij\w+|redig\w+|elabor\w+|crie|criar|gere?|gerar|produz\w+|prepar\w+|monte|montar|rascunh\w+|write|draft|compose|create|generate|prepare|author)\b/i
-const DOC_NOUN = /\b(documento|documentos|relat[óo]rios?|artigos?|texto|textos|ensaios?|carta|cartas|ofício|memorando|memorandos|proposta|propostas|contrato|contratos|pol[íi]tica|pol[íi]ticas|manual|manuais|especifica[çc][ãa]o|readme|whitepaper|white\s*paper|briefing|document|documents|reports?|articles?|essays?|letters?|memo|memos|proposals?|contracts?|policy|policies|specs?|specifications?)\b/i
-const DOC_INTENT_RE = { test: (t) => DOC_CREATE_VERB.test(t) && DOC_NOUN.test(t) }
+// Builds a matcher requiring a create-VERB adjacent to an artifact NOUN (within
+// ~4 words, either order). This is the fix for the reported bug where a deck
+// briefing that NARRATES "geração de slides, planilhas, documentos, imagens" as
+// product features lit up the spreadsheet/image/document capabilities too: a
+// bare noun somewhere in a long prompt no longer counts — the verb has to be
+// acting ON that noun. Follow-up turns ("gere a planilha") still match, and true
+// multi-artifact requests ("crie um deck e uma planilha") match both because the
+// verb sits next to each noun. Stickiness (history) covers verb-less follow-ups.
+const GAP4 = '(?:\\s+\\S+){0,4}\\s+'
+function verbNearNoun(verbSrc, nounSrc) {
+  const vn = new RegExp(`\\b(?:${verbSrc})${GAP4}(?:${nounSrc})\\b`, 'i')
+  const nv = new RegExp(`\\b(?:${nounSrc})${GAP4}(?:${verbSrc})\\b`, 'i')
+  return { test: (t) => vn.test(t) || nv.test(t) }
+}
+// "generate/create/draw an image/illustration/logo/…" — the image-generation
+// tool + policy. Verb must sit next to the image noun (see verbNearNoun).
+const IMAGE_CREATE_VERB_SRC = 'gere?|gerar|cri[ae]r?|desenh\\w+|ilustr\\w+|fa[çc]a|fazer|produz\\w+|render\\w+|generate|create|draw|make|render|design|paint|imagine'
+const IMAGE_NOUN_SRC = 'imagem|imagens|ilustra[çc][õo]es|ilustra[çc][ãa]o|figuras?|fotos?|fotografias?|desenhos?|artwork|logotipos?|logos?|[íi]cones?|banner|p[ôo]ster|wallpaper|thumbnail|images?|illustrations?|pictures?|photos?|drawings?|logo|icons?|posters?'
+const IMAGE_INTENT_RE = verbNearNoun(IMAGE_CREATE_VERB_SRC, IMAGE_NOUN_SRC)
+// "write/draft a document/report/article/letter/…" — the document-writing
+// capability (rich-text Studio + DOCX/MD/PDF export). Verb next to the doc noun.
+const DOC_CREATE_VERB_SRC = 'escrev\\w+|redij\\w+|redig\\w+|elabor\\w+|crie|criar|gere?|gerar|produz\\w+|prepar\\w+|monte|montar|rascunh\\w+|write|draft|compose|create|generate|prepare|author'
+const DOC_NOUN_SRC = 'documento|documentos|relat[óo]rios?|artigos?|ensaios?|carta|cartas|of[íi]cio|memorando|memorandos|proposta|propostas|contrato|contratos|pol[íi]tica|pol[íi]ticas|manuais?|especifica[çc][ãa]o|readme|whitepaper|white\\s*paper|briefing|document|documents|reports?|articles?|essays?|letters?|memo|memos|proposals?|contracts?|policy|policies|specs?|specifications?'
+const DOC_INTENT_RE = verbNearNoun(DOC_CREATE_VERB_SRC, DOC_NOUN_SRC)
+// Spreadsheet: a strong standalone token OR a create-verb next to a sheet noun.
+const SPREADSHEET_CREATE_VERB_SRC = 'gere?|gerar|cri[ae]r?|monte|montar|fa[çc]a|fazer|produz\\w+|prepar\\w+|elabor\\w+|build|create|generate|make|prepare'
+const SPREADSHEET_VERB_NEAR_NOUN = verbNearNoun(SPREADSHEET_CREATE_VERB_SRC, SPREADSHEET_NOUN_SRC)
+const SPREADSHEET_INTENT_RE = {
+  test: (t) => SPREADSHEET_STRONG_RE.test(t) || SPREADSHEET_VERB_NEAR_NOUN.test(t),
+}
 
 // Signals that the user wants THEIR OWN workspace/company data — the only thing
 // the company-data tools (Genie One / Genie Spaces / UC functions / vector
-// search) are for. Two families: possessives that scope to the user's org
-// ("nossa receita", "our sales") and business-data nouns whose answer plausibly
-// lives in internal tables (revenue, pipeline, churn, inventory…). Deliberately
-// broad: a false positive just leaves the tools attached (prior behavior), while
-// a false negative would strip a tool a data-grounded deck genuinely needed.
-const DATA_POSSESSIVE = /\b(nosso?s?|nossas?|minha?s?|meu?s?|da\s+(minha\s+)?empresa|do\s+(meu\s+)?neg[óo]cio|na\s+(nossa\s+)?base|our|my|company'?s|internal)\b/i
-const DATA_NOUN = /\b(receita|faturamento|vendas?|revenue|sales|pipeline|clientes?|customers?|churn|arr|mrr|ltv|cac|estoque|invent[áa]rio|inventory|m[ée]tricas?|metrics?|kpis?|indicadores?|consumo|usage|transa[çc][õo]es|transactions?|pedidos?|orders?|leads?|oportunidades?|opportunities|assinaturas?|subscriptions?|tabelas?\s+(do|de)|unity\s*catalog|genie|data\s*warehouse|datamart|dashboards?|relat[óo]rio\s+de\s+(vendas|receita|consumo))\b/i
-// The user is asking about their own data when a possessive scopes a data noun,
-// OR a strong business-data noun appears at all (revenue/pipeline/etc. almost
-// never mean anything but the user's numbers here). Bare "dados"/"data" is too
-// generic to count on its own — it needs a possessive.
-const GENERIC_DATA = /\b(dados|data)\b/i
+// search) are for. The trap the first cut fell into: business nouns like
+// "clientes", "vendas", "receita" appear ALL THE TIME as narrative content in an
+// institutional deck ("impacto/tração com clientes", "geração de receita") —
+// treating a bare noun as a data request lit up Genie One on a deck that never
+// needed any data (the reported bug). So a bare business noun is NOT enough. A
+// real data request shows one of three stronger signals:
+//   1. an unmistakable data-SOURCE reference (Unity Catalog, Genie, a warehouse,
+//      "tabela de ...", "nossa base de dados") — those mean querying, period;
+//   2. a possessive/scope to the user's org NEXT TO a data noun ("nossa receita",
+//      "our sales", "dados da empresa");
+//   3. a query/analyze VERB applied to a data noun ("analise as vendas",
+//      "puxe o churn", "calcule o consumo").
+// An unmistakable data-SOURCE reference — a company data store. These mean
+// "query my data", period, wherever they appear.
+const DATA_SOURCE = /\b(unity\s*catalog|genie|data\s*warehouse|datamart|lakehouse|tabelas?\s+(do|da|de)\s+\w+|nossa\s+base\s+de\s+dados|nosso\s+banco\s+de\s+dados|our\s+(data\s*)?(warehouse|tables?|database))\b/i
+// Fragments reused in the proximity patterns below.
+const POSSESSIVE = 'nossos?|nossas?|minhas?|meus?|da\\s+empresa|do\\s+neg[óo]cio|our|my|company\'?s'
+const DATA_NOUN_SRC =
+  'receitas?|faturamento|vendas?|revenue|sales|pipeline|churn|arr|mrr|ltv|cac|estoques?|invent[áa]rios?|inventory|m[ée]tricas?|metrics?|kpis?|indicadores?|consumo|usage|transa[çc][õo]es|transactions?|pedidos?|orders?|leads?|oportunidades?|opportunities|assinaturas?|subscriptions?|dashboards?|dados|data'
+const DATA_QUERY_VERB_SRC =
+  'consult\\w+|puxe?|puxar|busque?|buscar|analis\\w+|calcul\\w+|extrai\\w+|extra[íi]\\w+|traga|trazer|liste?|listar|agrupe?|agrupar|filtre?|filtrar|query|pull|fetch|analy[sz]e|compute|aggregate'
+// PROXIMITY is what separates a real data request from a data noun merely
+// MENTIONED in narrative. "nossa receita", "vendas da empresa", "our sales",
+// "analise o churn", "puxe os pedidos" — possessive/verb sitting NEXT TO the
+// data noun (within ~3 words), in either order. A blob that happens to contain
+// "da empresa" (from "design system da empresa") 500 chars away from "clientes"
+// no longer counts — which is exactly the reported false positive.
+const GAP = '(?:\\s+\\S+){0,3}\\s+'
+const POSSESSIVE_NOUN = new RegExp(`\\b(?:${POSSESSIVE})${GAP}(?:${DATA_NOUN_SRC})\\b`, 'i')
+const NOUN_POSSESSIVE = new RegExp(`\\b(?:${DATA_NOUN_SRC})\\s+(?:de\\s+|do\\s+|da\\s+|of\\s+)?(?:${POSSESSIVE})\\b`, 'i')
+const VERB_NOUN = new RegExp(`\\b(?:${DATA_QUERY_VERB_SRC})${GAP}(?:${DATA_NOUN_SRC})\\b`, 'i')
 export function hasDataIntent(userText) {
   const t = String(userText || '')
-  if (DATA_NOUN.test(t)) return true
-  if (DATA_POSSESSIVE.test(t) && GENERIC_DATA.test(t)) return true
+  if (DATA_SOURCE.test(t)) return true
+  if (POSSESSIVE_NOUN.test(t) || NOUN_POSSESSIVE.test(t)) return true
+  if (VERB_NOUN.test(t)) return true
   return false
 }
 
@@ -679,11 +740,53 @@ function historyHasBlock(history, types) {
   return false
 }
 
+// HYBRID gating for the cheap intent classifier (see classifyIntent in llm.js).
+// The classifier is worth its (tiny) cost/latency only on turns whose intent is
+// genuinely ambiguous to the regex router. It is SKIPPED — falling back to the
+// fast regexes — on two kinds of turn whose intent is clear by nature:
+//   1. Trivial/plain-chat turns with no artifact or data vocabulary at all
+//      ("quanto é 2+2?") — running it would only add latency (the reported
+//      "stuck in Thinking" pain) for a guaranteed all-false verdict.
+//   2. A follow-up TWEAK on an artifact already in the thread, with no fresh
+//      artifact noun and a short message ("deixe mais escuro", "mais formal",
+//      "outra versão") — the sticky capability already resolves it; the intent
+//      is 100% clear by essence (the user's own point about document tweaks,
+//      generalized to any artifact).
+// Deterministic turns (deck-questions answer) also skip. Everything else — the
+// briefings and multi-artifact asks where the regex is unreliable — classifies.
+export function shouldClassifyIntent(userText, history, opts = {}) {
+  const t = String(userText || '')
+  if (/^\s*perguntas respondidas\s*:/i.test(t)) return false
+  const maybeArtifact =
+    DECK_INTENT_RE.test(t) ||
+    SPREADSHEET_STRONG_RE.test(t) ||
+    SPREADSHEET_NOUN.test(t) ||
+    new RegExp(IMAGE_NOUN_SRC, 'i').test(t) ||
+    new RegExp(DOC_NOUN_SRC, 'i').test(t)
+  const maybeData = DATA_SOURCE.test(t) || new RegExp(DATA_NOUN_SRC, 'i').test(t)
+  // plain chat: no artifact/data signal and no attachment implying one → skip.
+  if (!maybeArtifact && !maybeData && !opts.hasPptxAttachment && !opts.hasImageAttachment) return false
+  // short tweak on an existing artifact, no fresh artifact noun → skip.
+  const hasArtifactHistory = historyHasBlock(history, ['deck', 'deck-questions', 'spreadsheet', 'image', 'document'])
+  if (hasArtifactHistory && !maybeArtifact && t.length < 240) return false
+  return true
+}
+
 // Returns { deck, spreadsheet } — whether each heavy capability's policy should
 // be included this turn. `userText` is the current prompt; `history` is the
 // prior thread (each message may carry a `blocks` array).
+//
+// `opts.classifier` (optional) is the result of the cheap LLM intent classifier
+// (llm.js classifyIntent). When present it is AUTHORITATIVE for the per-type
+// artifact intents and the data intent — it reads the sentence semantically, so
+// it doesn't trip on artifact nouns that appear only as narrative content (the
+// reported bug). The regexes below stay as the zero-latency fast-path and as the
+// fallback when the classifier wasn't run or failed. Deterministic signals that
+// aren't narrative-ambiguous (deck-questions answer, .pptx attachment, image
+// attachment) are always honored on top of whichever source we use.
 export function detectCapabilities(userText, history, opts = {}) {
   const text = String(userText || '')
+  const cls = opts.classifier?.intents || null
   // the deck flow's follow-up turn arrives as "Perguntas respondidas: ..." (see
   // DECK_POLICY etapa 2) — keep deck on so generation gets the full policy
   const answeringDeckQuestions = /^\s*perguntas respondidas\s*:/i.test(text)
@@ -692,14 +795,15 @@ export function detectCapabilities(userText, history, opts = {}) {
   // fire, deck is implied (same generation/render pipeline, re-themed to the DS).
   const pptxAdjust =
     !!opts.hasPptxAttachment && (DECK_INTENT_RE.test(text) || ADJUST_INTENT_RE.test(text))
-  // Per-type EXPLICIT intent in the CURRENT message. These are what the user is
-  // actually asking for this turn.
-  const deckIntent = DECK_INTENT_RE.test(text) || answeringDeckQuestions || pptxAdjust
-  const spreadsheetIntent = SPREADSHEET_INTENT_RE.test(text)
+  // Per-type EXPLICIT intent in the CURRENT message. When the classifier ran, its
+  // verdict is the source of truth for the narrative-ambiguous artifact types;
+  // otherwise we fall back to the (proximity-tightened) regexes.
+  const deckIntent = (cls ? cls.deck : DECK_INTENT_RE.test(text)) || answeringDeckQuestions || pptxAdjust
+  const spreadsheetIntent = cls ? cls.spreadsheet : SPREADSHEET_INTENT_RE.test(text)
   // an attached image also warms image (the user likely wants to edit it, and
   // "deixe em p&b" carries no image-noun the regex would catch)
-  const imageIntent = IMAGE_INTENT_RE.test(text) || !!opts.hasImageAttachment
-  const documentIntent = DOC_INTENT_RE.test(text)
+  const imageIntent = (cls ? cls.image : IMAGE_INTENT_RE.test(text)) || !!opts.hasImageAttachment
+  const documentIntent = cls ? cls.document : DOC_INTENT_RE.test(text)
 
   // Sticky capabilities: a thread that already produced an artifact keeps that
   // capability warm so a FOLLOW-UP with no explicit noun ("deixe mais escuro",
@@ -730,7 +834,8 @@ export function detectCapabilities(userText, history, opts = {}) {
   // noun, or a business-data noun) keeps them, even while making a deck — a
   // data-grounded deck is legitimate. A plain chat turn (no artifact intent)
   // always keeps them; the tool description handles the general-knowledge case.
-  const artifactOnly = (deck || spreadsheet || image || document) && !hasDataIntent(text)
+  const dataIntent = cls ? cls.data : hasDataIntent(text)
+  const artifactOnly = (deck || spreadsheet || image || document) && !dataIntent
   const suppressDataTools = artifactOnly
   return { deck, spreadsheet, pptxAdjust, image, document, suppressDataTools }
 }

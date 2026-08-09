@@ -140,12 +140,14 @@ export const DECK_HTML_POLICY =
   'visual dos gráficos dos SLIDES DE EXEMPLO do design system — o acabamento (grade, eixos, ' +
   'rótulos, marcadores, cantos, preenchimentos) é o que o DS mostra nesses exemplos, não algo que ' +
   'você define. Nunca entregue um gráfico mais "cru" do que os exemplos do DS.\n' +
-  '- Ativos da marca (ícones, ilustrações/motivos, logo, imagens): use SEMPRE os assets REAIS do ' +
-  'design system via `<img data-ds-asset-id="ID">` (logo: `<img data-ds-logo>`), com os ids ' +
-  'listados na seção de ativos do design system — o renderizador injeta a arte real. NUNCA ' +
-  'desenhe seu próprio ícone/logo/motivo em SVG ou CSS como substituto de um asset da marca, e ' +
-  'NUNCA escreva `src="..."` à mão. SVG inline é só para GRÁFICOS de dados (conteúdo), nunca para ' +
-  'decoração de marca. Se não houver asset adequado, deixe o espaço limpo.\n' +
+  '- Ativos da marca (logo, ilustrações/motivos): use SEMPRE os assets REAIS do design system via ' +
+  '`<img data-ds-logo>` / `<img data-ds-asset-id="ID">`, com os ids listados na seção de ativos — ' +
+  'o renderizador injeta a arte real; NUNCA desenhe um logo/motivo próprio em SVG/CSS nem escreva ' +
+  '`src="..."` à mão. Motivos decorativos, só com parcimônia (capa/divisor/encerramento), nunca ' +
+  'em slides de conteúdo. ÍCONES de item de conteúdo: prefira um ícone do DS cujo rótulo combine ' +
+  'DE VERDADE; se nenhum combinar, ou não use ícone, ou desenhe um SVG simples de traço que ' +
+  'represente o conceito — mas NUNCA force um ícone de PRODUTO do DS num item sem relação com ' +
+  'aquele produto. (SVG inline também é sempre correto para GRÁFICOS de dados.)\n' +
   '- Texto SEMPRE flui e quebra naturalmente. Se um slide tem muito conteúdo, reduza o conteúdo ' +
   'ou divida em dois — jamais espremer numa caixa estreita.\n' +
   '- Honestidade de dados: só use números presentes nesta conversa (pedido, respostas, anexos, ' +

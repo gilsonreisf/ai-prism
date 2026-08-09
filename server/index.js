@@ -72,7 +72,7 @@ import {
   setToolPolicy,
 } from './db.js'
 import { isAdmin, isOwner, ownerEmail, groupCheckStatus, invalidateAdminsCache, appAccessCandidates, isAppAccessPrincipal } from './authz.js'
-import { MODELS, modelById, streamChat, complete, completeWithUsage, generateTitle, embed, cosineSim, labelDesignAssets, DEFAULT_IMAGE_MODEL } from './llm.js'
+import { MODELS, modelById, streamChat, complete, completeWithUsage, generateTitle, classifyIntent, INTENT_MODEL, embed, cosineSim, labelDesignAssets, DEFAULT_IMAGE_MODEL } from './llm.js'
 import { extractText, SUPPORTED_EXTENSIONS } from './files.js'
 import { transcribe, isMediaFile, transcriptionEnabled, MEDIA_EXTENSIONS, TranscriptionError, mediaModelName } from './transcribe.js'
 import { ingestPptx, pptxDeckToBrief } from './pptxIngest.js'
@@ -80,6 +80,7 @@ import { analyzeSpreadsheet, isSpreadsheet } from './analysis.js'
 import {
   buildBlocksInstruction,
   detectCapabilities,
+  shouldClassifyIntent,
   activeSystemSkills,
   SYSTEM_SKILLS,
   extractPrismBlocks,
@@ -2365,10 +2366,18 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // Progressive disclosure: only include the heavy deck/spreadsheet policies
     // when the turn is plausibly about them (see detectCapabilities) — a trivial
     // question shouldn't carry ~10k tokens of deck+spreadsheet+design-system.
-    const caps = detectCapabilities(prompt, history, {
-      hasPptxAttachment: !!pptxDeckBrief,
-      hasImageAttachment: imageAttachments.length > 0,
-    })
+    // Cheap LLM intent classifier (hybrid-gated): on turns where the regex
+    // router is unreliable — a long briefing that narrates artifact/data nouns,
+    // a multi-artifact request — a fast/cheap model reads the actual intent so
+    // we don't over-fire capabilities/tools (the reported bug). Skipped on
+    // trivial chat and obvious tweaks (see shouldClassifyIntent) to keep TTFT
+    // flat. Its tiny cost is folded into the turn's estimate (intentClassify
+    // below). Best-effort: on failure/timeout, caps fall back to the regexes.
+    const classifyOpts = { hasPptxAttachment: !!pptxDeckBrief, hasImageAttachment: imageAttachments.length > 0 }
+    const intentResult = shouldClassifyIntent(prompt, history, classifyOpts)
+      ? await classifyIntent(req.token, prompt).catch(() => null)
+      : null
+    const caps = detectCapabilities(prompt, history, { ...classifyOpts, classifier: intentResult })
     // Only the deck flow consumes the (heavy) selected template — both to build
     // its instruction and to resolve deck fences afterward. When this turn isn't
     // about a deck, caps.deck is false, DECK_POLICY is omitted, so the model
@@ -2477,6 +2486,12 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
       completionTokens: hadUsage ? usage.completion_tokens : null,
       blocks: blocks.length ? blocks : null,
       mediaProcessing: computeMediaProcessing(mediaProcessedFiles, model, mediaUsageTotal),
+      // disclose the intent-classifier hop + its (tiny) token spend so it folds
+      // into the shown cost estimate, per the design decision to make the
+      // pre-analysis cost visible rather than hidden.
+      intentClassify: intentResult?.usage
+        ? { model: INTENT_MODEL, usage: { prompt_tokens: intentResult.usage.prompt_tokens, completion_tokens: intentResult.usage.completion_tokens } }
+        : null,
     })
     if (toolTrace.length) await addToolCalls(req.email, req.token, assistantMsg.id, toolTrace)
 
@@ -2626,7 +2641,10 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
     // last (unanswered) user message drives capability gating; history blocks
     // keep an in-progress deck/spreadsheet flow's policy on
     const lastUserText = history[history.length - 1]?.content || ''
-    const caps = detectCapabilities(lastUserText, history)
+    const intentResult = shouldClassifyIntent(lastUserText, history)
+      ? await classifyIntent(req.token, lastUserText).catch(() => null)
+      : null
+    const caps = detectCapabilities(lastUserText, history, { classifier: intentResult })
     const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate, caps)
     if (blocksInstruction) apiMessages.push({ role: 'system', content: blocksInstruction })
     const activeSkills = await routeSkills(req, lastUserText, { forced: req.body.skills })
@@ -2685,6 +2703,9 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
       promptTokens: hadUsage ? usage.prompt_tokens : null,
       completionTokens: hadUsage ? usage.completion_tokens : null,
       blocks: blocks.length ? blocks : null,
+      intentClassify: intentResult?.usage
+        ? { model: INTENT_MODEL, usage: { prompt_tokens: intentResult.usage.prompt_tokens, completion_tokens: intentResult.usage.completion_tokens } }
+        : null,
     })
     if (toolTrace.length) await addToolCalls(req.email, req.token, assistantMsg.id, toolTrace)
 
@@ -2749,7 +2770,10 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
     // capability gating keyed on the last user turn being regenerated + the
     // history's blocks (so an in-progress deck/spreadsheet flow keeps its policy)
     const lastUserText = [...history].reverse().find((m) => m.role === 'user')?.content || ''
-    const caps = detectCapabilities(lastUserText, history)
+    const intentResult = shouldClassifyIntent(lastUserText, history)
+      ? await classifyIntent(req.token, lastUserText).catch(() => null)
+      : null
+    const caps = detectCapabilities(lastUserText, history, { classifier: intentResult })
     const blocksInstruction = buildBlocksInstruction(chartState.items, selectedTemplate, caps)
     if (blocksInstruction) apiMessages.push({ role: 'system', content: blocksInstruction })
     const activeSkills = await routeSkills(req, lastUserText, { forced: req.body.skills })
@@ -2809,6 +2833,9 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
       completionTokens: hadUsage ? usage.completion_tokens : null,
       blocks: blocks.length ? blocks : null,
       variantGroup,
+      intentClassify: intentResult?.usage
+        ? { model: INTENT_MODEL, usage: { prompt_tokens: intentResult.usage.prompt_tokens, completion_tokens: intentResult.usage.completion_tokens } }
+        : null,
     })
     if (toolTrace.length) await addToolCalls(req.email, req.token, assistantMsg.id, toolTrace)
 
