@@ -43,7 +43,7 @@ function notifyTurnDone(enabled, t) {
   } catch {}
 }
 
-function makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, onMeta, onTitle }) {
+function makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, setStreamingDeck, onMeta, onTitle }) {
   // Coalesce high-frequency content updates into ONE paint per animation frame
   // instead of one setState (→ full App re-render + markdown reparse) per token.
   // `accRef.value` is the single source of truth for the streamed text, so the
@@ -70,6 +70,22 @@ function makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, onMeta,
         break
       case 'usage':
         setTarget({ prompt_tokens: ev.usage.prompt_tokens, completion_tokens: ev.usage.completion_tokens })
+        break
+      case 'deck_stream_start':
+        // pure-HTML deck engine: the model started writing a deck. Open the
+        // Studio immediately with an empty live deck so slides stream IN (kills
+        // the blind spinner). The persisted deck (blocks event) supersedes it.
+        setStreamingDeck?.({ title: ev.title || '', slides: [], meta: { format: 'html' }, streaming: true })
+        setDeckStudioId?.('streaming')
+        break
+      case 'deck_slide':
+        // one slide finished — append/replace at its index so thumbnails build
+        // up live, in order.
+        setStreamingDeck?.((d) => {
+          const slides = (d?.slides || []).slice()
+          slides[ev.index] = ev.html
+          return { ...(d || { meta: { format: 'html' }, streaming: true }), slides }
+        })
         break
       case 'reasoning':
         // native reasoning/thinking tokens streamed by the model — shown live in
@@ -116,8 +132,12 @@ function makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, onMeta,
         accRef.value = ev.content
         setTarget({ content: ev.content, blocks: ev.blocks })
         {
-          const freshDeck = ev.blocks.find((b) => b.type === 'deck' && b.deckId)
-          if (freshDeck) setDeckStudioId(freshDeck.deckId)
+          const freshDeck = ev.blocks.find((b) => (b.type === 'deck' || b.type === 'deck-html') && b.deckId)
+          if (freshDeck) {
+            setDeckStudioId(freshDeck.deckId)
+            // the persisted deck now supersedes the live-streamed one
+            setStreamingDeck?.(null)
+          }
         }
         break
       case 'title':
@@ -187,6 +207,12 @@ export default function App({ uiLang, setUiLang }) {
   )
   const [view, setView] = useState('chat') // 'chat' | 'history'
   const [deckStudioId, setDeckStudioId] = useState(null)
+  // which chat session the open deck belongs to — the Studio auto-closes when
+  // the user navigates to a different conversation (a deck is bound to its chat)
+  const [deckSessionId, setDeckSessionId] = useState(null)
+  // pure-HTML deck engine: the deck being streamed live (before it persists and
+  // gets a real deckId). Rendered by DeckStudio when deckStudioId === 'streaming'.
+  const [streamingDeck, setStreamingDeck] = useState(null)
   const [spreadsheetStudioId, setSpreadsheetStudioId] = useState(null)
   const [documentStudioId, setDocumentStudioId] = useState(null)
   // focus mode: while a deck is open the chat shrinks to a narrow side column
@@ -198,9 +224,27 @@ export default function App({ uiLang, setUiLang }) {
   // only this flag, never the user's persisted manual preference. Closing the
   // deck falls back to whatever they'd set before.
   const [deckAutoCollapsed, setDeckAutoCollapsed] = useState(false)
+  // when the deck Studio enters manual HTML Edit mode it asks to hide the chat
+  // entirely (the user wants max canvas room to edit the slide). Cleared when
+  // Edit mode closes or the Studio closes.
+  const [deckEditFullscreen, setDeckEditFullscreen] = useState(false)
   useEffect(() => {
     setDeckAutoCollapsed(!!deckStudioId)
+    if (!deckStudioId) {
+      setDeckEditFullscreen(false)
+      setDeckSessionId(null)
+    }
   }, [deckStudioId])
+  // a deck is bound to the chat that created it: once we know the open deck's
+  // owning session, close the Studio if the user is viewing a different chat
+  // (streaming decks have no persisted session yet — never force-close those)
+  useEffect(() => {
+    if (!deckStudioId || deckStudioId === 'streaming' || deckSessionId == null) return
+    if (currentId != null && String(currentId) !== String(deckSessionId)) {
+      setDeckStudioId(null)
+      setStreamingDeck(null)
+    }
+  }, [currentId, deckSessionId, deckStudioId])
   const sidebarCollapsed = manualSidebarCollapsed || deckAutoCollapsed
   const toggleSidebarCollapse = () => {
     if (sidebarCollapsed) {
@@ -398,6 +442,16 @@ export default function App({ uiLang, setUiLang }) {
 
   // pure state transitions — no URL side effects, safe to call from the
   // popstate handler (which must never push a *new* history entry back)
+  // An open artifact Studio (deck/spreadsheet/document) is scoped to the
+  // conversation it was opened from — it must NOT bleed into a new chat or a
+  // different session the user switches to. Close all three whenever the active
+  // conversation changes.
+  const closeStudios = () => {
+    setDeckStudioId(null)
+    setSpreadsheetStudioId(null)
+    setDocumentStudioId(null)
+  }
+
   const resetToNewChat = () => {
     if (streaming) return
     setCurrentId(null)
@@ -407,6 +461,7 @@ export default function App({ uiLang, setUiLang }) {
     setInput('')
     setFiles([])
     setSidebarOpen(false)
+    closeStudios()
     setView('chat')
   }
 
@@ -417,6 +472,7 @@ export default function App({ uiLang, setUiLang }) {
     if (id === currentId) return
     setCurrentId(id)
     setMessages([])
+    closeStudios() // a Studio from the previous session must not carry over
     setLoadingSession(true)
     try {
       const r = await getJSON(`/api/sessions/${id}/messages`)
@@ -608,6 +664,7 @@ export default function App({ uiLang, setUiLang }) {
         accRef,
         pushToast,
         setDeckStudioId,
+        setStreamingDeck,
         onMeta: (ev) => {
           createdId = ev.sessionId
           if (ev.isNew) {
@@ -683,7 +740,7 @@ export default function App({ uiLang, setUiLang }) {
       abortRef.current = ctrl
       const accRef = { value: '' }
 
-      const sseHandler = makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId })
+      const sseHandler = makeSSEHandler({ setTarget, accRef, pushToast, setDeckStudioId, setStreamingDeck })
       try {
         await streamRegenerate(
           currentId,
@@ -731,7 +788,7 @@ export default function App({ uiLang, setUiLang }) {
         return next
       })
 
-    const sseHandler = makeSSEHandler({ setTarget: setLast, accRef, pushToast, setDeckStudioId })
+    const sseHandler = makeSSEHandler({ setTarget: setLast, accRef, pushToast, setDeckStudioId, setStreamingDeck })
     try {
       await streamContinue(
         currentId,
@@ -898,6 +955,10 @@ export default function App({ uiLang, setUiLang }) {
       ) : (
       <main
         className={`flex-1 flex flex-col min-w-0 ${
+          // manual HTML Edit mode hides the chat entirely so the slide gets the
+          // full row (the Studio spans everything)
+          deckEditFullscreen ? 'hidden' : ''
+        } ${
           // focus mode: the chat column scales with the window (32%) instead
           // of a fixed 380px, so the composer isn't cramped on big screens
           deckStudioId && deckFocus ? 'md:flex-none md:w-[clamp(400px,32%,560px)] md:border-r md:border-[var(--border)]' : ''
@@ -1038,11 +1099,17 @@ export default function App({ uiLang, setUiLang }) {
 
       <DeckStudio
         open={!!deckStudioId}
-        deckId={deckStudioId}
-        onClose={() => setDeckStudioId(null)}
+        deckId={deckStudioId === 'streaming' ? null : deckStudioId}
+        streamingDeck={deckStudioId === 'streaming' ? streamingDeck : null}
+        onClose={() => {
+          setDeckStudioId(null)
+          setStreamingDeck(null)
+        }}
         pushToast={pushToast}
         focus={deckFocus}
         onToggleFocus={() => setDeckFocus((f) => !f)}
+        onEditModeChange={setDeckEditFullscreen}
+        onDeckSession={setDeckSessionId}
         models={models}
         model={model}
       />

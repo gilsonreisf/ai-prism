@@ -86,19 +86,23 @@ import {
   stripBlockPlaceholders,
   buildNewCandidatesHint,
   sanitizeDeck,
+  sanitizeHtmlDeck,
   sanitizeSpreadsheet,
   sanitizeDocument,
   sanitizeQuestionAnswers,
   usableIconAssets,
+  reviewDeckBlock,
 } from './blocks.js'
 import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool, TOOL_GROUP_KEYS } from './tools.js'
 import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
+import { makeSlideStreamScanner } from './deckHtmlStream.js'
+import { buildDsStyleContract } from './deckHtmlPolicy.js'
 import { searchGenieSpaces } from './genie.js'
 import { searchVectorIndexes } from './vectorSearch.js'
 import { searchExternalMcpConnections, probeMcpConnection } from './externalMcp.js'
 import { listChatEndpoints, buildAdminCatalog, buildUserModels, buildUserImageModels } from './serving.js'
 import { getImageBytes, deleteImageFile } from './imageStore.js'
-import { renderPptx } from './decks.js'
+import { renderPptx, renderPptxFromOps } from './decks.js'
 import { renderXlsx } from './xlsx-export.js'
 import { renderDocx } from './docx-export.js'
 
@@ -564,6 +568,8 @@ function toolCallLabel(resolver, args, fallbackName) {
       return withParts('Genie One', intent)
     case 'vector-search':
       return withParts('Vector Search', intent, resolver.ref?.indexName)
+    case 'web-search':
+      return withParts('Web Search', intent)
     case 'mcp-external':
       return withParts(resolver.ref?.connectionName || 'MCP', resolver.mcpToolName)
     case 'mcp-external-error':
@@ -614,6 +620,15 @@ async function runAssistantTurn({
   // calls; 'ceiling' = hit MAX_ROUNDS. Surfaced to the user as an honest notice.
   let stoppedEarly = null
 
+  // Pure-HTML deck streaming (task #25): as the model writes the deck-html
+  // block, surface each slide the instant it closes so the Studio builds live
+  // instead of showing a blind spinner. One scanner per turn; slides accumulate
+  // across rounds via the `deck_slide` event (client keys off `index`).
+  const slideScanner = makeSlideStreamScanner({
+    onTitle: (title) => send({ type: 'deck_stream_start', title }),
+    onSlide: (html, index) => send({ type: 'deck_slide', html, index }),
+  })
+
   async function runRound(msgs, tools) {
     let content = ''
     let toolCalls = null
@@ -628,6 +643,7 @@ async function runAssistantTurn({
       if (chunk.delta) {
         content += chunk.delta
         send({ type: 'token', value: chunk.delta })
+        slideScanner(content)
       }
       if (chunk.usage) {
         usage.prompt_tokens += chunk.usage.prompt_tokens || 0
@@ -813,6 +829,12 @@ async function persistDeckBlocks(req, sessionId, blocks) {
     if (b.type === 'deck') {
       const meta = { audience: b.audience, author: b.author, narrative: b.narrative }
       b.deckId = await createDeck(req.email, req.token, sessionId, b.title, b.slides, meta)
+    } else if (b.type === 'deck-html') {
+      // pure-HTML deck: slides is an array of self-contained <section> strings.
+      // Stored in the same chat_decks table; meta.format discriminates it from
+      // the semantic tree deck on reload (see the Studio render path).
+      const meta = { audience: b.audience, author: b.author, format: 'html' }
+      b.deckId = await createDeck(req.email, req.token, sessionId, b.title, b.slides, meta)
     } else if (b.type === 'spreadsheet') {
       // persist the whole spec (title + sheets) so the export route can
       // reload and render it into .xlsx independent of the message content
@@ -822,6 +844,87 @@ async function persistDeckBlocks(req, sessionId, blocks) {
       // persist the markdown so the Document Studio can reload/edit/export it
       b.documentId = await createDocument(req.email, req.token, sessionId, b.title, b.markdown)
     }
+  }
+}
+
+// Visual self-review loop for a freshly generated deck. Mirrors what Claude
+// Design does when it "checks the design for issues" — except the inspection is
+// deterministic geometry (shared/deckReview via reviewDeckBlock) rather than a
+// screenshot+vision pass, because the app runtime has no rasterizer (the only
+// one, pptx-to-png.sh, drives macOS PowerPoint). We inspect the SAME paint
+// geometry both renderers use, hand the model a precise defect list, and ask it
+// to repair — the exact class of defect the benchmark caught (a clipped title,
+// off-canvas element, low contrast) but exact and instant.
+//
+// Returns the (possibly repaired) blocks. Bounded to MAX_REVIEW_ROUNDS repair
+// attempts so a stubborn defect never stalls the turn; if it can't be fixed we
+// deliver the best version rather than block. Best-effort: any failure logs and
+// returns the original blocks unchanged (a review must never break a turn).
+const MAX_REVIEW_ROUNDS = 1
+async function reviewAndRepairDeckBlocks({ req, model, blocks, template, apiMessages, answer, send, chartState, imageRefs }) {
+  const hasDeck = blocks.some((b) => b.type === 'deck')
+  if (!hasDeck) return { blocks, usage: null }
+  let current = blocks
+  let repairUsage = null
+  for (let round = 0; round < MAX_REVIEW_ROUNDS; round++) {
+    // collect defects across every deck block this turn
+    const reviews = current
+      .map((b, i) => (b.type === 'deck' ? { i, review: reviewDeckBlock(b, template) } : null))
+      .filter((r) => r && !r.review.clean)
+    if (!reviews.length) return { blocks: current, usage: repairUsage }
+
+    // signal the pass to the client (same ephemeral badge decks/skills use)
+    emitActiveSkills(send, [{ name: 'deck-review', title: 'Revisão visual do deck', description: 'Conferindo o layout dos slides' }])
+
+    const defectText = reviews
+      .map((r) => reviewDeckBlock(current[r.i], template).text)
+      .filter(Boolean)
+      .join('\n\n')
+    const repairSystem =
+      'Você acabou de gerar um deck (bloco ```prism-block``` do tipo "deck") e uma revisão automática de ' +
+      'layout encontrou os problemas visuais abaixo. Gere NOVAMENTE o mesmo deck, íntegro, corrigindo ' +
+      'APENAS esses problemas (reposicione/redimensione caixas, ajuste cores para contraste, encurte ' +
+      'textos que estouram a caixa) e preservando todo o conteúdo, dados e a intenção. Responda SOMENTE ' +
+      'com o bloco ```prism-block``` do deck corrigido — sem texto fora do bloco. NUNCA invente dados novos.'
+    const repairUser = `Problemas encontrados na revisão de layout:\n${defectText}`
+    let repaired
+    try {
+      const { text, usage } = await completeWithUsage(
+        req.token,
+        model,
+        [
+          ...apiMessages,
+          { role: 'assistant', content: answer },
+          { role: 'system', content: repairSystem },
+          { role: 'user', content: repairUser },
+        ],
+        { maxTokens: modelById(model).maxOut || 8192, temperature: 0.2 }
+      )
+      repaired = text
+      repairUsage = mergeUsage(repairUsage, usage)
+    } catch (e) {
+      console.warn('deck visual review: repair call failed (delivering original):', e.message)
+      return { blocks: current, usage: repairUsage }
+    }
+    // re-extract the repaired deck through the same validated path
+    const { blocks: newBlocks } = extractPrismBlocks(repaired, chartState.items, template, imageRefs)
+    const newDeck = newBlocks.find((b) => b.type === 'deck')
+    if (!newDeck) return { blocks: current, usage: repairUsage } // model didn't return a usable deck — keep what we had
+    // splice the repaired deck back in, preserving any non-deck blocks
+    current = current.map((b) => (b.type === 'deck' ? newDeck : b))
+  }
+  return { blocks: current, usage: repairUsage }
+}
+
+// Adds two token-usage objects (either may be null). Used to fold a repair
+// round's cost into the turn's reported usage.
+function mergeUsage(a, b) {
+  if (!a) return b || null
+  if (!b) return a
+  return {
+    prompt_tokens: (a.prompt_tokens || 0) + (b.prompt_tokens || 0),
+    completion_tokens: (a.completion_tokens || 0) + (b.completion_tokens || 0),
+    total_tokens: (a.total_tokens || 0) + (b.total_tokens || 0),
   }
 }
 
@@ -1702,7 +1805,31 @@ app.get('/api/decks/:id', auth, async (req, res) => {
 app.patch('/api/decks/:id', auth, async (req, res) => {
   try {
     await ensureReady(req)
-    const sanitized = sanitizeDeck(req.body || {})
+    const body = req.body || {}
+    // Pure-HTML deck (manual editing path, task #28): its slides are <section>
+    // HTML strings, not the semantic tree sanitizeDeck expects. Route those
+    // through sanitizeHtmlDeck (which preserves inline styles — the whole point
+    // of DOM editing — and only strips <script>) so a manual style/text edit
+    // round-trips intact. Detected structurally: every slide is a string or a
+    // {html} object. meta.format='html' is preserved so reloads keep the format.
+    const slides = Array.isArray(body.slides) ? body.slides : []
+    const isHtmlDeck =
+      slides.length > 0 && slides.every((s) => typeof s === 'string' || (s && typeof s === 'object' && typeof s.html === 'string'))
+    if (isHtmlDeck) {
+      const sanitized = sanitizeHtmlDeck(body)
+      if (!sanitized) return res.status(400).json({ error: 'deck inválido' })
+      // carry any per-slide notes the client sent alongside the HTML strings
+      // (the client sends bare strings for HTML slides, but keeps notes in
+      // parallel {html,notes} objects when present).
+      const notesBySlide = slides.map((s) => (s && typeof s === 'object' && typeof s.notes === 'string' ? s.notes : undefined))
+      const finalSlides = sanitized.slides.map((html, i) =>
+        notesBySlide[i] ? { html, notes: notesBySlide[i] } : html
+      )
+      const meta = { format: 'html', audience: sanitized.audience, author: sanitized.author }
+      await updateDeckSlides(req.email, req.token, req.params.id, sanitized.title, finalSlides, meta)
+      return res.json({ ok: true })
+    }
+    const sanitized = sanitizeDeck(body)
     if (!sanitized) return res.status(400).json({ error: 'deck inválido' })
     const meta = { audience: sanitized.audience, author: sanitized.author, narrative: sanitized.narrative }
     await updateDeckSlides(req.email, req.token, req.params.id, sanitized.title, sanitized.slides, meta)
@@ -1860,6 +1987,33 @@ function replaceElementById(els, id, next) {
   })
 }
 
+// Compact digest of the conversation a deck came from, for grounding an AI
+// tweak (task #45). Plain-text roles only, tool traces and block payloads
+// dropped, capped so it stays token-affordable. Returns '' when there's no
+// session or nothing usable. Never throws to the caller — grounding is
+// best-effort.
+async function buildTweakChatContext(req, sessionId) {
+  if (!sessionId) return ''
+  const msgs = await listMessages(req.email, req.token, sessionId)
+  if (!msgs?.length) return ''
+  const parts = []
+  for (const m of msgs) {
+    if (m.role !== 'user' && m.role !== 'assistant') continue
+    const text = String(m.content || '')
+      .replace(/\{\{block:\d+\}\}/g, '')      // block placeholders
+      .replace(/\{\{toolcall:[^}]+\}\}/g, '') // inline tool-call markers
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!text) continue
+    parts.push(`${m.role === 'user' ? 'Usuário' : 'Assistente'}: ${text.slice(0, 1200)}`)
+  }
+  if (!parts.length) return ''
+  // keep the most recent exchanges (the deck's subject + latest refinements)
+  let digest = parts.slice(-16).join('\n')
+  if (digest.length > 6000) digest = digest.slice(-6000)
+  return digest
+}
+
 app.post('/api/decks/:id/tweak', auth, async (req, res) => {
   try {
     await ensureReady(req)
@@ -1879,6 +2033,98 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         : null
 
     const template = await getSelectedDeckTemplate(req.email, req.token)
+
+    // ---- pure-HTML deck tweak (deck-html engine) ----------------------------
+    // Slides are <section> HTML strings. The model rewrites HTML → HTML. Scope:
+    // the whole deck (slideIndex null), one slide, or a single selected element
+    // (sel.htmlOuter carries that node's outerHTML; we splice the reply back into
+    // the slide at sel.path). Result is sanitized by sanitizeHtmlDeck and shown
+    // as a preview (Accept/Discard) before persisting — same reversible flow.
+    const deckIsHtml =
+      deck.meta?.format === 'html' || (deck.slides.length && deck.slides.every((s) => typeof s === 'string' || (s && typeof s === 'object' && typeof s.html === 'string')))
+    if (deckIsHtml) {
+      const model = resolveModelId(req.body?.model)
+      const readHtml = (s) => (typeof s === 'string' ? s : s?.html || '')
+      const htmlOuter = typeof sel?.htmlOuter === 'string' ? sel.htmlOuter : null
+      const contract =
+        'Você é um editor de slides que trabalha em HTML/CSS. Devolva SOMENTE o HTML resultante, ' +
+        'sem markdown, sem cercas de código, sem comentários e sem explicação. Preserve a marca e o ' +
+        'design system (as variáveis var(--…) e a estrutura existente); nunca use position:absolute para ' +
+        'reflowar conteúdo que já flui; nunca invente dados numéricos novos. Mantenha o mesmo idioma.'
+
+      // Grounding for the edit (task #45): (1) the active design system's STYLE
+      // CONTRACT — the same token vocabulary + worked examples the generator
+      // uses — so an edit stays in the brand's visual language by default; and
+      // (2) a digest of the originating chat, so the model knows what the deck
+      // is about (the numbers, the audience, the intent). The user can override
+      // the DS grounding explicitly in the instruction ("ignore o design system").
+      const dsContract = buildDsStyleContract(template)
+      const chatDigest = await buildTweakChatContext(req, deck.sessionId).catch(() => '')
+      const groundSystem =
+        (dsContract ? dsContract + '\n\n' : '') +
+        (chatDigest ? 'CONTEXTO DA CONVERSA que originou este deck (use como fonte da verdade p/ tema, dados e intenção; NÃO invente números fora dela):\n---\n' + chatDigest + '\n---\n\n' : '') +
+        contract +
+        ' APOIE-SE no design system acima (tokens var(--…), classes e composições dos exemplos) para qualquer ajuste visual, A MENOS QUE a instrução peça explicitamente o contrário; e mantenha coerência com o contexto da conversa.'
+      let messages
+      if (htmlOuter && scoped) {
+        // element-scoped: give the model the whole <section> AND point at the
+        // element to change; ask for the full new <section> back (no server-side
+        // DOM splicing — robust, and the model keeps the rest byte-close).
+        messages = [
+          { role: 'system', content: groundSystem + ' Você recebe o HTML de UM slide (<section>) e o HTML de UM elemento dentro dele que o usuário selecionou. Aplique a instrução SOMENTE a esse elemento e devolva o <section> NOVO completo, mantendo todo o resto inalterado.' },
+          { role: 'user', content: `Slide (HTML):\n${readHtml(scoped)}\n\nElemento selecionado (outerHTML):\n${htmlOuter}\n\nInstrução (só p/ o elemento): ${instruction}\n\n<section> novo:` },
+        ]
+      } else if (scoped) {
+        messages = [
+          { role: 'system', content: groundSystem + ' Você recebe o HTML de UM slide (<section>…</section>); devolva o <section> NOVO completo.' },
+          { role: 'user', content: `Slide (HTML):\n${readHtml(scoped)}\n\nInstrução: ${instruction}\n\n<section> novo:` },
+        ]
+      } else {
+        // whole-deck scope: edit every slide in sequence, one call each, so each
+        // <section> stays bounded and coherent (mirrors the streaming generator).
+        const outSlides = []
+        let totalUsage = null
+        for (const s of deck.slides) {
+          const { text: raw, usage } = await completeWithUsage(req.token, model, [
+            { role: 'system', content: groundSystem + ' Você recebe o HTML de UM slide (<section>…</section>) de um deck; devolva o <section> NOVO completo, aplicando a instrução de forma consistente com um deck inteiro.' },
+            { role: 'user', content: `Slide (HTML):\n${readHtml(s)}\n\nInstrução (vale p/ o deck todo): ${instruction}\n\n<section> novo:` },
+          ], { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
+          const cleaned = String(raw || '').replace(/```[a-z]*\n?/gi, '').trim()
+          outSlides.push(cleaned && /<section/i.test(cleaned) ? cleaned : readHtml(s))
+          // sum token usage across the per-slide calls, tolerating either the
+          // OpenAI-style keys (prompt/completion/total) or the anthropic-style
+          // ones (input/output) — whichever the gateway returned.
+          if (usage) {
+            totalUsage = totalUsage || {}
+            for (const k of Object.keys(usage)) {
+              if (typeof usage[k] === 'number') totalUsage[k] = (totalUsage[k] || 0) + usage[k]
+            }
+          }
+        }
+        const san = sanitizeHtmlDeck({ title: deck.title, slides: outSlides })
+        if (!san?.slides?.length) return res.status(422).json({ error: 'a edição resultou em um deck inválido' })
+        // preserve per-slide notes
+        const merged = san.slides.map((h, i) => {
+          const prev = deck.slides[i]
+          return prev && typeof prev === 'object' && prev.notes ? { html: h, notes: prev.notes } : h
+        })
+        const updated = { ...deck, slides: merged }
+        if (!preview) await updateDeckSlides(req.email, req.token, req.params.id, deck.title, merged, { format: 'html', audience: deck.audience, author: deck.author })
+        return res.json({ deck: updated, preview, usage: totalUsage, model })
+      }
+      const { text: raw, usage } = await completeWithUsage(req.token, model, messages, { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
+      const cleaned = String(raw || '').replace(/```[a-z]*\n?/gi, '').trim()
+      if (!/<section/i.test(cleaned)) return res.status(422).json({ error: 'a edição não retornou um slide válido' })
+      const san = sanitizeHtmlDeck({ title: deck.title, slides: [cleaned] })
+      if (!san?.slides?.length) return res.status(422).json({ error: 'a edição resultou em um slide inválido' })
+      const slides = [...deck.slides]
+      const prev = slides[slideIndex]
+      slides[slideIndex] = prev && typeof prev === 'object' && prev.notes ? { html: san.slides[0], notes: prev.notes } : san.slides[0]
+      const updated = { ...deck, slides }
+      if (!preview) await updateDeckSlides(req.email, req.token, req.params.id, deck.title, slides, { format: 'html', audience: deck.audience, author: deck.author })
+      return res.json({ deck: updated, preview, usage, model })
+    }
+
     const icons = usableIconAssets(template)
     const scopedFreeform = scoped?.layout === 'freeform'
 
@@ -2053,6 +2299,31 @@ app.get('/api/decks/:id/export', auth, async (req, res) => {
     if (!deck) return res.status(404).json({ error: 'deck não encontrado' })
     const template = await getSelectedDeckTemplate(req.email, req.token)
     const buf = await renderPptx(deck, template)
+    const safeName = (deck.title || 'apresentacao').replace(/[^\w-]+/g, '_').slice(0, 60) || 'apresentacao'
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation')
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`)
+    res.send(buf)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Pure-HTML deck export: the client extracts native paint-ops off the rendered
+// DOM (client/lib/domToSlideOps.js) and POSTs them here; we assemble a .pptx of
+// editable shapes (renderPptxFromOps) — mirroring Claude Design's export, never
+// rasterized. Scoped to the deck's owner (getDeck enforces user_email).
+app.post('/api/decks/:id/export-html', auth, async (req, res) => {
+  try {
+    await ensureReady(req)
+    const deck = await getDeck(req.email, req.token, req.params.id)
+    if (!deck) return res.status(404).json({ error: 'deck não encontrado' })
+    const slides = Array.isArray(req.body?.slides) ? req.body.slides : []
+    if (!slides.length) return res.status(400).json({ error: 'sem slides para exportar' })
+    // high-fidelity option: embed the design system's font files so the deck
+    // renders in the brand face even where the font isn't installed
+    const embedFonts = req.body?.embedFonts === true
+    const template = embedFonts ? await getSelectedDeckTemplate(req.email, req.token) : null
+    const buf = await renderPptxFromOps(deck, slides, { embedFonts, fontAssets: template?.fontAssets || [] })
     const safeName = (deck.title || 'apresentacao').replace(/[^\w-]+/g, '_').slice(0, 60) || 'apresentacao'
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation')
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`)
@@ -2551,6 +2822,23 @@ app.post('/api/chat', auth, upload.array('files'), async (req, res) => {
     // placeholder right where the model put it, so the frontend renders it inline.
     // imageRefs resolve `image` fences against images the tool generated this turn.
     let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
+    // Visual self-review: inspect the generated deck's paint geometry and, if a
+    // slide has a layout defect (clipped text, off-canvas, low contrast), ask
+    // the model to repair before we persist. Splices the fixed deck back into
+    // `blocks` at its original position, so `finalContent`'s block placeholder
+    // still resolves to it. Best-effort — never blocks the turn.
+    {
+      const reviewed = await reviewAndRepairDeckBlocks({
+        req, model, blocks, template: selectedTemplate, apiMessages, answer, send, chartState, imageRefs,
+      })
+      blocks = reviewed.blocks
+      // fold the repair round's tokens into the turn's reported usage (cost stays honest)
+      if (reviewed.usage && hadUsage && usage) {
+        usage.prompt_tokens = (usage.prompt_tokens || 0) + (reviewed.usage.prompt_tokens || 0)
+        usage.completion_tokens = (usage.completion_tokens || 0) + (reviewed.usage.completion_tokens || 0)
+        if (usage.total_tokens != null) usage.total_tokens += reviewed.usage.total_tokens || 0
+      }
+    }
     finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
     finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)
@@ -2759,6 +3047,23 @@ app.post('/api/sessions/:id/continue', auth, async (req, res) => {
     })
 
     let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
+    // Visual self-review: inspect the generated deck's paint geometry and, if a
+    // slide has a layout defect (clipped text, off-canvas, low contrast), ask
+    // the model to repair before we persist. Splices the fixed deck back into
+    // `blocks` at its original position, so `finalContent`'s block placeholder
+    // still resolves to it. Best-effort — never blocks the turn.
+    {
+      const reviewed = await reviewAndRepairDeckBlocks({
+        req, model, blocks, template: selectedTemplate, apiMessages, answer, send, chartState, imageRefs,
+      })
+      blocks = reviewed.blocks
+      // fold the repair round's tokens into the turn's reported usage (cost stays honest)
+      if (reviewed.usage && hadUsage && usage) {
+        usage.prompt_tokens = (usage.prompt_tokens || 0) + (reviewed.usage.prompt_tokens || 0)
+        usage.completion_tokens = (usage.completion_tokens || 0) + (reviewed.usage.completion_tokens || 0)
+        if (usage.total_tokens != null) usage.total_tokens += reviewed.usage.total_tokens || 0
+      }
+    }
     finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
     finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)
@@ -2881,6 +3186,23 @@ app.post('/api/sessions/:id/messages/:messageId/regenerate', auth, async (req, r
     })
 
     let { content: finalContent, blocks } = extractPrismBlocks(answer, chartState.items, selectedTemplate, imageRefs)
+    // Visual self-review: inspect the generated deck's paint geometry and, if a
+    // slide has a layout defect (clipped text, off-canvas, low contrast), ask
+    // the model to repair before we persist. Splices the fixed deck back into
+    // `blocks` at its original position, so `finalContent`'s block placeholder
+    // still resolves to it. Best-effort — never blocks the turn.
+    {
+      const reviewed = await reviewAndRepairDeckBlocks({
+        req, model, blocks, template: selectedTemplate, apiMessages, answer, send, chartState, imageRefs,
+      })
+      blocks = reviewed.blocks
+      // fold the repair round's tokens into the turn's reported usage (cost stays honest)
+      if (reviewed.usage && hadUsage && usage) {
+        usage.prompt_tokens = (usage.prompt_tokens || 0) + (reviewed.usage.prompt_tokens || 0)
+        usage.completion_tokens = (usage.completion_tokens || 0) + (reviewed.usage.completion_tokens || 0)
+        if (usage.total_tokens != null) usage.total_tokens += reviewed.usage.total_tokens || 0
+      }
+    }
     finalContent = applyTruncationNotice(truncated, finalContent, send, msgLang(responseLang, uiLang))
     finalContent = applyStoppedEarlyNotice(stoppedEarly, finalContent, send, msgLang(responseLang, uiLang))
     await saveSessionChartCandidates(req.email, req.token, sessionId, chartState)

@@ -32,6 +32,21 @@ export function contrastOn(hexColor) {
   return luminance(hexColor) < 0.55 ? '#FFFFFF' : '#1A1A1A'
 }
 
+// Picks the logo variant that reads against a given slide background. On a dark
+// bg use the white/light lockup (logoDataUrl); on a light bg use the full-color
+// one (logoLightDataUrl). Falls back to whichever variant exists, so a template
+// with only one logo still renders it (better a slightly-off logo than none).
+// `bgHex` may carry or omit the leading '#'. Returns a data URL or null.
+export function pickLogoForBg(theme, bgHex) {
+  if (!theme) return null
+  const light = theme.logoDataUrl || null // white/light lockup → for dark bg
+  const color = theme.logoLightDataUrl || null // full-color lockup → for light bg
+  if (!light && !color) return null
+  const bgIsDark = bgHex ? luminance(bgHex.startsWith('#') ? bgHex : `#${bgHex}`) < 0.55 : true
+  if (bgIsDark) return light || color
+  return color || light
+}
+
 // Linear blend between two hex colors (t=0 → a, t=1 → b) — the whole derived
 // palette below (soft accents, hairlines, muted text) is computed this way
 // from the template's 4 raw colors, so it generalizes to any template, rich
@@ -94,7 +109,13 @@ export function resolveDeckTheme(template) {
       Math.abs(luminance(accent) - luminance(primary)) < 0.22 ? onPrimary : blend(accent, onPrimary, 0.15),
     headingFont: t.headingFont || D.headingFont,
     bodyFont: t.bodyFont || D.bodyFont,
+    // Two logo variants come out of DS ingestion: logoDataUrl is the light/
+    // white lockup (for dark slides), logoLightDataUrl the full-color one (for
+    // light slides). Exposing BOTH lets the renderer pick the one that actually
+    // contrasts with a given slide's background — a white logo on the oat
+    // content bg is invisible and reads as "no logo" (the benchmark symptom).
     logoDataUrl: t.logoDataUrl || null,
+    logoLightDataUrl: t.logoLightDataUrl || null,
     // template's own full-bleed cover photo (mined from the imported .pptx) —
     // when present it carries the brand's real visual identity on covers/
     // dividers; plus the deeper mined identity: the cover's overlay layer,
