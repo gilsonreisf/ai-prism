@@ -2,8 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import * as Icon from './Icons.jsx'
-import TemplateSlidePreview from './TemplateSlidePreview.jsx'
-import { MinedDiagramSvg, resolvePreviewTheme, useTemplateFonts } from './DeckSlidePreview.jsx'
 import { getJSON } from '../api.js'
 import { useT } from '../lib/i18n.jsx'
 
@@ -15,6 +13,30 @@ import { useT } from '../lib/i18n.jsx'
 // fall back to the mined sections (colors, icons, diagrams, preview slides).
 // No section is a fixed reproduction of any reference bundle — a template
 // without that data simply doesn't show the section.
+
+// ---- font loading hook ------------------------------------------------------
+
+// Self-hosted design-system webfonts (template.fontAssets, from a bundle
+// import) registered once per family/weight/style — the preview and Present
+// mode then render in the REAL brand font instead of a system fallback. The
+// .pptx references fonts by name; viewers with the font installed match 1:1.
+const loadedFonts = new Set()
+function useTemplateFonts(template) {
+  useEffect(() => {
+    if (typeof FontFace === 'undefined') return
+    for (const f of template?.fontAssets || []) {
+      const key = `${f.family}|${f.weight}|${f.style}`
+      if (!f.dataUrl || loadedFonts.has(key)) continue
+      loadedFonts.add(key)
+      try {
+        const face = new FontFace(f.family, `url(${f.dataUrl})`, { weight: f.weight || '400', style: f.style || 'normal' })
+        face.load().then((ff) => document.fonts.add(ff)).catch(() => {})
+      } catch {
+        // malformed font data — preview falls back to the system stack
+      }
+    }
+  }, [template])
+}
 
 // ---- specimen card (self-contained HTML from the bundle) --------------------
 
@@ -299,82 +321,6 @@ function CardsList({ cards, tokenStyle }) {
   )
 }
 
-// Vector diagrams mined from the template's own slides (minedStyle.diagrams)
-// — the exact art the model can drop into generated decks via `diagramRef`.
-function DiagramsSection({ template }) {
-  const t = useT()
-  const diagrams = template.minedStyle?.diagrams || []
-  const theme = resolvePreviewTheme(template)
-  return (
-    <div className="space-y-4 max-w-2xl">
-      <p className="text-[11px] text-[var(--faint)]">
-        {t('templateInspector.diagramsIntro')}
-      </p>
-      {diagrams.map((d) => (
-        <div key={d.id} className="rounded-xl border border-[var(--border)] overflow-hidden">
-          <div
-            className="w-full flex items-center justify-center p-4"
-            style={{ background: template.backgroundColor || '#FFFFFF', aspectRatio: '16/7' }}
-          >
-            <MinedDiagramSvg spec={d} theme={theme} className="w-full h-full" />
-          </div>
-          <div className="px-3 py-2 border-t border-[var(--border)]">
-            <div className="text-xs font-semibold truncate">{d.label || d.id}</div>
-            <div className="text-[10px] text-[var(--faint)]">
-              {t('templateInspector.diagramShapes', { shapes: d.shapes?.length || 0, connectors: d.connectors?.length || 0 })}
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function MinedSlidesSection({ template }) {
-  const t = useT()
-  const slides = template.previewSlides || []
-  const [index, setIndex] = useState(0)
-  const active = slides[index] || slides[0]
-  return (
-    <div className="flex gap-4 h-full">
-      <div className="w-32 shrink-0 space-y-2 overflow-y-auto">
-        {slides.map((s, i) => (
-          <button key={i} onClick={() => setIndex(i)} className="block w-full">
-            <TemplateSlidePreview
-              slide={s}
-              template={template}
-              variant="thumb"
-              className={`ring-2 transition ${i === index ? 'ring-[var(--accent)]' : 'ring-transparent hover:ring-[var(--border)]'}`}
-            />
-          </button>
-        ))}
-      </div>
-      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-3">
-        <div className="w-full max-w-xl flex items-center gap-2">
-          <button
-            onClick={() => setIndex((i) => Math.max(0, i - 1))}
-            disabled={index === 0}
-            className="p-1.5 rounded-lg hover:bg-[var(--surface-3)] disabled:opacity-30 text-[var(--muted)]"
-          >
-            <Icon.ChevronLeft size={18} />
-          </button>
-          <span className="text-xs text-[var(--faint)] flex-1 text-center">
-            {t('templateInspector.slideOf', { current: index + 1, total: slides.length })}
-          </span>
-          <button
-            onClick={() => setIndex((i) => Math.min(slides.length - 1, i + 1))}
-            disabled={index === slides.length - 1}
-            className="p-1.5 rounded-lg hover:bg-[var(--surface-3)] disabled:opacity-30 text-[var(--muted)]"
-          >
-            <Icon.ChevronRight size={18} />
-          </button>
-        </div>
-        <TemplateSlidePreview slide={active} template={template} variant="canvas" className="w-full max-w-xl shadow-lg" />
-      </div>
-    </div>
-  )
-}
-
 // ---- main -------------------------------------------------------------------
 
 export default function DeckTemplateInspector({ template: summary, onClose }) {
@@ -416,12 +362,10 @@ export default function DeckTemplateInspector({ template: summary, onClose }) {
     if (cardsByGroup.has('Slides')) list.push({ id: 'slides', label: t('templateInspector.sectionSlides') })
     list.push({ id: 'type', label: t('templateInspector.sectionType') })
     if (cardsByGroup.has('Spacing')) list.push({ id: 'spacing', label: t('templateInspector.sectionSpacing') })
-    if (template.minedStyle?.diagrams?.length) list.push({ id: 'diagramas', label: t('templateInspector.sectionDiagrams') })
-    if (template.previewSlides?.length) list.push({ id: 'slides-modelo', label: t('templateInspector.sectionModelSlides') })
     return list
   }, [template, cardsByGroup, t])
 
-  const [section, setSection] = useState('readme')
+  const [section, setSection] = useState('colors')
   useEffect(() => {
     if (summary) setSection(summary.hasReadme || summary.readme ? 'readme' : 'colors')
   }, [summary?.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -462,8 +406,6 @@ export default function DeckTemplateInspector({ template: summary, onClose }) {
           {section === 'slides' && <CardsList cards={cardsByGroup.get('Slides')} tokenStyle={tokenStyle} />}
           {section === 'type' && <TypeSection template={template} cards={cardsByGroup.get('Type')} tokenStyle={tokenStyle} />}
           {section === 'spacing' && <CardsList cards={cardsByGroup.get('Spacing')} tokenStyle={tokenStyle} />}
-          {section === 'diagramas' && <DiagramsSection template={template} />}
-          {section === 'slides-modelo' && <MinedSlidesSection template={template} />}
         </div>
       </div>
     </div>

@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import * as Icon from '../Icons.jsx'
-import DeckSlidePreview from '../DeckSlidePreview.jsx'
 import HtmlSlideFrame from '../deck/HtmlSlideFrame.jsx'
 import { getJSON } from '../../api.js'
 import { useT } from '../../lib/i18n.jsx'
@@ -44,9 +43,13 @@ export default function DeckBlock({ block, onOpenDeck }) {
   const title = liveDeck?.title || block.title
   const slideCount = slides.length
   const preview = slides.slice(0, 3)
-  // pure-HTML deck (feat/deck-html-engine): slides are self-contained <section>
-  // strings, not semantic objects — detect and render via iframe frames.
-  const isHtml = block.type === 'deck-html' || liveDeck?.meta?.format === 'html' || typeof slides[0] === 'string'
+  // Legacy decks (old semantic-tree engine, removed) have slides that are objects
+  // without an `html` field — the HTML preview would render blank. Detect and
+  // show a notice instead so an old card doesn't look broken.
+  const isHtml =
+    block.type === 'deck-html' ||
+    liveDeck?.meta?.format === 'html' ||
+    slides.every((s) => typeof s === 'string' || (s && typeof s === 'object' && typeof s.html === 'string'))
 
   return (
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-4 my-3">
@@ -58,23 +61,25 @@ export default function DeckBlock({ block, onOpenDeck }) {
         </span>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 mt-3">
-        {preview.map((s, i) =>
-          isHtml ? (
-            <HtmlSlideFrame key={i} html={typeof s === 'string' ? s : s?.html} template={template} title={`${title} — ${i + 1}`} className="rounded-lg" />
-          ) : (
-            <DeckSlidePreview key={i} slide={s} template={template} deck={liveDeck || block} deckTitle={title} variant="card" pageNumber={i + 1} />
-          )
-        )}
-      </div>
+      {isHtml ? (
+        <>
+          <div className="grid grid-cols-3 gap-2 mt-3">
+            {preview.map((s, i) => (
+              <HtmlSlideFrame key={i} html={typeof s === 'string' ? s : s?.html} template={template} title={`${title} — ${i + 1}`} className="rounded-lg" />
+            ))}
+          </div>
 
-      <button
-        onClick={() => onOpenDeck?.(block.deckId)}
-        disabled={!block.deckId}
-        className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm py-2 transition"
-      >
-        <Icon.Presentation size={15} /> {t('deckBlock.openStudio')}
-      </button>
+          <button
+            onClick={() => onOpenDeck?.(block.deckId)}
+            disabled={!block.deckId}
+            className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm py-2 transition"
+          >
+            <Icon.Presentation size={15} /> {t('deckBlock.openStudio')}
+          </button>
+        </>
+      ) : (
+        <p className="mt-3 text-xs text-[var(--muted)] leading-relaxed">{t('deckBlock.legacy')}</p>
+      )}
     </div>
   )
 }

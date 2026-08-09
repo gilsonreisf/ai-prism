@@ -4,8 +4,7 @@
 //
 //   node scripts/ds-import-qa.mjs <bundle-dir> [out.json]
 //
-// Prints a summary and optionally writes the resulting template patch JSON so
-// render-deck-preview.mjs can exercise renderPptx with a REAL design system.
+// Prints a summary and optionally writes the resulting template patch JSON.
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { importDesignSystemBundle } from '../client/src/lib/dsImport.js'
