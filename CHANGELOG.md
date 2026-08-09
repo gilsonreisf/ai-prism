@@ -11,19 +11,12 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ### Added
 
-- **Substrato HTML para decks** (fundação de render de alta fidelidade, paridade com o Claude
-  Design), derivado da MESMA árvore semântica que alimenta o `.pptx` nativo — não é um trade-off:
-  - `shared/deckHtml.js`: gerador de HTML auto-contido a partir dos slides, com os design tokens
-    do tema como CSS custom properties (re-tematiza junto com o `.pptx` ao trocar de Design System).
-  - Renderiza slides freeform percorrendo os elementos posicionados (texto, shape, line, ícone,
-    imagem, chart) via `flattenElements` — logo herda o motor de layout endurecido; charts como SVG
-    (bar/barH/line/area/pie/doughnut/scatter com `chartPalette(theme)`), ícones via `DECK_ICONS`,
-    imagens `<img>` resolvendo ilustrações do DS por `imageAssetId` (mesmo caminho do renderer da
-    árvore), e camada de z-index que mantém texto sempre legível.
-  - `client/HtmlDeckPreview.jsx`: componente de preview em iframe sandbox (alvo de render interno).
-  - O HTML é um artefato **derivado on-demand**, não persistido no bloco nem exposto como escolha
-    de substrato ao usuário — a árvore semântica segue como fonte de verdade única, alimentando
-    preview DOM, HTML de alta fidelidade (para futuro export PDF/PNG) e `.pptx` nativo (`pptxgenjs`).
+- **Motor de deck HTML puro como único caminho**: a geração de slides passa a ser 100% HTML
+  (o modelo escreve `<section>` HTML que flui, contra o design system ativo), com streaming
+  slide-a-slide, edição manual do DOM (estilo Claude Design) e export `.pptx` de **objetos
+  nativos** (DOM→shapes via `renderPptxFromOps`), incluindo o embed opcional das **fontes da
+  marca** para máxima fidelidade. Um novo `scripts/deck-html-qa.mjs` cobre `sanitizeHtmlDeck` +
+  export nativo + embed de fontes.
 - **Ambiente de desenvolvimento 100% local** sem Lakebase/OAuth: PostgreSQL 17 + pgvector
   do Homebrew (`scripts/local-postgres.sh`, `.env.local.example`, `scripts/seed-local.mjs`)
   e scripts npm `local:up|down|status|reset|seed` + `dev:local`.
@@ -42,26 +35,22 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ### Fixed
 
-- **Robustez do motor de layout de decks** (`shared/deckLayout.js`, transversal a preview e
-  `.pptx` nativo): corrige as classes de defeito de composição em slides densos —
-  (1) texto embrulhando palavra-a-palavra em colunas estreitíssimas (piso de compressão
-  0.6→0.7× + truncagem legível com reticências quando a coluna ficaria abaixo de 1.2in);
-  (2) conteúdo transbordando o card/rodapé (clamp de altura efetiva quando a caixa é
-  desproporcional ao texto); (3) ícones irmãos com tamanhos diferentes (normalização do
-  tamanho entre cards de um mesmo stack); e piso de fonte 7→8pt. Como o motor é fonte única
-  para os dois renderizadores, o `.pptx` exportado herda a mesma robustez.
-- **Labels de eixo de gráfico sobrepostos** no preview: quando os slots ficam estreitos, os
-  rótulos rotacionam 45° (colisão moderada) ou omitem alternados (colisão severa).
-- **Auto-revisão visual** (`shared/deckReview.js`) ganha duas detecções novas: embrulho
-  excessivo de texto em caixa estreita e ícones irmãos com tamanhos desiguais.
 - `server/db.js`: `PGSSLMODE` respeitado (permite Postgres local sem SSL) e `PGUSER` desacopla
   o role do banco do e-mail app-level; fallback de embeddings sem a extensão `vector` no modo local.
-- **Logo do Design System nos decks**: o renderer agora escolhe a variante de logo que contrasta
-  com o fundo do slide (branca em fundo escuro, colorida em fundo claro), então o logo não fica
-  mais invisível; além disso um logo discreto passa a aparecer nos slides de conteúdo (chrome de
-  marca ao longo do deck, não só na capa).
 - **Studio não persiste entre conversas**: abrir uma nova conversa ou trocar de sessão agora fecha
   o Deck/Planilha/Documento Studio aberto (antes ele "grudava" na conversa nova).
+- **Decks em formato antigo** (gerados pelo motor de árvore, agora removido) mostram um aviso claro
+  no Studio e no card do chat, em vez de renderizar em branco.
+
+### Removed
+
+- **Motor de deck semântico (árvore de elementos) removido por completo**, junto com o motor HTML
+  ficando como único caminho: a flag `DECK_HTML_ENGINE` (que ficava OFF por padrão e revertia os
+  decks ao motor antigo), o render `.pptx` em árvore (`renderPptx`/builders em `server/decks.js`),
+  a validação/auto-revisão em árvore (`sanitizeDeck`, `reviewDeckBlock`) e o canvas de elementos
+  freeform no cliente (`ElementCanvas`, `ElementInspector`, `LayerTree`, `deckTree`). Módulos
+  compartilhados só-árvore (`shared/deckLayout.js`, `deckReview.js`, `deckIcons.js`, `deckHtml.js`)
+  e os QA correspondentes foram excluídos. `shared/deckTheme.js` foi mantido (usado pelas planilhas).
 
 ## [1.0.0] - 2026-07-29
 
