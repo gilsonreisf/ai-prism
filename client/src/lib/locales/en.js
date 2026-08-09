@@ -252,6 +252,8 @@ export default {
   'message.tokensInOut': 'Input / output tokens',
   'message.mediaProcessedBy': 'media read by {model}',
   'message.mediaProcessedTitle': 'The attached audio/video ({files}) was transcribed by this multimodal model; the answer above was written by the selected model from that transcript.',
+  'message.intentClassifyBy': 'intent routed by {model}',
+  'message.intentClassifyTitle': 'A fast, cheap model read your request\'s intent before the answer, to decide which tools and capabilities this turn needs. The small cost of that pre-analysis is included in the estimate.',
   'message.estimatedCost': 'Estimated cost (public list prices)',
 
   // loading chips (per artifact kind)

@@ -9,6 +9,42 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 <!-- Adicione aqui as mudanças ainda não lançadas, em Added / Changed / Fixed / Removed. -->
 
+## [1.1.0] - 2026-08-09
+
+Roteamento de intenção mais inteligente: um classificador barato por turno mais um
+roteador de regex mais preciso acabam com o disparo espúrio de skills/tools, e o uso
+de ícones/motivos do design system fica mais comedido.
+
+### Added
+
+- **Classificador de intenção por turno (LLM barato + roteador híbrido)**: em
+  turnos ambíguos para o roteador de regex (um briefing longo que NARRA "geração
+  de slides, planilhas, documentos", ou um pedido multi-artefato), um modelo
+  rápido e barato (Haiku) lê a intenção real antes da resposta — quais artefatos
+  o usuário quer criar e se o turno precisa de dados internos. Isso mata o
+  disparo espúrio de skills/tools (planilha/imagem/documento/Genie One) que
+  apareciam só porque o texto do deck mencionava esses termos. Gating híbrido:
+  chat trivial ("quanto é 2+2?") e tweaks óbvios de artefato pulam o classificador
+  (TTFT permanece baixo); turnos determinísticos (resposta ao `deck-questions`)
+  também. O custo (pequeno) do classificador é DISCLOSED no rodapé da mensagem e
+  entra na estimativa mostrada ao usuário (coluna `intent_classify`).
+
+### Changed
+
+- **Roteador de capacidades por regex mais preciso (fast-path + fallback)**: os
+  detectores de intenção de planilha/imagem/documento passaram a exigir o verbo
+  de criação ADJACENTE ao substantivo do artefato (proximidade), e a detecção de
+  intenção de dados exige fonte de dados explícita, ou possessivo/verbo colado ao
+  substantivo de negócio — acaba o "bag-of-words" que ligava capacidades por uma
+  palavra solta no meio de um texto longo.
+- **Uso de ícones e motivos do DS mais moderado (correção de over-uso)**: ícones
+  deixam de ser obrigatórios por card — um ícone só entra quando há correspondência
+  SEMÂNTICA real com o item; um ícone de PRODUTO fora de contexto é explicitamente
+  pior que nenhum, e a alternativa passa a ser um SVG simples de traço quando nada
+  do DS combina. Motivos decorativos ficam restritos a capa/divisor/encerramento,
+  no máximo um por slide e nunca em slides de conteúdo — alinhado ao uso comedido
+  dos decks originais do design system.
+
 ## [1.0.1] - 2026-08-09
 
 Rodada de qualidade nos decks e nas ferramentas: assets reais do design system,
