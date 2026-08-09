@@ -2,6 +2,13 @@ import { DECK_ICON_NAMES } from '../shared/deckIcons.js'
 import { ELEMENT_TYPES, SHAPE_KINDS, BOX_LIMITS, MAX_ELEMENTS_PER_SLIDE, CHART_KINDS, MAX_GROUP_DEPTH, SLIDE_W, SLIDE_H, textHeightIn, TEXT_INSETS, flattenElements } from '../shared/deckLayout.js'
 import { THEME_COLOR_TOKENS, resolveDeckTheme } from '../shared/deckTheme.js'
 import { reviewDeck as reviewDeckGeometry, formatReviewForModel } from '../shared/deckReview.js'
+import { buildDsStyleContract, DECK_HTML_POLICY } from './deckHtmlPolicy.js'
+import { webSearchConnectionName } from './tools.js'
+
+// Feature flag: route deck GENERATION (Etapa 2) through the pure-HTML engine
+// (the model writes flowing <section> HTML) instead of the semantic tree. The
+// deck-questions step is shared. Off by default until the engine ships.
+const DECK_HTML_ENGINE = process.env.DECK_HTML_ENGINE === '1'
 
 // Structured message blocks: charts/tables/insights woven directly into the
 // model's markdown answer. The model marks *where* a block belongs with an
@@ -54,7 +61,36 @@ function scanJsonObject(text, start) {
   return null // never balanced — truncated mid-generation
 }
 
-const ALLOWED_TYPES = new Set(['chart', 'table', 'insight', 'deck', 'deck-questions', 'spreadsheet', 'image', 'document'])
+const ALLOWED_TYPES = new Set(['chart', 'table', 'insight', 'deck', 'deck-html', 'deck-questions', 'spreadsheet', 'image', 'document'])
+
+// Pure-HTML deck engine (feat/deck-html-engine): a deck whose slides are
+// self-contained flowing <section> HTML strings, not a semantic tree. Caps keep
+// one block bounded; the light sanitizer only enforces shape + strips scripts
+// (the iframe renders sandboxed, but defense-in-depth: no <script> persists).
+const MAX_HTML_DECK_SLIDES = 40
+const MAX_HTML_SLIDE_CHARS = 60_000
+export function sanitizeHtmlDeck(raw) {
+  if (!raw || typeof raw.title !== 'string' || !raw.title.trim() || !Array.isArray(raw.slides)) return null
+  const slides = raw.slides
+    .slice(0, MAX_HTML_DECK_SLIDES)
+    .map((s) => {
+      let html = typeof s === 'string' ? s : typeof s?.html === 'string' ? s.html : ''
+      if (!html.trim()) return null
+      // strip <script> — sandboxed iframe already blocks execution, but we
+      // never persist executable markup regardless.
+      html = html.replace(/<script[\s\S]*?<\/script>/gi, '')
+      if (html.length > MAX_HTML_SLIDE_CHARS) html = html.slice(0, MAX_HTML_SLIDE_CHARS)
+      return html
+    })
+    .filter(Boolean)
+  if (!slides.length) return null
+  return {
+    title: raw.title.trim().slice(0, 200),
+    audience: typeof raw.audience === 'string' ? raw.audience.slice(0, 200) : undefined,
+    author: typeof raw.author === 'string' ? raw.author.slice(0, 200) : undefined,
+    slides,
+  }
+}
 
 const DECK_LAYOUTS = new Set([
   'title', 'section', 'bullets', 'two-column', 'quote', 'closing',
@@ -949,7 +985,15 @@ export function buildBlocksInstruction(candidates, template, caps) {
   // plausibly about that capability. Order preserved from the original
   // (DECK, then SPREADSHEET, then the deck templateHint) for byte-stability
   // when both are on, which also keeps the prompt-cache prefix stable.
-  if (c.deck) out += DECK_POLICY
+  if (c.deck) {
+    // The HTML engine reuses DECK_POLICY's Etapa 1 (deck-questions) but replaces
+    // Etapa 2 (generation) with the flowing-HTML contract + the DS style
+    // examples. We keep the whole DECK_POLICY (for the questions flow + "when to
+    // enter") and append the HTML generation policy, which instructs the model
+    // to emit `deck-html` instead of `deck` for the actual deck.
+    out += DECK_POLICY
+    if (DECK_HTML_ENGINE) out += DECK_HTML_POLICY + '\n\n' + buildDsStyleContract(template)
+  }
   if (c.spreadsheet) out += SPREADSHEET_POLICY
   if (c.image) out += IMAGE_POLICY
   if (c.document) out += DOCUMENT_POLICY
@@ -957,24 +1001,50 @@ export function buildBlocksInstruction(candidates, template, caps) {
   // matter how polished. When one of those is in play, reinforce that any
   // current/factual number must come from web_search (when available) and carry
   // its source — appended after the policies so it's the freshest instruction.
-  if (c.deck || c.document) out += GROUNDING_DIRECTIVE
+  if (c.deck || c.document) out += groundingDirective()
   if (c.deck) out += templateHint(template)
   return out
 }
 
-// Reinforces grounding for the artifacts where a wrong number is most damaging.
-// The web_search tool (when an admin configured WEB_SEARCH_CONNECTION) is
-// offered on every turn; this makes its use non-optional for time-sensitive or
-// factual figures inside a deck/document, and requires a cited source.
-const GROUNDING_DIRECTIVE =
-  '\n\n=== DADOS REAIS E FONTES (apresentações e documentos) ===\n' +
-  'Este artefato precisa ser factualmente correto. Para QUALQUER número, estatística, cotação, ' +
-  'data ou fato que dependa do mundo real atual (ex.: taxas, índices, resultados, market share, ' +
-  'notícias recentes), NÃO estime de memória: use a tool `web_search` para obter o valor atual e ' +
-  'cite a fonte e a data ao lado do dado (ex.: em uma nota de rodapé do slide, na legenda de um ' +
-  'gráfico, ou entre parênteses no texto). Se a tool de busca não estiver disponível e você não ' +
-  'tiver como confirmar um número, diga explicitamente que é uma estimativa/ordem de grandeza em ' +
-  'vez de apresentá-lo como fato — nunca invente precisão que você não tem.'
+// Reinforces grounding for the artifacts where a wrong number is most damaging
+// (deck/document). The instruction is TOOL-AWARE: it may only tell the model to
+// call `web_search` when that tool is actually registered for the turn — i.e.
+// when an admin configured a backing connection (WEB_SEARCH_CONNECTION). If it
+// isn't, mentioning the tool would make the model emit a call to a tool that
+// doesn't exist, which breaks the turn (observed). So without a connection we
+// fall back to a directive that only requires marking unconfirmed figures as
+// estimates — never invoking a phantom tool. This stays forward-compatible: the
+// day web search ships as a deploy-time UC-function-backed connection, setting
+// WEB_SEARCH_CONNECTION flips the directive back to the grounded variant with
+// no code change here.
+function groundingDirective() {
+  const header = '\n\n=== DADOS REAIS E FONTES (apresentações e documentos) ===\n'
+  const preamble =
+    'Este artefato precisa ser factualmente correto. Para QUALQUER número, estatística, cotação, ' +
+    'data ou fato que dependa do mundo real atual (ex.: taxas, índices, resultados, market share, ' +
+    'notícias recentes), NÃO estime de memória sem sinalizar. '
+  const markAsEstimate =
+    'Se você não tiver como confirmar um número, diga explicitamente que é uma estimativa/ordem de ' +
+    'grandeza em vez de apresentá-lo como fato — nunca invente precisão que você não tem.'
+  // Only reference the tool when it will actually be offered this turn.
+  if (webSearchConnectionName()) {
+    return (
+      header +
+      preamble +
+      'Use a tool `web_search` para obter o valor atual e cite a fonte e a data ao lado do dado ' +
+      '(ex.: em uma nota de rodapé do slide, na legenda de um gráfico, ou entre parênteses no ' +
+      'texto). ' +
+      markAsEstimate
+    )
+  }
+  return (
+    header +
+    preamble +
+    'Você NÃO tem nenhuma ferramenta de busca na web disponível nesta conversa — não tente chamar ' +
+    '`web_search` nem qualquer outra tool de busca (elas não existem aqui e a chamada falharia). ' +
+    markAsEstimate
+  )
+}
 
 function candidatesText(candidates) {
   return candidates.map((c) => `- ${c.id} (${c.chartType}): "${c.title}"`).join('\n')
@@ -2249,6 +2319,11 @@ function resolveOne(raw, byId, template, imageById) {
     // semantic tree preview; the HTML is an internal render target.
     const block = { type: 'deck', ...deck }
     return block
+  }
+  if (raw.type === 'deck-html') {
+    const deck = sanitizeHtmlDeck(raw)
+    if (!deck) return null
+    return { type: 'deck-html', ...deck }
   }
   if (raw.type === 'deck-questions') {
     const dq = sanitizeDeckQuestions(raw)

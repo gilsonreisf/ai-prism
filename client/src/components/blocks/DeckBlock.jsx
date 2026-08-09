@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import * as Icon from '../Icons.jsx'
 import DeckSlidePreview from '../DeckSlidePreview.jsx'
+import HtmlSlideFrame from '../deck/HtmlSlideFrame.jsx'
 import { getJSON } from '../../api.js'
 import { useT } from '../../lib/i18n.jsx'
 
@@ -43,6 +44,9 @@ export default function DeckBlock({ block, onOpenDeck }) {
   const title = liveDeck?.title || block.title
   const slideCount = slides.length
   const preview = slides.slice(0, 3)
+  // pure-HTML deck (feat/deck-html-engine): slides are self-contained <section>
+  // strings, not semantic objects — detect and render via iframe frames.
+  const isHtml = block.type === 'deck-html' || liveDeck?.meta?.format === 'html' || typeof slides[0] === 'string'
 
   return (
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-4 my-3">
@@ -55,9 +59,13 @@ export default function DeckBlock({ block, onOpenDeck }) {
       </div>
 
       <div className="grid grid-cols-3 gap-2 mt-3">
-        {preview.map((s, i) => (
-          <DeckSlidePreview key={i} slide={s} template={template} deck={liveDeck || block} deckTitle={title} variant="card" pageNumber={i + 1} />
-        ))}
+        {preview.map((s, i) =>
+          isHtml ? (
+            <HtmlSlideFrame key={i} html={typeof s === 'string' ? s : s?.html} template={template} title={`${title} — ${i + 1}`} className="rounded-lg" />
+          ) : (
+            <DeckSlidePreview key={i} slide={s} template={template} deck={liveDeck || block} deckTitle={title} variant="card" pageNumber={i + 1} />
+          )
+        )}
       </div>
 
       <button

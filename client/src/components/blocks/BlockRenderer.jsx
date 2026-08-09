@@ -12,6 +12,7 @@ const RENDERERS = {
   table: TableBlock,
   insight: InsightCard,
   deck: DeckBlock,
+  'deck-html': DeckBlock,
   'deck-questions': DeckQuestionsBlock,
   spreadsheet: SpreadsheetBlock,
   image: ImageBlock,
