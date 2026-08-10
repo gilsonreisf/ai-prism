@@ -704,6 +704,7 @@ export default {
   'deckStudio.htmlEdit.addBorder': 'Adicionar borda',
   'deckStudio.htmlEdit.shadowOn': 'Sombra ativa',
   'deckStudio.htmlEdit.saveEdits': 'Salvar',
+  'deckStudio.htmlEdit.saved': 'Salvo',
   'deckStudio.htmlEdit.saveEditsTitle': 'Salvar as edições no deck',
   'deckStudio.htmlEdit.discardEdits': 'Descartar',
   'deckStudio.htmlEdit.discardEditsTitle': 'Descartar as edições e sair do modo de edição',
