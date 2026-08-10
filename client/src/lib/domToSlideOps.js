@@ -280,9 +280,13 @@ export function extractSlideOps(slideRoot, win, { fontMode = 'universal' } = {})
     // render — captured as their src when it's a data URI)
     if (el.tagName === 'IMG') {
       const src = el.currentSrc || el.src || ''
+      // Carry the CSS object-fit so the .pptx matches the preview: without it,
+      // pptxgenjs stretches the image to fill the box (= object-fit:fill), which
+      // deforms a non-matching aspect ratio (e.g. a square icon in a wide box).
+      const fit = cs.objectFit === 'contain' || cs.objectFit === 'cover' ? cs.objectFit : undefined
       // images keep real alpha in the .pptx (pptxgenjs `transparency` is a 0..100
       // percentage), so a faded logo/photo exports faded rather than baked
-      if (src.startsWith('data:image')) ops.push({ type: 'image', ...b, dataUrl: src, ...(opacity < 0.999 ? { transparency: Math.round((1 - opacity) * 100) } : {}) })
+      if (src.startsWith('data:image')) ops.push({ type: 'image', ...b, dataUrl: src, ...(fit ? { fit } : {}), ...(opacity < 0.999 ? { transparency: Math.round((1 - opacity) * 100) } : {}) })
       return
     }
     // inline SVG (charts/icons) → serialize to a data URI, drawn as one image.

@@ -125,6 +125,7 @@ const assert = (cond, msg) => {
   assert(parseInlineImages('nope').length === 0, 'parseInlineImages(non-array) → []')
   assert(parseInlineImages(['data:text/html;base64,AAAA']).length === 0, 'parseInlineImages rejects a non-image data-URL')
   assert(parseInlineImages(['https://example.com/x.png']).length === 0, 'parseInlineImages rejects a remote URL')
+  assert(parseInlineImages(['data:image/svg+xml;base64,' + Buffer.from('<svg/>').toString('base64')]).length === 0, 'parseInlineImages rejects SVG (vision API is raster-only)')
   assert(parseInlineImages(Array.from({ length: 10 }, () => ({ dataUrl: png }))).length === 4, 'parseInlineImages caps the image count')
 }
 
@@ -175,6 +176,19 @@ const assert = (cond, msg) => {
     { w: 1280, h: 720, ops: [{ type: 'text' /* no runs */ }, { type: 'rect', x: 0, y: 0, w: 100, h: 100, fill: '000000' }] },
   ])
   assert(Buffer.isBuffer(buf) && buf.length > 5_000, 'renderPptxFromOps tolerates a malformed op and still exports')
+}
+
+// image op with object-fit → pptxgenjs `sizing` so the .pptx keeps aspect ratio
+// (fixes the "replaced image comes out stretched" report). A 1x1 PNG in a wide
+// box with fit:contain must export cleanly and embed the media part.
+{
+  const png1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  const buf = await renderPptxFromOps({ title: 'x' }, [
+    { w: 1280, h: 720, ops: [{ type: 'image', x: 100, y: 100, w: 600, h: 200, dataUrl: png1x1, fit: 'contain' }] },
+  ])
+  const zip = await JSZip.loadAsync(buf)
+  const hasMedia = Object.keys(zip.files).some((p) => /ppt\/media\/image[-\d].*\.png$/i.test(p))
+  assert(Buffer.isBuffer(buf) && hasMedia, 'renderPptxFromOps embeds an image op with object-fit (contain) as a media part')
 }
 
 // brand-font embedding: a TTF data-URI ends up embedded in the zip

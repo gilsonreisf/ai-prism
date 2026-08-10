@@ -107,8 +107,11 @@ export function clientWorkingSlides(rawSlides) {
 
 // Validate image data-URLs sent inline in a JSON body (the deck/spreadsheet
 // tweak endpoints are plain JSON, not multipart). Keeps only well-formed
-// `data:image/*;base64,…` URLs, caps count and per-image size so a body can't
-// blow up the model request. Returns [{ dataUrl }] ready for
+// RASTER `data:image/*;base64,…` URLs, caps count and per-image size so a body
+// can't blow up the model request. SVG is rejected: the gateway's vision API
+// only accepts raster ("Invalid data URL ... base64 image"), and the client
+// already rasterizes SVG → PNG before attaching — this is defense-in-depth so a
+// stray SVG never reaches the model. Returns [{ dataUrl }] ready for
 // attachImagesToLastUserTurn. Never throws.
 const MAX_TWEAK_IMAGES = 4
 const MAX_TWEAK_IMAGE_CHARS = 9_000_000 // ~6.7MB decoded — matches the client cap
@@ -118,6 +121,7 @@ export function parseInlineImages(raw) {
   for (const im of raw.slice(0, MAX_TWEAK_IMAGES)) {
     const url = typeof im === 'string' ? im : typeof im?.dataUrl === 'string' ? im.dataUrl : null
     if (!url || !/^data:image\/[a-z0-9.+-]+;base64,/i.test(url)) continue
+    if (/^data:image\/svg\+xml/i.test(url)) continue // vision API rejects SVG
     if (url.length > MAX_TWEAK_IMAGE_CHARS) continue
     out.push({ dataUrl: url })
   }

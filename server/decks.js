@@ -41,8 +41,13 @@ export async function renderPptxFromOps(deck, slides, { embedFonts = false, font
           if (shape === 'roundRect') opts.rectRadius = Math.min(IN(op.radius, kx), Math.min(w, h) / 2)
           s.addShape(shape, opts)
         } else if (op.type === 'image' && op.dataUrl) {
-          // opacity from the DOM extractor → pptxgenjs `transparency` (0..100 %)
-          s.addImage({ data: op.dataUrl, x, y, w, h, ...(op.transparency ? { transparency: op.transparency } : {}) })
+          // opacity from the DOM extractor → pptxgenjs `transparency` (0..100 %).
+          // object-fit contain/cover → pptxgenjs `sizing` so the exported image
+          // keeps its aspect ratio (matches the preview) instead of stretching to
+          // fill the box. Absent `fit` (fill) keeps the legacy stretch behavior.
+          const img = { data: op.dataUrl, x, y, w, h, ...(op.transparency ? { transparency: op.transparency } : {}) }
+          if (op.fit === 'contain' || op.fit === 'cover') img.sizing = { type: op.fit, w, h }
+          s.addImage(img)
         } else if (op.type === 'text' && op.runs?.length) {
           const runs = op.runs.map((r) => ({
             text: r.text,

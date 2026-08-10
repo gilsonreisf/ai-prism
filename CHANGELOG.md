@@ -15,8 +15,9 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   prompts de tweak eram texto puro; agora aceitam imagens por colar (Cmd/Ctrl+V)
   ou anexar, com thumbnails removíveis antes de enviar. As imagens vão como
   contexto de visão para o modelo, que passa a editar a partir de um screenshot,
-  design ou gráfico de referência. Cap de 4 imagens (~6MB cada); só
-  `data:image/*` são aceitas.
+  design ou gráfico de referência. Cap de 4 imagens (~6MB cada); imagens SVG são
+  rasterizadas para PNG antes de enviar (a API de visão do gateway só aceita
+  raster).
 
 ### Changed
 
@@ -44,6 +45,15 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   template. Agora, ao definir um `src` num `<img>`, o editor remove o marcador do
   DS — a imagem passa a ser tratada como customizada, o `src` é preservado e o
   export para de re-resolver.
+- **Imagem trocada não sai mais deformada no `.pptx`**: o export esticava a
+  imagem para preencher a caixa do elemento (equivalente a `object-fit: fill`),
+  deformando uma imagem de proporção diferente (ex.: um ícone quadrado numa caixa
+  larga). O `object-fit` (`contain`/`cover`) do elemento agora é propagado para o
+  `sizing` do pptxgenjs, então o `.pptx` mantém a proporção — igual à preview.
+- **Anexar SVG no prompt de edição por IA falhava** (`INVALID_PARAMETER_VALUE:
+  Invalid data URL`): a API de visão do gateway só aceita imagem raster. O SVG
+  agora é rasterizado para PNG no client antes de enviar, e o servidor rejeita
+  qualquer `data:image/svg+xml` residual (defesa em profundidade).
 
 ## [1.1.0] - 2026-08-09
 
