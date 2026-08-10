@@ -431,7 +431,12 @@ const RUNTIME = `
       reselect(); serialize(); emitSelect();
     }
     else if (m.kind === 'setText'){ var t=nodeAt(m.path); if(t){ t.textContent=m.text; reselect(); serialize(); } }
-    else if (m.kind === 'setAttr'){ var a=nodeAt(m.path); if(a){ if(m.value==null) a.removeAttribute(m.attr); else a.setAttribute(m.attr,m.value); reselect(); serialize(); emitSelect(); } }
+    else if (m.kind === 'setAttr'){ var a=nodeAt(m.path); if(a){ if(m.value==null) a.removeAttribute(m.attr); else a.setAttribute(m.attr,m.value);
+      // Replacing an <img>'s src turns a DS asset into a user-customized image:
+      // drop the symbolic marker so serialize() keeps the new src (instead of
+      // stripping it) and export stops re-resolving the template's original.
+      if(m.attr==='src' && m.value!=null && a.tagName==='IMG'){ a.removeAttribute('data-ds-asset-id'); a.removeAttribute('data-ds-logo'); a.removeAttribute('data-ds-missing'); }
+      reselect(); serialize(); emitSelect(); } }
     else if (m.kind === 'setHtml'){
       // replace the whole <section> content (undo/redo, AI tweak). Rebuild from
       // the provided outerHTML; keep selection cleared (paths may have shifted).
