@@ -165,6 +165,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   const [htmlDirty, setHtmlDirty] = useState(false)
   const htmlBaseline = useRef(null)
   const [htmlSaving, setHtmlSaving] = useState(false)
+  const [savedFlash, setSavedFlash] = useState(false) // brief "Salvo" confirmation
   const htmlEditModeRef = useRef(false)
   // when closing the Studio with unsaved manual edits, show a Save / Discard /
   // Cancel confirmation instead of silently dropping the changes
@@ -438,6 +439,10 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
         instruction,
         slideIndex: tweakWholeDeck ? null : activeIndex,
         selection: tweakWholeDeck ? null : selPayload,
+        // Send the working copy so the AI edits what the user is looking at —
+        // including manual edits that haven't been saved yet — not the last
+        // persisted version (item 4).
+        slides: deck.slides,
         preview: true,
         model,
       })
@@ -457,12 +462,12 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
       setTweaking(false)
     }
   }
-  const acceptHtmlTweak = () => {
+  const acceptHtmlTweak = async () => {
     if (!tweakPreview) return
-    // Commit-based editing: an accepted AI edit folds into the working deck and
-    // marks it dirty — it persists only on the explicit Save (like every manual
-    // edit), never on its own.
-    setHtmlDirty(true)
+    // Accepting an AI edit folds it into the working deck (already live in
+    // `deck`) AND persists immediately (item 3) — the user shouldn't have to
+    // remember a second Save step after saying "accept". It stays undoable: we
+    // checkpoint the pre-edit HTML on the undo stack first.
     setTweakHistory((h) => [{ label: tweakPreview.label, at: Date.now() }, ...h].slice(0, 20))
     setTweakPreview(null)
     setTweakCost(null)
@@ -470,6 +475,10 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
     // history checkpoint so the accepted AI edit is itself undoable
     htmlHist.current.past.push(slideHtml(tweakPreview.before.slides[activeIndex]))
     setHtmlHistTick((n) => n + 1)
+    // persist now; on failure we leave the deck dirty so the Save bar is the
+    // explicit retry path (and the edit isn't lost).
+    const ok = await persistDeck(deck)
+    if (!ok) setHtmlDirty(true)
   }
   const discardHtmlTweak = () => {
     if (!tweakPreview) return
@@ -482,29 +491,37 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   }
 
   // ---- commit-based manual editing: explicit Save / Discard -----------------
-  // Save persists the current working deck (one PATCH) and re-baselines; Discard
-  // restores the snapshot taken when Edit mode opened and pushes it back onto the
-  // live canvas. Both clear the dirty flag.
-  const saveHtmlEdits = async () => {
-    if (!deck?.id || htmlSaving) return
+  // Persist one deck snapshot (one PATCH), re-baseline, clear dirty, and flash a
+  // brief "Salvo" confirmation. Shared by the explicit Save bar and the AI
+  // accept auto-save. Returns true on success, false on failure (caller decides
+  // whether to keep the deck dirty as a retry affordance). Never throws.
+  const persistDeck = async (d) => {
+    if (!d?.id || htmlSaving) return false
     setHtmlSaving(true)
     try {
-      await patchJSON(`/api/decks/${deck.id}`, {
-        title: deck.title,
-        slides: deck.slides,
-        audience: deck.audience,
-        author: deck.author,
-        narrative: deck.narrative,
+      await patchJSON(`/api/decks/${d.id}`, {
+        title: d.title,
+        slides: d.slides,
+        audience: d.audience,
+        author: d.author,
+        narrative: d.narrative,
       })
-      window.dispatchEvent(new CustomEvent('prism:deck-saved', { detail: { deckId: deck.id } }))
-      htmlBaseline.current = deck // new restore point
+      window.dispatchEvent(new CustomEvent('prism:deck-saved', { detail: { deckId: d.id } }))
+      htmlBaseline.current = d // new restore point
       setHtmlDirty(false)
+      setSavedFlash(true)
+      setTimeout(() => setSavedFlash(false), 1600)
+      return true
     } catch (e) {
       pushToast?.(e.message || t('deckStudio.saveError'))
+      return false
     } finally {
       setHtmlSaving(false)
     }
   }
+  // Save persists the current working deck; Discard restores the snapshot taken
+  // when Edit mode opened and pushes it back onto the live canvas.
+  const saveHtmlEdits = () => persistDeck(deck)
   const discardHtmlEdits = () => {
     const base = htmlBaseline.current
     if (!base) {
@@ -678,6 +695,11 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
             // commit-based editing: explicit Discard / Save (Claude Design style).
             // Both exit Edit mode; Save is disabled until there are changes.
             <div className="flex items-center gap-1.5 mr-1">
+              {savedFlash && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent)] animate-fade-in mr-0.5" aria-live="polite">
+                  <Icon.Check size={13} /> {t('deckStudio.htmlEdit.saved')}
+                </span>
+              )}
               <button
                 onClick={() => {
                   discardHtmlEdits()

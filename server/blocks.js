@@ -84,6 +84,27 @@ export function sanitizeHtmlDeck(raw) {
 }
 
 
+// AI edits must run against what the user is LOOKING AT, not the last-saved
+// copy: the Studio does commit-based editing, so a deck can carry manual edits
+// (moved elements, replaced images, undo/redo) that haven't been PATCHed yet.
+// The client sends its in-memory `slides`; we validate them into the same shape
+// getDeck returns (string | {html, notes}) and edit from those. Ownership,
+// title and meta still come from the DB deck — the body only supplies content.
+// Returns null (→ caller falls back to the persisted slides) when the payload
+// is absent or unusable, so a malformed body can never wipe the deck.
+export function clientWorkingSlides(rawSlides) {
+  if (!Array.isArray(rawSlides) || !rawSlides.length) return null
+  const out = []
+  for (const s of rawSlides.slice(0, MAX_HTML_DECK_SLIDES)) {
+    const html = typeof s === 'string' ? s : typeof s?.html === 'string' ? s.html : null
+    if (typeof html !== 'string' || !html.trim() || !/<section/i.test(html)) return null
+    const capped = html.length > MAX_HTML_SLIDE_CHARS ? html.slice(0, MAX_HTML_SLIDE_CHARS) : html
+    const notes = s && typeof s === 'object' && typeof s.notes === 'string' ? s.notes : undefined
+    out.push(notes ? { html: capped, notes } : capped)
+  }
+  return out.length ? out : null
+}
+
 const DECK_QUESTION_TYPES = new Set(['single', 'multi', 'text'])
 const MAX_DECK_QUESTIONS = 8
 const MAX_QUESTION_OPTIONS = 8

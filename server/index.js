@@ -90,6 +90,7 @@ import {
   sanitizeSpreadsheet,
   sanitizeDocument,
   sanitizeQuestionAnswers,
+  clientWorkingSlides,
 } from './blocks.js'
 import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool, TOOL_GROUP_KEYS } from './tools.js'
 import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
@@ -1838,7 +1839,10 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
     const instruction = String(req.body?.instruction || '').trim().slice(0, 2000)
     if (!instruction) return res.status(400).json({ error: 'instrução vazia' })
     const slideIndex = Number.isInteger(req.body?.slideIndex) ? req.body.slideIndex : null
-    const scoped = slideIndex != null && deck.slides[slideIndex] ? deck.slides[slideIndex] : null
+    // Edit from the client's working copy (unsaved manual edits) when provided,
+    // else the persisted slides. Ownership/title/meta still come from `deck`.
+    const workSlides = clientWorkingSlides(req.body?.slides) || deck.slides
+    const scoped = slideIndex != null && workSlides[slideIndex] ? workSlides[slideIndex] : null
     // preview mode: compute the edit but DON'T persist — the Studio shows the
     // result with Accept/Discard, so an AI tweak is reversible before it lands
     const preview = req.body?.preview === true
@@ -1857,7 +1861,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
     // the slide at sel.path). Result is sanitized by sanitizeHtmlDeck and shown
     // as a preview (Accept/Discard) before persisting — same reversible flow.
     const deckIsHtml =
-      deck.meta?.format === 'html' || (deck.slides.length && deck.slides.every((s) => typeof s === 'string' || (s && typeof s === 'object' && typeof s.html === 'string')))
+      deck.meta?.format === 'html' || (workSlides.length && workSlides.every((s) => typeof s === 'string' || (s && typeof s === 'object' && typeof s.html === 'string')))
     if (deckIsHtml) {
       const model = resolveModelId(req.body?.model)
       const readHtml = (s) => (typeof s === 'string' ? s : s?.html || '')
@@ -1900,7 +1904,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         // <section> stays bounded and coherent (mirrors the streaming generator).
         const outSlides = []
         let totalUsage = null
-        for (const s of deck.slides) {
+        for (const s of workSlides) {
           const { text: raw, usage } = await completeWithUsage(req.token, model, [
             { role: 'system', content: groundSystem + ' Você recebe o HTML de UM slide (<section>…</section>) de um deck; devolva o <section> NOVO completo, aplicando a instrução de forma consistente com um deck inteiro.' },
             { role: 'user', content: `Slide (HTML):\n${readHtml(s)}\n\nInstrução (vale p/ o deck todo): ${instruction}\n\n<section> novo:` },
@@ -1919,9 +1923,9 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         }
         const san = sanitizeHtmlDeck({ title: deck.title, slides: outSlides })
         if (!san?.slides?.length) return res.status(422).json({ error: 'a edição resultou em um deck inválido' })
-        // preserve per-slide notes
+        // preserve per-slide notes (from the working copy being edited)
         const merged = san.slides.map((h, i) => {
-          const prev = deck.slides[i]
+          const prev = workSlides[i]
           return prev && typeof prev === 'object' && prev.notes ? { html: h, notes: prev.notes } : h
         })
         const updated = { ...deck, slides: merged }
@@ -1933,7 +1937,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
       if (!/<section/i.test(cleaned)) return res.status(422).json({ error: 'a edição não retornou um slide válido' })
       const san = sanitizeHtmlDeck({ title: deck.title, slides: [cleaned] })
       if (!san?.slides?.length) return res.status(422).json({ error: 'a edição resultou em um slide inválido' })
-      const slides = [...deck.slides]
+      const slides = [...workSlides]
       const prev = slides[slideIndex]
       slides[slideIndex] = prev && typeof prev === 'object' && prev.notes ? { html: san.slides[0], notes: prev.notes } : san.slides[0]
       const updated = { ...deck, slides }

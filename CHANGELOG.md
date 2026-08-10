@@ -9,6 +9,22 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 <!-- Adicione aqui as mudanças ainda não lançadas, em Added / Changed / Fixed / Removed. -->
 
+### Changed
+
+- **Edição por IA passa a ler o estado do client (edições não salvas)**: o tweak
+  de deck (`/api/decks/:id/tweak`) editava a partir da versão PERSISTIDA no banco,
+  ignorando edições manuais ainda não salvas (elementos movidos, imagem trocada,
+  undo/redo). Agora o client envia sua cópia de trabalho e a edição roda sobre
+  ela — a IA edita o que o usuário está vendo. Ownership/título/tema continuam
+  vindo do deck do banco; um corpo ausente/malformado faz fallback para os slides
+  persistidos (nunca apaga o deck). O Spreadsheet Studio é read-only por design,
+  então já refletia o persistido.
+- **Aceitar uma edição por IA salva na hora**: antes, aceitar uma sugestão só
+  marcava o deck como "não salvo" e exigia um Save manual depois. Agora persiste
+  imediatamente, com um flash "Salvo" de confirmação; em caso de falha o deck
+  continua marcado como não salvo (retry pela barra Save) e a edição segue
+  desfazível (undo/redo).
+
 ### Fixed
 
 - **Troca de imagem agora reflete no export `.pptx`**: substituir a imagem de um

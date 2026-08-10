@@ -700,6 +700,7 @@ export default {
   'deckStudio.htmlEdit.addBorder': 'Add border',
   'deckStudio.htmlEdit.shadowOn': 'Shadow on',
   'deckStudio.htmlEdit.saveEdits': 'Save',
+  'deckStudio.htmlEdit.saved': 'Saved',
   'deckStudio.htmlEdit.saveEditsTitle': 'Save edits to the deck',
   'deckStudio.htmlEdit.discardEdits': 'Discard',
   'deckStudio.htmlEdit.discardEditsTitle': 'Discard edits and leave edit mode',

@@ -15,7 +15,7 @@
 // pure, dependency-light server functions that a broken refactor would silently
 // break.
 import JSZip from 'jszip'
-import { sanitizeHtmlDeck } from '../server/blocks.js'
+import { sanitizeHtmlDeck, clientWorkingSlides } from '../server/blocks.js'
 import { renderPptxFromOps } from '../server/decks.js'
 import { resolveDeckAssets } from '../client/src/lib/deckAssets.js'
 
@@ -92,6 +92,23 @@ const assert = (cond, msg) => {
   // matching asset must never blank out; and idempotency holds on a resolved img
   const twice = resolveDeckAssets(resolveDeckAssets('<section><img data-ds-asset-id="icon_1"></section>', map), map)
   assert(twice.includes('ORIGINAL') && (twice.match(/ORIGINAL/g) || []).length === 1, 'resolveDeckAssets is idempotent on a resolved asset')
+}
+
+// ---- 1c. clientWorkingSlides: AI edits the working copy, safely ------------
+// The tweak endpoint edits the client's in-memory slides (unsaved manual edits)
+// when the body carries a usable `slides` array, else falls back to the DB copy
+// (item 4). A malformed payload must never become the thing we edit/persist.
+{
+  const good = clientWorkingSlides(['<section>Um</section>', { html: '<section>Dois</section>', notes: 'n' }])
+  assert(good && good.length === 2, 'clientWorkingSlides accepts a valid working copy')
+  assert(good && good[0] === '<section>Um</section>', 'clientWorkingSlides keeps a bare string slide')
+  assert(good && good[1] && good[1].notes === 'n', 'clientWorkingSlides preserves per-slide notes')
+
+  assert(clientWorkingSlides(undefined) === null, 'clientWorkingSlides(undefined) → null (fall back to DB)')
+  assert(clientWorkingSlides([]) === null, 'clientWorkingSlides([]) → null')
+  assert(clientWorkingSlides(['<div>not a section</div>']) === null, 'clientWorkingSlides rejects a slide with no <section>')
+  assert(clientWorkingSlides([{ html: '   ' }]) === null, 'clientWorkingSlides rejects a blank slide')
+  assert(clientWorkingSlides('nope') === null, 'clientWorkingSlides rejects a non-array')
 }
 
 // ---- 2. renderPptxFromOps --------------------------------------------------
