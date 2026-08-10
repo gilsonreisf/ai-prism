@@ -9,6 +9,17 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 <!-- Adicione aqui as mudanças ainda não lançadas, em Added / Changed / Fixed / Removed. -->
 
+### Fixed
+
+- **Troca de imagem agora reflete no export `.pptx`**: substituir a imagem de um
+  elemento no editor deixava o `.pptx` (e a preview após reload) com a imagem
+  ORIGINAL do design system. Ao trocar a imagem, o novo `src` era definido mas o
+  marcador `data-ds-asset-id` permanecia; o `serialize()` então removia o `src`
+  de todo `<img data-ds-asset-id>` e o export reinjetava o asset original do
+  template. Agora, ao definir um `src` num `<img>`, o editor remove o marcador do
+  DS — a imagem passa a ser tratada como customizada, o `src` é preservado e o
+  export para de re-resolver.
+
 ## [1.1.0] - 2026-08-09
 
 Roteamento de intenção mais inteligente: um classificador barato por turno mais um

@@ -17,6 +17,7 @@
 import JSZip from 'jszip'
 import { sanitizeHtmlDeck } from '../server/blocks.js'
 import { renderPptxFromOps } from '../server/decks.js'
+import { resolveDeckAssets } from '../client/src/lib/deckAssets.js'
 
 let failures = 0
 const assert = (cond, msg) => {
@@ -66,6 +67,31 @@ const assert = (cond, msg) => {
   const many = Array.from({ length: 80 }, (_, i) => `<section>${i}</section>`)
   const out = sanitizeHtmlDeck({ title: 'x', slides: many })
   assert(out && out.slides.length <= 40, `slide count capped (got ${out?.slides.length})`)
+}
+
+// ---- 1b. resolveDeckAssets: replaced images survive to export --------------
+// Regression for the "replaced image reverts to the original in the exported
+// .pptx" bug. The editor drops the data-ds-asset-id marker when the user swaps
+// an <img>'s src (see HtmlSlideEditor setAttr), so serialize() keeps the custom
+// src. resolveDeckAssets — which runs on the off-screen export frame too — must
+// then leave that custom <img> alone and only re-resolve still-symbolic ones.
+{
+  const map = new Map([['icon_1', 'data:image/svg+xml;base64,ORIGINAL']])
+
+  // a still-symbolic asset (untouched by the user) resolves to the DS art
+  const symbolic = resolveDeckAssets('<section><img data-ds-asset-id="icon_1"></section>', map)
+  assert(symbolic.includes('ORIGINAL'), 'resolveDeckAssets resolves a symbolic data-ds-asset-id to the template art')
+
+  // a user-customized <img> (marker already stripped) keeps its own src and is
+  // NOT re-resolved to the template original — this is the export-side guarantee
+  const customized = resolveDeckAssets('<section><img src="data:image/png;base64,USERIMG"></section>', map)
+  assert(customized.includes('USERIMG'), 'resolveDeckAssets preserves a replaced image src')
+  assert(!customized.includes('ORIGINAL'), 'resolveDeckAssets does not re-inject the original DS art over a replaced image')
+
+  // belt-and-suspenders: even if a stale marker somehow lingers, an id with no
+  // matching asset must never blank out; and idempotency holds on a resolved img
+  const twice = resolveDeckAssets(resolveDeckAssets('<section><img data-ds-asset-id="icon_1"></section>', map), map)
+  assert(twice.includes('ORIGINAL') && (twice.match(/ORIGINAL/g) || []).length === 1, 'resolveDeckAssets is idempotent on a resolved asset')
 }
 
 // ---- 2. renderPptxFromOps --------------------------------------------------
