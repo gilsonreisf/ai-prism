@@ -105,27 +105,53 @@ export function clientWorkingSlides(rawSlides) {
   return out.length ? out : null
 }
 
-// Validate image data-URLs sent inline in a JSON body (the deck/spreadsheet
-// tweak endpoints are plain JSON, not multipart). Keeps only well-formed
-// RASTER `data:image/*;base64,…` URLs, caps count and per-image size so a body
-// can't blow up the model request. SVG is rejected: the gateway's vision API
-// only accepts raster ("Invalid data URL ... base64 image"), and the client
-// already rasterizes SVG → PNG before attaching — this is defense-in-depth so a
-// stray SVG never reaches the model. Returns [{ dataUrl }] ready for
-// attachImagesToLastUserTurn. Never throws.
+// Validate image attachments sent inline in a JSON body (the deck/spreadsheet
+// tweak endpoints are plain JSON, not multipart). Each attachment carries two
+// channels (see usePromptImages):
+//   • dataUrl   — the ORIGINAL bytes (may be SVG). Used to INSERT the image as
+//                 a real <img> asset into the slide (kept vector for SVG).
+//   • visionUrl — a RASTER data URL the MODEL can see. The gateway vision API
+//                 rejects SVG, so `vision` is always raster; if a caller sends
+//                 only `dataUrl` and it's raster, that doubles as the vision URL.
+// Returns [{ index, dataUrl, vision, isSvg }] (1-based index for `data-attach`).
+// Caps count and per-image size so a body can't blow up the model request.
+// Never throws. An attachment whose vision channel is SVG/absent is dropped from
+// the vision list (a bad URL would 400 the whole model request), but its
+// original may still be inserted.
 const MAX_TWEAK_IMAGES = 4
 const MAX_TWEAK_IMAGE_CHARS = 9_000_000 // ~6.7MB decoded — matches the client cap
+const IMG_DATA_URL_RE = /^data:image\/[a-z0-9.+-]+;base64,/i
+const SVG_DATA_URL_RE = /^data:image\/svg\+xml/i
 export function parseInlineImages(raw) {
   if (!Array.isArray(raw)) return []
   const out = []
   for (const im of raw.slice(0, MAX_TWEAK_IMAGES)) {
-    const url = typeof im === 'string' ? im : typeof im?.dataUrl === 'string' ? im.dataUrl : null
-    if (!url || !/^data:image\/[a-z0-9.+-]+;base64,/i.test(url)) continue
-    if (/^data:image\/svg\+xml/i.test(url)) continue // vision API rejects SVG
-    if (url.length > MAX_TWEAK_IMAGE_CHARS) continue
-    out.push({ dataUrl: url })
+    const original = typeof im === 'string' ? im : typeof im?.dataUrl === 'string' ? im.dataUrl : null
+    if (!original || !IMG_DATA_URL_RE.test(original) || original.length > MAX_TWEAK_IMAGE_CHARS) continue
+    // vision channel: explicit visionUrl, else the original when it's raster
+    let vision = typeof im?.visionUrl === 'string' && IMG_DATA_URL_RE.test(im.visionUrl) ? im.visionUrl : original
+    if (SVG_DATA_URL_RE.test(vision) || vision.length > MAX_TWEAK_IMAGE_CHARS) vision = null // vision API is raster-only
+    out.push({ index: out.length + 1, dataUrl: original, vision, isSvg: SVG_DATA_URL_RE.test(original) })
   }
   return out
+}
+
+// Given the model's returned slide HTML and the attachments, splice each real
+// attachment in wherever the model placed a `<img data-attach="N" ...>` marker
+// (N is 1-based, matching parseInlineImages' `index`). The model decides IF and
+// WHERE to insert and picks the styling; we only swap the marker's `src` for the
+// real (possibly SVG, kept vector) data URL. Markers with no matching attachment
+// are dropped so a stray one never renders a broken image. Returns the HTML with
+// markers resolved. Pure string op — safe on any HTML.
+export function spliceAttachedImages(html, attachments) {
+  if (typeof html !== 'string' || !html || !attachments?.length) return html || ''
+  const byIndex = new Map(attachments.map((a) => [String(a.index), a.dataUrl]))
+  return html.replace(/<img\b([^>]*?)\bdata-attach="(\d+)"([^>]*?)>/gi, (m, pre, n, post) => {
+    const url = byIndex.get(String(n))
+    if (!url) return '' // no such attachment — drop the marker
+    const attrs = (pre + post).replace(/\bsrc="[^"]*"/i, '').replace(/\s+/g, ' ').trim()
+    return `<img ${attrs} src="${url}">`
+  })
 }
 
 const DECK_QUESTION_TYPES = new Set(['single', 'multi', 'text'])

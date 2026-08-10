@@ -92,6 +92,7 @@ import {
   sanitizeQuestionAnswers,
   clientWorkingSlides,
   parseInlineImages,
+  spliceAttachedImages,
 } from './blocks.js'
 import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool, TOOL_GROUP_KEYS } from './tools.js'
 import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
@@ -1805,6 +1806,28 @@ function extractJson(text) {
   return null
 }
 
+// Instruction appended to the deck-tweak system prompt when the user attached
+// image(s). The model DECIDES per attachment whether it's an ASSET to place in
+// the slide or just visual REFERENCE — we don't force a rule (an inspiration
+// image must not get dumped onto the slide). When it inserts one, it emits a
+// `<img data-attach="N">` marker (N = 1-based attachment index) and we splice
+// the real bytes in afterwards, so the exact file (incl. SVG, kept vector) lands
+// — never a redrawn approximation.
+function imageAttachInstruction(images) {
+  const n = images.length
+  return (
+    ` O usuário anexou ${n === 1 ? 'uma imagem' : `${n} imagens`} (numeradas de 1 a ${n}, na ordem enviada). ` +
+    'DECIDA o papel de cada uma pela instrução e pelo contexto: ' +
+    '(a) se é um ATIVO para COLOCAR no slide (um logo, uma foto, um ícone que o usuário quer usar), ' +
+    'insira-a com um marcador `<img data-attach="N">` (N = número da imagem) posicionando e ' +
+    'dimensionando da melhor forma no layout (use style inline com left/top/width/height ou as classes/flex do slide; ' +
+    'prefira `object-fit:contain` para não deformar). NÃO redesenhe a imagem em SVG/CSS nem invente um placeholder — ' +
+    'use o marcador e nós inserimos o arquivo real. ' +
+    '(b) se é apenas REFERÊNCIA visual/inspiração (paleta, estilo, layout a imitar), NÃO a insira — só use como guia. ' +
+    'Na dúvida entre inserir ou não, prefira tratar como referência.'
+  )
+}
+
 // Compact digest of the conversation a deck came from, for grounding an AI
 // tweak (task #45). Plain-text roles only, tool traces and block payloads
 // dropped, capped so it stays token-affordable. Returns '' when there's no
@@ -1867,8 +1890,11 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
       const model = resolveModelId(req.body?.model)
       const readHtml = (s) => (typeof s === 'string' ? s : s?.html || '')
       const htmlOuter = typeof sel?.htmlOuter === 'string' ? sel.htmlOuter : null
-      // reference images pasted/attached to the prompt (item 9) — vision input
+      // attached images (item 9): each has a vision channel (raster, what the
+      // model SEES) and the original bytes (what we splice in if the model
+      // inserts it). `visionInput` is only the ones the model can look at.
       const tweakImages = parseInlineImages(req.body?.images)
+      const visionInput = tweakImages.filter((im) => im.vision).map((im) => ({ dataUrl: im.vision }))
       const contract =
         'Você é um editor de slides que trabalha em HTML/CSS. Devolva SOMENTE o HTML resultante, ' +
         'sem markdown, sem cercas de código, sem comentários e sem explicação. Preserve a marca e o ' +
@@ -1888,7 +1914,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         (chatDigest ? 'CONTEXTO DA CONVERSA que originou este deck (use como fonte da verdade p/ tema, dados e intenção; NÃO invente números fora dela):\n---\n' + chatDigest + '\n---\n\n' : '') +
         contract +
         ' APOIE-SE no design system acima (tokens var(--…), classes e composições dos exemplos) para qualquer ajuste visual, A MENOS QUE a instrução peça explicitamente o contrário; e mantenha coerência com o contexto da conversa.' +
-        (tweakImages.length ? ' O usuário anexou imagem(ns) de referência — use-as como guia visual (layout, cores, conteúdo) ao aplicar a instrução.' : '')
+        (tweakImages.length ? imageAttachInstruction(tweakImages) : '')
       let messages
       if (htmlOuter && scoped) {
         // element-scoped: give the model the whole <section> AND point at the
@@ -1913,9 +1939,9 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
             { role: 'system', content: groundSystem + ' Você recebe o HTML de UM slide (<section>…</section>) de um deck; devolva o <section> NOVO completo, aplicando a instrução de forma consistente com um deck inteiro.' },
             { role: 'user', content: `Slide (HTML):\n${readHtml(s)}\n\nInstrução (vale p/ o deck todo): ${instruction}\n\n<section> novo:` },
           ]
-          attachImagesToLastUserTurn(slideMsgs, tweakImages)
+          attachImagesToLastUserTurn(slideMsgs, visionInput)
           const { text: raw, usage } = await completeWithUsage(req.token, model, slideMsgs, { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
-          const cleaned = String(raw || '').replace(/```[a-z]*\n?/gi, '').trim()
+          const cleaned = spliceAttachedImages(String(raw || '').replace(/```[a-z]*\n?/gi, '').trim(), tweakImages)
           outSlides.push(cleaned && /<section/i.test(cleaned) ? cleaned : readHtml(s))
           // sum token usage across the per-slide calls, tolerating either the
           // OpenAI-style keys (prompt/completion/total) or the anthropic-style
@@ -1938,9 +1964,9 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         if (!preview) await updateDeckSlides(req.email, req.token, req.params.id, deck.title, merged, { format: 'html', audience: deck.audience, author: deck.author })
         return res.json({ deck: updated, preview, usage: totalUsage, model })
       }
-      attachImagesToLastUserTurn(messages, tweakImages)
+      attachImagesToLastUserTurn(messages, visionInput)
       const { text: raw, usage } = await completeWithUsage(req.token, model, messages, { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
-      const cleaned = String(raw || '').replace(/```[a-z]*\n?/gi, '').trim()
+      const cleaned = spliceAttachedImages(String(raw || '').replace(/```[a-z]*\n?/gi, '').trim(), tweakImages)
       if (!/<section/i.test(cleaned)) return res.status(422).json({ error: 'a edição não retornou um slide válido' })
       const san = sanitizeHtmlDeck({ title: deck.title, slides: [cleaned] })
       if (!san?.slides?.length) return res.status(422).json({ error: 'a edição resultou em um slide inválido' })
@@ -2082,9 +2108,10 @@ app.post('/api/spreadsheets/:id/tweak', auth, async (req, res) => {
     }
     const user = `JSON atual:\n${strippedJson}\n\nInstrução: ${instruction}`
 
-    // reference images pasted/attached to the prompt (item 9) — vision input
-    const tweakImages = parseInlineImages(req.body?.images)
-    const systemWithImages = system + (tweakImages.length ? ' O usuário anexou imagem(ns) de referência — use-as como guia ao aplicar a instrução.' : '')
+    // reference images (item 9) — spreadsheets use them ONLY as visual reference
+    // (no insertion into cells), so the raster vision channel is all we need.
+    const visionInput = parseInlineImages(req.body?.images).filter((im) => im.vision).map((im) => ({ dataUrl: im.vision }))
+    const systemWithImages = system + (visionInput.length ? ' O usuário anexou imagem(ns) de referência — use-as como guia ao aplicar a instrução.' : '')
 
     await getUserModels(req)
     const model = resolveModelId(req.body?.model)
@@ -2092,7 +2119,7 @@ app.post('/api/spreadsheets/:id/tweak', auth, async (req, res) => {
       { role: 'system', content: systemWithImages },
       { role: 'user', content: user },
     ]
-    attachImagesToLastUserTurn(ssMessages, tweakImages)
+    attachImagesToLastUserTurn(ssMessages, visionInput)
     const { text: out, usage: ssUsage } = await completeWithUsage(req.token, model, ssMessages, { maxTokens: SS_TWEAK_MAX_TOKENS, temperature: 0.2 })
 
     const parsed = extractJson(out)

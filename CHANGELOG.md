@@ -11,13 +11,18 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ### Added
 
-- **Imagens de referência no prompt de edição por IA (deck e planilha)**: os
-  prompts de tweak eram texto puro; agora aceitam imagens por colar (Cmd/Ctrl+V)
-  ou anexar, com thumbnails removíveis antes de enviar. As imagens vão como
-  contexto de visão para o modelo, que passa a editar a partir de um screenshot,
-  design ou gráfico de referência. Cap de 4 imagens (~6MB cada); imagens SVG são
-  rasterizadas para PNG antes de enviar (a API de visão do gateway só aceita
-  raster).
+- **Imagens no prompt de edição por IA (deck e planilha)**: os prompts de tweak
+  eram texto puro; agora aceitam imagens por colar (Cmd/Ctrl+V) ou anexar, com
+  thumbnails removíveis antes de enviar. Cap de 4 imagens (~6MB cada).
+  - No **deck**, cada anexo tem duplo papel decidido pelo MODELO: se é um ATIVO
+    a usar (um logo, uma foto), ele o insere no slide como `<img>` real —
+    posicionando/dimensionando no layout — e o arquivo original é injetado pelo
+    servidor (SVG entra e sai VETOR, sem rasterizar nem deformar); se é só
+    REFERÊNCIA visual (paleta, estilo), ele usa como guia sem inserir. Sem regra
+    rígida — a inspiração não é despejada no slide.
+  - O que o modelo VÊ é sempre uma cópia raster (a API de visão do gateway não
+    aceita SVG), mas o que vai para o slide é o arquivo original.
+  - Na **planilha**, o anexo é sempre só referência visual.
 
 ### Changed
 
@@ -54,11 +59,12 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   `sizing` do pptxgenjs. O frame de export passou a aguardar o decode das imagens
   para conhecer a proporção natural.
 - **Anexar SVG no prompt de edição por IA falhava** (`INVALID_PARAMETER_VALUE:
-  Invalid data URL`): a API de visão do gateway só aceita imagem raster. O SVG
-  agora é rasterizado para PNG no client antes de enviar, preservando a
-  transparência (um logo branco sobre fundo transparente não é mais apagado por
-  um fundo branco), e o servidor rejeita qualquer `data:image/svg+xml` residual
-  (defesa em profundidade).
+  Invalid data URL`) e o logo saía como uma recriação imperfeita: a API de visão
+  do gateway não aceita SVG, e o anexo fazia o modelo REDESENHAR a imagem em vez
+  de usá-la. Agora o SVG é inserido como o arquivo real no slide (VETOR, via o
+  fluxo de asset acima); o modelo só vê uma cópia raster para decidir onde
+  colocá-lo, mantendo a transparência (um logo branco não é mais apagado por um
+  fundo branco na rasterização).
 
 ## [1.1.0] - 2026-08-09
 
