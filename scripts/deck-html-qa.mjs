@@ -15,7 +15,7 @@
 // pure, dependency-light server functions that a broken refactor would silently
 // break.
 import JSZip from 'jszip'
-import { sanitizeHtmlDeck, clientWorkingSlides } from '../server/blocks.js'
+import { sanitizeHtmlDeck, clientWorkingSlides, parseInlineImages } from '../server/blocks.js'
 import { renderPptxFromOps } from '../server/decks.js'
 import { resolveDeckAssets } from '../client/src/lib/deckAssets.js'
 
@@ -109,6 +109,23 @@ const assert = (cond, msg) => {
   assert(clientWorkingSlides(['<div>not a section</div>']) === null, 'clientWorkingSlides rejects a slide with no <section>')
   assert(clientWorkingSlides([{ html: '   ' }]) === null, 'clientWorkingSlides rejects a blank slide')
   assert(clientWorkingSlides('nope') === null, 'clientWorkingSlides rejects a non-array')
+}
+
+// ---- 1d. parseInlineImages: reference images in the tweak body -------------
+// The tweak prompts accept pasted/attached images as inline data-URLs (item 9).
+// Only well-formed data:image/*;base64 URLs pass, count is capped, and a
+// malformed body degrades to [] (edit proceeds text-only).
+{
+  const png = 'data:image/png;base64,' + Buffer.from('x').toString('base64')
+  const jpg = 'data:image/jpeg;base64,' + Buffer.from('y').toString('base64')
+  const ok = parseInlineImages([{ dataUrl: png }, jpg])
+  assert(ok.length === 2 && ok[0].dataUrl === png, 'parseInlineImages accepts {dataUrl} objects and bare strings')
+
+  assert(parseInlineImages(undefined).length === 0, 'parseInlineImages(undefined) → []')
+  assert(parseInlineImages('nope').length === 0, 'parseInlineImages(non-array) → []')
+  assert(parseInlineImages(['data:text/html;base64,AAAA']).length === 0, 'parseInlineImages rejects a non-image data-URL')
+  assert(parseInlineImages(['https://example.com/x.png']).length === 0, 'parseInlineImages rejects a remote URL')
+  assert(parseInlineImages(Array.from({ length: 10 }, () => ({ dataUrl: png }))).length === 4, 'parseInlineImages caps the image count')
 }
 
 // ---- 2. renderPptxFromOps --------------------------------------------------

@@ -10,6 +10,8 @@ import { buildDeckAssetMap } from '../lib/deckAssets.js'
 import { getJSON, patchJSON, postJSON } from '../api.js'
 import { useT } from '../lib/i18n.jsx'
 import CostBadge from './CostBadge.jsx'
+import PromptImageStrip from './PromptImageStrip.jsx'
+import { usePromptImages } from '../hooks/usePromptImages.js'
 
 // Given a slide's <section> HTML and a list of child-index paths (e.g. "1.0.2"),
 // return the outerHTML of each addressed node — used to copy/cut selected
@@ -129,6 +131,10 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
   const [tweak, setTweak] = useState('')
   const [tweakWholeDeck, setTweakWholeDeck] = useState(false)
   const [tweaking, setTweaking] = useState(false)
+  // images attached to the AI tweak prompt (paste or attach) — sent as vision
+  // input so the model can edit from a reference screenshot/design (item 9)
+  const tweakImages = usePromptImages()
+  const tweakImageInput = useRef(null)
   // AI tweak preview: a pending edit shown in the canvas with Accept/Discard,
   // so an AI change is reversible before it lands. `before` is the deck to
   // restore on discard; `label` describes the edit for the history log.
@@ -443,6 +449,8 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
         // including manual edits that haven't been saved yet — not the last
         // persisted version (item 4).
         slides: deck.slides,
+        // reference images attached to the prompt (item 9)
+        images: tweakImages.images.map((im) => ({ dataUrl: im.dataUrl })),
         preview: true,
         model,
       })
@@ -456,6 +464,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
       setHtmlSel(null)
       if (r.usage) setTweakCost({ usage: r.usage, model: r.model })
       setTweak('')
+      tweakImages.clear()
     } catch (e) {
       pushToast?.(e.message || t('deckStudio.tweakError'))
     } finally {
@@ -945,6 +954,8 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
                       </button>
                     </div>
                   ) : (
+                    <div>
+                    <PromptImageStrip images={tweakImages.images} onRemove={tweakImages.removeAt} />
                     <div className="flex items-center gap-2">
                       <div className="flex-1 flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-2.5">
                         <Icon.Wand size={14} className="text-[var(--accent)] shrink-0" />
@@ -952,6 +963,7 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
                           value={tweak}
                           onChange={(e) => setTweak(e.target.value)}
                           onKeyDown={(e) => e.key === 'Enter' && submitHtmlTweak()}
+                          onPaste={tweakImages.onPaste}
                           placeholder={
                             tweakWholeDeck
                               ? t('deckStudio.tweak.placeholderDeck')
@@ -962,15 +974,32 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
                           disabled={tweaking}
                           className="flex-1 bg-transparent text-sm py-2 outline-none placeholder:text-[var(--faint)] disabled:opacity-50"
                         />
+                        <button
+                          onClick={() => tweakImageInput.current?.click()}
+                          disabled={tweaking}
+                          className="shrink-0 p-1 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)] disabled:opacity-50 transition"
+                          title={t('deckStudio.tweak.attachImage')}
+                        >
+                          <Icon.Paperclip size={16} />
+                        </button>
+                        <input
+                          ref={tweakImageInput}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          onChange={(e) => { tweakImages.addFiles(e.target.files); e.target.value = '' }}
+                        />
                       </div>
                       <button
                         onClick={submitHtmlTweak}
-                        disabled={!tweak.trim() || tweaking}
+                        disabled={(!tweak.trim() && !tweakImages.images.length) || tweaking}
                         className="rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-xs px-3 py-2.5 transition shrink-0 inline-flex items-center gap-1.5"
                       >
                         {tweaking && <span className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" aria-hidden />}
                         {t('deckStudio.tweak.apply')}
                       </button>
+                    </div>
                     </div>
                   )}
                   {!tweakPreview && (
