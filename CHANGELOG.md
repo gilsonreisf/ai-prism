@@ -9,6 +9,15 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 <!-- Adicione aqui as mudanças ainda não lançadas, em Added / Changed / Fixed / Removed. -->
 
+### Added
+
+- **Imagens de referência no prompt de edição por IA (deck e planilha)**: os
+  prompts de tweak eram texto puro; agora aceitam imagens por colar (Cmd/Ctrl+V)
+  ou anexar, com thumbnails removíveis antes de enviar. As imagens vão como
+  contexto de visão para o modelo, que passa a editar a partir de um screenshot,
+  design ou gráfico de referência. Cap de 4 imagens (~6MB cada); só
+  `data:image/*` são aceitas.
+
 ### Changed
 
 - **Edição por IA passa a ler o estado do client (edições não salvas)**: o tweak
