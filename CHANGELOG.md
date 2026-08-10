@@ -45,15 +45,20 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   template. Agora, ao definir um `src` num `<img>`, o editor remove o marcador do
   DS — a imagem passa a ser tratada como customizada, o `src` é preservado e o
   export para de re-resolver.
-- **Imagem trocada não sai mais deformada no `.pptx`**: o export esticava a
-  imagem para preencher a caixa do elemento (equivalente a `object-fit: fill`),
-  deformando uma imagem de proporção diferente (ex.: um ícone quadrado numa caixa
-  larga). O `object-fit` (`contain`/`cover`) do elemento agora é propagado para o
-  `sizing` do pptxgenjs, então o `.pptx` mantém a proporção — igual à preview.
+- **Imagem não sai mais deformada no `.pptx`**: o export esticava a imagem para
+  preencher a caixa do elemento (equivalente a `object-fit: fill`), deformando
+  uma imagem de proporção diferente (ex.: formas quadradas numa caixa larga). Uma
+  imagem com `object-fit: contain` agora é exportada com a caixa LETTERBOXED
+  calculada no client (a partir da proporção natural da imagem + a caixa do
+  elemento), então o `.pptx` mantém a proporção — igual à preview; `cover` usa o
+  `sizing` do pptxgenjs. O frame de export passou a aguardar o decode das imagens
+  para conhecer a proporção natural.
 - **Anexar SVG no prompt de edição por IA falhava** (`INVALID_PARAMETER_VALUE:
   Invalid data URL`): a API de visão do gateway só aceita imagem raster. O SVG
-  agora é rasterizado para PNG no client antes de enviar, e o servidor rejeita
-  qualquer `data:image/svg+xml` residual (defesa em profundidade).
+  agora é rasterizado para PNG no client antes de enviar, preservando a
+  transparência (um logo branco sobre fundo transparente não é mais apagado por
+  um fundo branco), e o servidor rejeita qualquer `data:image/svg+xml` residual
+  (defesa em profundidade).
 
 ## [1.1.0] - 2026-08-09
 

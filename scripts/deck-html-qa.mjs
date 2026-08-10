@@ -178,17 +178,30 @@ const assert = (cond, msg) => {
   assert(Buffer.isBuffer(buf) && buf.length > 5_000, 'renderPptxFromOps tolerates a malformed op and still exports')
 }
 
-// image op with object-fit → pptxgenjs `sizing` so the .pptx keeps aspect ratio
-// (fixes the "replaced image comes out stretched" report). A 1x1 PNG in a wide
-// box with fit:contain must export cleanly and embed the media part.
+// image op with object-fit:cover → pptxgenjs `sizing` so the .pptx crops to fill
+// instead of stretching. (contain is letterboxed client-side in domToSlideOps —
+// it emits plain coords, exercised by the app, not this pure-server test.) A 1x1
+// PNG in a wide box with fit:cover must export cleanly and embed the media part.
 {
   const png1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
   const buf = await renderPptxFromOps({ title: 'x' }, [
-    { w: 1280, h: 720, ops: [{ type: 'image', x: 100, y: 100, w: 600, h: 200, dataUrl: png1x1, fit: 'contain' }] },
+    { w: 1280, h: 720, ops: [{ type: 'image', x: 100, y: 100, w: 600, h: 200, dataUrl: png1x1, fit: 'cover' }] },
   ])
   const zip = await JSZip.loadAsync(buf)
   const hasMedia = Object.keys(zip.files).some((p) => /ppt\/media\/image[-\d].*\.png$/i.test(p))
-  assert(Buffer.isBuffer(buf) && hasMedia, 'renderPptxFromOps embeds an image op with object-fit (contain) as a media part')
+  assert(Buffer.isBuffer(buf) && hasMedia, 'renderPptxFromOps embeds an image op with object-fit (cover) as a media part')
+}
+
+// a plain image op (no fit — the contain-letterbox case, coords precomputed
+// client-side) must still export cleanly as a media part.
+{
+  const png1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  const buf = await renderPptxFromOps({ title: 'x' }, [
+    { w: 1280, h: 720, ops: [{ type: 'image', x: 340, y: 100, w: 200, h: 200, dataUrl: png1x1 }] },
+  ])
+  const zip = await JSZip.loadAsync(buf)
+  const hasMedia = Object.keys(zip.files).some((p) => /ppt\/media\/image[-\d].*\.png$/i.test(p))
+  assert(Buffer.isBuffer(buf) && hasMedia, 'renderPptxFromOps embeds a plain (contain-letterboxed) image op')
 }
 
 // brand-font embedding: a TTF data-URI ends up embedded in the zip

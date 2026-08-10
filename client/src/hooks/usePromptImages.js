@@ -23,23 +23,26 @@ function readAsDataUrl(file) {
 
 // The gateway's vision API only accepts raster image data URLs — an
 // `image/svg+xml` payload is rejected ("Invalid data URL ... base64 image").
-// Rasterize an SVG data URL to a PNG data URL via an offscreen canvas, on a
-// white ground (SVGs are usually transparent). Returns null if the SVG can't be
-// decoded (caller then drops the attachment rather than sending a bad URL).
+// Rasterize an SVG data URL to a PNG data URL via an offscreen canvas. We keep
+// the PNG's alpha transparent (NO opaque ground): many brand SVGs are white or
+// light art on transparency, and painting a white background would erase them.
+// Returns null if the SVG can't be decoded (caller drops the attachment rather
+// than sending a bad URL). A viewBox with no intrinsic width/height falls back
+// to RASTER_MAX so the canvas is never zero-sized.
 function rasterizeSvg(svgDataUrl) {
   return new Promise((resolve) => {
     const img = new Image()
     img.onload = () => {
       try {
-        const scale = Math.min(1, RASTER_MAX / Math.max(img.width || RASTER_MAX, img.height || RASTER_MAX, 1))
-        const w = Math.max(1, Math.round((img.width || RASTER_MAX) * scale))
-        const h = Math.max(1, Math.round((img.height || RASTER_MAX) * scale))
+        const iw = img.naturalWidth || img.width || RASTER_MAX
+        const ih = img.naturalHeight || img.height || RASTER_MAX
+        const scale = Math.min(1, RASTER_MAX / Math.max(iw, ih, 1))
+        const w = Math.max(1, Math.round(iw * scale))
+        const h = Math.max(1, Math.round(ih * scale))
         const canvas = document.createElement('canvas')
         canvas.width = w
         canvas.height = h
         const ctx = canvas.getContext('2d')
-        ctx.fillStyle = '#ffffff'
-        ctx.fillRect(0, 0, w, h)
         ctx.drawImage(img, 0, 0, w, h)
         resolve(canvas.toDataURL('image/png'))
       } catch {
