@@ -6,6 +6,8 @@ import {
 import * as Icon from './Icons.jsx'
 import { useT } from '../lib/i18n.jsx'
 import CostBadge from './CostBadge.jsx'
+import PromptImageStrip from './PromptImageStrip.jsx'
+import { usePromptImages } from '../hooks/usePromptImages.js'
 import { getJSON, postJSON } from '../api.js'
 import { resolveDeckTheme, blend, contrastOn } from '../../../shared/deckTheme.js'
 import { materializeWorkbook, colLetter } from '../lib/sheetEval.js'
@@ -522,6 +524,8 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
   const [tweak, setTweak] = useState('')
   const [tweakWhole, setTweakWhole] = useState(false)
   const [tweaking, setTweaking] = useState(false)
+  const tweakImages = usePromptImages()
+  const tweakImageInput = useRef(null)
   const [lastInstruction, setLastInstruction] = useState('')
   const [flash, setFlash] = useState(false) // brief success flash after a tweak
   const [tweakCost, setTweakCost] = useState(null) // { usage, model } of the last AI edit
@@ -615,10 +619,12 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
     try {
       const body = { instruction, model }
       if (!tweakWhole) body.sheetIndex = active
+      if (tweakImages.images.length) body.images = tweakImages.images.map((im) => ({ dataUrl: im.dataUrl }))
       const r = await postJSON(`/api/spreadsheets/${spreadsheetId}/tweak`, body)
       if (r.spreadsheet) {
         setSpec(r.spreadsheet)
         setTweak('')
+        tweakImages.clear()
         setSel(null)
         setFlash(true)
         setTimeout(() => setFlash(false), 1400)
@@ -784,18 +790,38 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
               </div>
             </div>
 
-            <textarea
-              value={tweak}
-              onChange={(e) => setTweak(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runTweak() }}
-              placeholder={t('sheetStudio.describeChange')}
-              rows={4}
-              disabled={tweaking}
-              className="w-full resize-none rounded-xl bg-[var(--surface)] border border-[var(--border)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60"
-            />
+            <PromptImageStrip images={tweakImages.images} onRemove={tweakImages.removeAt} />
+            <div className="relative">
+              <textarea
+                value={tweak}
+                onChange={(e) => setTweak(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runTweak() }}
+                onPaste={tweakImages.onPaste}
+                placeholder={t('sheetStudio.describeChange')}
+                rows={4}
+                disabled={tweaking}
+                className="w-full resize-none rounded-xl bg-[var(--surface)] border border-[var(--border)] px-3 py-2 pr-9 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60"
+              />
+              <button
+                onClick={() => tweakImageInput.current?.click()}
+                disabled={tweaking}
+                className="absolute top-2 right-2 p-1 rounded-lg hover:bg-[var(--surface-3)] text-[var(--muted)] disabled:opacity-50 transition"
+                title={t('sheetStudio.attachImage')}
+              >
+                <Icon.Paperclip size={16} />
+              </button>
+              <input
+                ref={tweakImageInput}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => { tweakImages.addFiles(e.target.files); e.target.value = '' }}
+              />
+            </div>
             <button
               onClick={runTweak}
-              disabled={!tweak.trim() || tweaking}
+              disabled={(!tweak.trim() && !tweakImages.images.length) || tweaking}
               className="flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] hover:brightness-110 disabled:opacity-50 text-white font-semibold text-sm py-2.5 transition"
             >
               {tweaking ? (

@@ -91,6 +91,7 @@ import {
   sanitizeDocument,
   sanitizeQuestionAnswers,
   clientWorkingSlides,
+  parseInlineImages,
 } from './blocks.js'
 import { ensureBuiltinPythonTool, searchUcFunctions, buildToolDefs, invokeTool, TOOL_GROUP_KEYS } from './tools.js'
 import { routeSkills, renderSkillsInstruction, invalidateSkills } from './skills.js'
@@ -1866,6 +1867,8 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
       const model = resolveModelId(req.body?.model)
       const readHtml = (s) => (typeof s === 'string' ? s : s?.html || '')
       const htmlOuter = typeof sel?.htmlOuter === 'string' ? sel.htmlOuter : null
+      // reference images pasted/attached to the prompt (item 9) — vision input
+      const tweakImages = parseInlineImages(req.body?.images)
       const contract =
         'Você é um editor de slides que trabalha em HTML/CSS. Devolva SOMENTE o HTML resultante, ' +
         'sem markdown, sem cercas de código, sem comentários e sem explicação. Preserve a marca e o ' +
@@ -1884,7 +1887,8 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         (dsContract ? dsContract + '\n\n' : '') +
         (chatDigest ? 'CONTEXTO DA CONVERSA que originou este deck (use como fonte da verdade p/ tema, dados e intenção; NÃO invente números fora dela):\n---\n' + chatDigest + '\n---\n\n' : '') +
         contract +
-        ' APOIE-SE no design system acima (tokens var(--…), classes e composições dos exemplos) para qualquer ajuste visual, A MENOS QUE a instrução peça explicitamente o contrário; e mantenha coerência com o contexto da conversa.'
+        ' APOIE-SE no design system acima (tokens var(--…), classes e composições dos exemplos) para qualquer ajuste visual, A MENOS QUE a instrução peça explicitamente o contrário; e mantenha coerência com o contexto da conversa.' +
+        (tweakImages.length ? ' O usuário anexou imagem(ns) de referência — use-as como guia visual (layout, cores, conteúdo) ao aplicar a instrução.' : '')
       let messages
       if (htmlOuter && scoped) {
         // element-scoped: give the model the whole <section> AND point at the
@@ -1905,10 +1909,12 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         const outSlides = []
         let totalUsage = null
         for (const s of workSlides) {
-          const { text: raw, usage } = await completeWithUsage(req.token, model, [
+          const slideMsgs = [
             { role: 'system', content: groundSystem + ' Você recebe o HTML de UM slide (<section>…</section>) de um deck; devolva o <section> NOVO completo, aplicando a instrução de forma consistente com um deck inteiro.' },
             { role: 'user', content: `Slide (HTML):\n${readHtml(s)}\n\nInstrução (vale p/ o deck todo): ${instruction}\n\n<section> novo:` },
-          ], { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
+          ]
+          attachImagesToLastUserTurn(slideMsgs, tweakImages)
+          const { text: raw, usage } = await completeWithUsage(req.token, model, slideMsgs, { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
           const cleaned = String(raw || '').replace(/```[a-z]*\n?/gi, '').trim()
           outSlides.push(cleaned && /<section/i.test(cleaned) ? cleaned : readHtml(s))
           // sum token usage across the per-slide calls, tolerating either the
@@ -1932,6 +1938,7 @@ app.post('/api/decks/:id/tweak', auth, async (req, res) => {
         if (!preview) await updateDeckSlides(req.email, req.token, req.params.id, deck.title, merged, { format: 'html', audience: deck.audience, author: deck.author })
         return res.json({ deck: updated, preview, usage: totalUsage, model })
       }
+      attachImagesToLastUserTurn(messages, tweakImages)
       const { text: raw, usage } = await completeWithUsage(req.token, model, messages, { maxTokens: TWEAK_MAX_TOKENS, temperature: 0.3 })
       const cleaned = String(raw || '').replace(/```[a-z]*\n?/gi, '').trim()
       if (!/<section/i.test(cleaned)) return res.status(422).json({ error: 'a edição não retornou um slide válido' })
@@ -2075,12 +2082,18 @@ app.post('/api/spreadsheets/:id/tweak', auth, async (req, res) => {
     }
     const user = `JSON atual:\n${strippedJson}\n\nInstrução: ${instruction}`
 
+    // reference images pasted/attached to the prompt (item 9) — vision input
+    const tweakImages = parseInlineImages(req.body?.images)
+    const systemWithImages = system + (tweakImages.length ? ' O usuário anexou imagem(ns) de referência — use-as como guia ao aplicar a instrução.' : '')
+
     await getUserModels(req)
     const model = resolveModelId(req.body?.model)
-    const { text: out, usage: ssUsage } = await completeWithUsage(req.token, model, [
-      { role: 'system', content: system },
+    const ssMessages = [
+      { role: 'system', content: systemWithImages },
       { role: 'user', content: user },
-    ], { maxTokens: SS_TWEAK_MAX_TOKENS, temperature: 0.2 })
+    ]
+    attachImagesToLastUserTurn(ssMessages, tweakImages)
+    const { text: out, usage: ssUsage } = await completeWithUsage(req.token, model, ssMessages, { maxTokens: SS_TWEAK_MAX_TOKENS, temperature: 0.2 })
 
     const parsed = extractJson(out)
     if (parsed == null) return res.status(422).json({ error: 'o modelo não devolveu um JSON válido — tente reformular a instrução' })

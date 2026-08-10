@@ -105,6 +105,25 @@ export function clientWorkingSlides(rawSlides) {
   return out.length ? out : null
 }
 
+// Validate image data-URLs sent inline in a JSON body (the deck/spreadsheet
+// tweak endpoints are plain JSON, not multipart). Keeps only well-formed
+// `data:image/*;base64,…` URLs, caps count and per-image size so a body can't
+// blow up the model request. Returns [{ dataUrl }] ready for
+// attachImagesToLastUserTurn. Never throws.
+const MAX_TWEAK_IMAGES = 4
+const MAX_TWEAK_IMAGE_CHARS = 9_000_000 // ~6.7MB decoded — matches the client cap
+export function parseInlineImages(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const im of raw.slice(0, MAX_TWEAK_IMAGES)) {
+    const url = typeof im === 'string' ? im : typeof im?.dataUrl === 'string' ? im.dataUrl : null
+    if (!url || !/^data:image\/[a-z0-9.+-]+;base64,/i.test(url)) continue
+    if (url.length > MAX_TWEAK_IMAGE_CHARS) continue
+    out.push({ dataUrl: url })
+  }
+  return out
+}
+
 const DECK_QUESTION_TYPES = new Set(['single', 'multi', 'text'])
 const MAX_DECK_QUESTIONS = 8
 const MAX_QUESTION_OPTIONS = 8
