@@ -351,6 +351,9 @@ const RUNTIME = `
     // press-drag on empty area (the slide root/body) → marquee select. A plain
     // click without drag still clears the selection via the click handler.
     if (el === root || el === document.body || el === document.documentElement){
+      // preventDefault stops the browser from starting a NATIVE text selection
+      // as the drag sweeps over headings/paragraphs (the blue highlight bug).
+      ev.preventDefault();
       var pm = stagePoint(ev);
       drag = { mode:'marquee', x0: pm.x, y0: pm.y, additive: ev.shiftKey || ev.metaKey || ev.ctrlKey, base: selected.slice() };
       ensureLayer(); marquee.style.display='block';
@@ -361,6 +364,10 @@ const RUNTIME = `
     if (!drag) return;
     var p = stagePoint(ev);
     if (drag.mode === 'create' || drag.mode === 'marquee'){
+      ev.preventDefault();
+      // clear any native text selection the drag may have begun before the
+      // mousedown preventDefault caught it, so no blue highlight lingers
+      if (drag.mode === 'marquee'){ var s = window.getSelection && window.getSelection(); if (s && s.removeAllRanges) s.removeAllRanges(); }
       var x=Math.min(p.x,drag.x0), y=Math.min(p.y,drag.y0), w=Math.abs(p.x-drag.x0), h=Math.abs(p.y-drag.y0);
       marquee.style.left=x+'px'; marquee.style.top=y+'px'; marquee.style.width=w+'px'; marquee.style.height=h+'px';
     } else if (drag.mode === 'move'){

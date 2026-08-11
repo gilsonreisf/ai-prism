@@ -19,7 +19,8 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   - **Nudge com as setas do teclado**: mover elementos de posição livre
     (absolutos) com ←↑→↓ (1px; 10px com Shift).
   - **Marquee select**: arrastar um retângulo numa área vazia do slide seleciona
-    vários elementos de uma vez (Shift soma à seleção atual).
+    vários elementos de uma vez (Shift, opcional, soma à seleção atual em vez de
+    substituí-la).
 - **Imagens no prompt de edição por IA (deck e planilha)**: os prompts de tweak
   eram texto puro; agora aceitam imagens por colar (Cmd/Ctrl+V) ou anexar, com
   thumbnails removíveis antes de enviar. Cap de 4 imagens (~6MB cada).
