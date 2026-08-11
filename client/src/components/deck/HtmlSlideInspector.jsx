@@ -1,6 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useT } from '../../lib/i18n.jsx'
 import * as Icon from '../Icons.jsx'
+
+// Ancestor paths of a child-index path: "1.0.2" → ["", "1", "1.0"]. The root is
+// "" and every prefix in between. Used to auto-expand the tree down to a node
+// selected on the canvas so its row is actually visible (item 2).
+function ancestorPaths(path) {
+  const segs = String(path).split('.')
+  const out = ['']
+  for (let i = 1; i < segs.length; i++) out.push(segs.slice(0, i).join('.'))
+  return out
+}
 
 // Properties panel + DOM layer tree for a pure-HTML slide — the Claude Design
 // "Pro" edit surface, reproduced. A nested, selectable tree of the slide's real
@@ -77,9 +87,20 @@ function TreeRow({ node, depth, selectedPaths, onSelect, expanded, toggle }) {
   const isSel = selectedPaths.includes(node.path)
   const hasKids = node.children.length > 0
   const isOpen = expanded.has(node.path)
+  // When this row becomes the (single) selection — e.g. the user clicked the
+  // element on the canvas — scroll it into view inside the tree's scroll box so
+  // the highlight is never off-screen (item 2). Only the primary selected row
+  // scrolls; multi-selection doesn't fight over the viewport.
+  const rowRef = useRef(null)
+  useEffect(() => {
+    if (isSel && selectedPaths[0] === node.path) {
+      rowRef.current?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [isSel, selectedPaths, node.path])
   return (
     <div>
       <div
+        ref={rowRef}
         onClick={(e) => onSelect(node.path, e.shiftKey || e.metaKey || e.ctrlKey)}
         className={`group/row flex items-center gap-1.5 h-7 rounded-md pr-1.5 cursor-pointer select-none transition-colors ${
           isSel ? 'bg-[var(--accent-soft)] text-[var(--text)]' : 'text-[var(--muted)] hover:bg-[var(--surface-3)] hover:text-[var(--text)]'
@@ -264,6 +285,21 @@ export default function HtmlSlideInspector({
       next.has(p) ? next.delete(p) : next.add(p)
       return next
     })
+
+  // Expand the tree down to the primary selection so a node picked on the canvas
+  // isn't hidden inside a collapsed ancestor (item 2). Runs on selection change;
+  // only adds ancestors (never collapses what the user opened).
+  const primaryPath = selectedPaths[0]
+  useEffect(() => {
+    if (primaryPath == null) return
+    const anc = ancestorPaths(primaryPath)
+    setExpanded((prev) => {
+      if (anc.every((p) => prev.has(p))) return prev // already open — no re-render
+      const next = new Set(prev)
+      anc.forEach((p) => next.add(p))
+      return next
+    })
+  }, [primaryPath])
 
   const info = selectedInfo
   const multi = info?.multi

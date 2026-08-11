@@ -11,6 +11,15 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ### Added
 
+- **Edição de slides mais "Figma-like" (parte 1)**: melhorias na edição manual
+  do deck.
+  - **Seleção sincroniza com a árvore de elementos**: selecionar um elemento no
+    canvas agora expande a árvore até ele e rola o item para a viewport (a
+    seleção nas duas direções já existia; faltava o auto-scroll).
+  - **Nudge com as setas do teclado**: mover elementos de posição livre
+    (absolutos) com ←↑→↓ (1px; 10px com Shift).
+  - **Marquee select**: arrastar um retângulo numa área vazia do slide seleciona
+    vários elementos de uma vez (Shift soma à seleção atual).
 - **Imagens no prompt de edição por IA (deck e planilha)**: os prompts de tweak
   eram texto puro; agora aceitam imagens por colar (Cmd/Ctrl+V) ou anexar, com
   thumbnails removíveis antes de enviar. Cap de 4 imagens (~6MB cada).
