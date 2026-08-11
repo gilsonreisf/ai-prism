@@ -449,8 +449,10 @@ export default function DeckStudio({ open, deckId, streamingDeck, onClose, pushT
         // including manual edits that haven't been saved yet — not the last
         // persisted version (item 4).
         slides: deck.slides,
-        // reference images attached to the prompt (item 9)
-        images: tweakImages.images.map((im) => ({ dataUrl: im.dataUrl })),
+        // attached images (item 9): `visionUrl` is what the model SEES (raster);
+        // `dataUrl` is the ORIGINAL the server splices in when the model chooses
+        // to insert it as a real asset (keeps SVG vector). See parseInlineImages.
+        images: tweakImages.images.map((im) => ({ dataUrl: im.dataUrl, visionUrl: im.visionUrl })),
         preview: true,
         model,
       })

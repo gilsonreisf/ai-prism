@@ -619,7 +619,9 @@ export default function SpreadsheetStudio({ open, spreadsheetId, onClose, pushTo
     try {
       const body = { instruction, model }
       if (!tweakWhole) body.sheetIndex = active
-      if (tweakImages.images.length) body.images = tweakImages.images.map((im) => ({ dataUrl: im.dataUrl }))
+      // spreadsheets only use images as VISUAL REFERENCE (no insertion), so send
+      // the raster vision copy — the model can't consume SVG directly.
+      if (tweakImages.images.length) body.images = tweakImages.images.map((im) => ({ dataUrl: im.visionUrl }))
       const r = await postJSON(`/api/spreadsheets/${spreadsheetId}/tweak`, body)
       if (r.spreadsheet) {
         setSpec(r.spreadsheet)

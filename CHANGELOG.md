@@ -11,12 +11,18 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ### Added
 
-- **Imagens de referência no prompt de edição por IA (deck e planilha)**: os
-  prompts de tweak eram texto puro; agora aceitam imagens por colar (Cmd/Ctrl+V)
-  ou anexar, com thumbnails removíveis antes de enviar. As imagens vão como
-  contexto de visão para o modelo, que passa a editar a partir de um screenshot,
-  design ou gráfico de referência. Cap de 4 imagens (~6MB cada); só
-  `data:image/*` são aceitas.
+- **Imagens no prompt de edição por IA (deck e planilha)**: os prompts de tweak
+  eram texto puro; agora aceitam imagens por colar (Cmd/Ctrl+V) ou anexar, com
+  thumbnails removíveis antes de enviar. Cap de 4 imagens (~6MB cada).
+  - No **deck**, cada anexo tem duplo papel decidido pelo MODELO: se é um ATIVO
+    a usar (um logo, uma foto), ele o insere no slide como `<img>` real —
+    posicionando/dimensionando no layout — e o arquivo original é injetado pelo
+    servidor (SVG entra e sai VETOR, sem rasterizar nem deformar); se é só
+    REFERÊNCIA visual (paleta, estilo), ele usa como guia sem inserir. Sem regra
+    rígida — a inspiração não é despejada no slide.
+  - O que o modelo VÊ é sempre uma cópia raster (a API de visão do gateway não
+    aceita SVG), mas o que vai para o slide é o arquivo original.
+  - Na **planilha**, o anexo é sempre só referência visual.
 
 ### Changed
 
@@ -44,6 +50,21 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   template. Agora, ao definir um `src` num `<img>`, o editor remove o marcador do
   DS — a imagem passa a ser tratada como customizada, o `src` é preservado e o
   export para de re-resolver.
+- **Imagem não sai mais deformada no `.pptx`**: o export esticava a imagem para
+  preencher a caixa do elemento (equivalente a `object-fit: fill`), deformando
+  uma imagem de proporção diferente (ex.: formas quadradas numa caixa larga). Uma
+  imagem com `object-fit: contain` agora é exportada com a caixa LETTERBOXED
+  calculada no client (a partir da proporção natural da imagem + a caixa do
+  elemento), então o `.pptx` mantém a proporção — igual à preview; `cover` usa o
+  `sizing` do pptxgenjs. O frame de export passou a aguardar o decode das imagens
+  para conhecer a proporção natural.
+- **Anexar SVG no prompt de edição por IA falhava** (`INVALID_PARAMETER_VALUE:
+  Invalid data URL`) e o logo saía como uma recriação imperfeita: a API de visão
+  do gateway não aceita SVG, e o anexo fazia o modelo REDESENHAR a imagem em vez
+  de usá-la. Agora o SVG é inserido como o arquivo real no slide (VETOR, via o
+  fluxo de asset acima); o modelo só vê uma cópia raster para decidir onde
+  colocá-lo, mantendo a transparência (um logo branco não é mais apagado por um
+  fundo branco na rasterização).
 
 ## [1.1.0] - 2026-08-09
 

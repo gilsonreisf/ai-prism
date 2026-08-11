@@ -280,9 +280,29 @@ export function extractSlideOps(slideRoot, win, { fontMode = 'universal' } = {})
     // render — captured as their src when it's a data URI)
     if (el.tagName === 'IMG') {
       const src = el.currentSrc || el.src || ''
+      // Match the preview's object-fit so the .pptx doesn't stretch the image.
+      // For `contain` we compute the LETTERBOXED rect here (from the image's
+      // natural aspect + the element box) and emit those exact coords — a plain
+      // draw the server can't get wrong. pptxgenjs's own `sizing:contain` proved
+      // unreliable (stretched anyway), so we don't lean on it. `cover` still uses
+      // server-side sizing (it must crop); `fill`/`none` keep the stretch-to-box.
+      const objFit = cs.objectFit
+      const nw = el.naturalWidth || 0
+      const nh = el.naturalHeight || 0
+      let rect = b
+      let fit
+      if (objFit === 'contain' && nw > 0 && nh > 0 && b.w > 0 && b.h > 0) {
+        const na = nw / nh
+        const ba = b.w / b.h
+        const dw = na > ba ? b.w : Math.round(b.h * na)
+        const dh = na > ba ? Math.round(b.w / na) : b.h
+        rect = { x: b.x + Math.round((b.w - dw) / 2), y: b.y + Math.round((b.h - dh) / 2), w: dw, h: dh }
+      } else if (objFit === 'cover') {
+        fit = 'cover'
+      }
       // images keep real alpha in the .pptx (pptxgenjs `transparency` is a 0..100
       // percentage), so a faded logo/photo exports faded rather than baked
-      if (src.startsWith('data:image')) ops.push({ type: 'image', ...b, dataUrl: src, ...(opacity < 0.999 ? { transparency: Math.round((1 - opacity) * 100) } : {}) })
+      if (src.startsWith('data:image')) ops.push({ type: 'image', ...rect, dataUrl: src, ...(fit ? { fit } : {}), ...(opacity < 0.999 ? { transparency: Math.round((1 - opacity) * 100) } : {}) })
       return
     }
     // inline SVG (charts/icons) → serialize to a data URI, drawn as one image.
@@ -449,6 +469,20 @@ export async function extractOpsFromSlides(slidesHtml, tokenStyleBuilder, { font
         if (doc.fonts?.ready) await doc.fonts.ready
       } catch {
         /* fonts API unavailable — proceed */
+      }
+      // wait for images to decode so naturalWidth/Height is known — the image op
+      // needs the natural aspect to compute the object-fit:contain letterbox
+      // (otherwise it falls back to stretching the image to the element box).
+      try {
+        const imgs = [...doc.images].filter((im) => !im.complete)
+        if (imgs.length) {
+          await Promise.race([
+            Promise.all(imgs.map((im) => new Promise((r) => { im.addEventListener('load', r, { once: true }); im.addEventListener('error', r, { once: true }) }))),
+            new Promise((r) => setTimeout(r, 3000)), // never hang the export on a broken asset
+          ])
+        }
+      } catch {
+        /* proceed on any decode error */
       }
       await new Promise((r) => win.requestAnimationFrame(() => win.requestAnimationFrame(r)))
       const root = doc.querySelector('section') || doc.body

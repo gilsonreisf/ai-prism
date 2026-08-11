@@ -15,7 +15,7 @@
 // pure, dependency-light server functions that a broken refactor would silently
 // break.
 import JSZip from 'jszip'
-import { sanitizeHtmlDeck, clientWorkingSlides, parseInlineImages } from '../server/blocks.js'
+import { sanitizeHtmlDeck, clientWorkingSlides, parseInlineImages, spliceAttachedImages } from '../server/blocks.js'
 import { renderPptxFromOps } from '../server/decks.js'
 import { resolveDeckAssets } from '../client/src/lib/deckAssets.js'
 
@@ -111,21 +111,50 @@ const assert = (cond, msg) => {
   assert(clientWorkingSlides('nope') === null, 'clientWorkingSlides rejects a non-array')
 }
 
-// ---- 1d. parseInlineImages: reference images in the tweak body -------------
-// The tweak prompts accept pasted/attached images as inline data-URLs (item 9).
-// Only well-formed data:image/*;base64 URLs pass, count is capped, and a
-// malformed body degrades to [] (edit proceeds text-only).
+// ---- 1d. parseInlineImages: two channels (vision + original) ---------------
+// Attachments carry the ORIGINAL bytes (dataUrl, may be SVG → inserted into the
+// slide, vector-preserving) and a RASTER vision channel the model can see. SVG
+// is kept as an insertable original but has NO vision channel (the vision API is
+// raster-only); a raster attachment doubles as its own vision. Count/size capped.
 {
   const png = 'data:image/png;base64,' + Buffer.from('x').toString('base64')
   const jpg = 'data:image/jpeg;base64,' + Buffer.from('y').toString('base64')
-  const ok = parseInlineImages([{ dataUrl: png }, jpg])
-  assert(ok.length === 2 && ok[0].dataUrl === png, 'parseInlineImages accepts {dataUrl} objects and bare strings')
+  const svg = 'data:image/svg+xml;base64,' + Buffer.from('<svg/>').toString('base64')
+
+  const raster = parseInlineImages([{ dataUrl: png }, jpg])
+  assert(raster.length === 2 && raster[0].dataUrl === png, 'parseInlineImages accepts {dataUrl} objects and bare strings')
+  assert(raster[0].vision === png && raster[0].index === 1, 'a raster attachment doubles as its own vision channel (1-based index)')
+
+  const withSvg = parseInlineImages([{ dataUrl: svg, visionUrl: png }])
+  assert(withSvg.length === 1 && withSvg[0].dataUrl === svg && withSvg[0].isSvg, 'parseInlineImages keeps the SVG original (insertable)')
+  assert(withSvg[0].vision === png, 'an SVG attachment uses the provided raster visionUrl for the model')
+
+  const svgOnly = parseInlineImages([{ dataUrl: svg }])
+  assert(svgOnly.length === 1 && svgOnly[0].vision === null, 'an SVG with no raster vision has vision:null (raster-only API)')
 
   assert(parseInlineImages(undefined).length === 0, 'parseInlineImages(undefined) → []')
   assert(parseInlineImages('nope').length === 0, 'parseInlineImages(non-array) → []')
   assert(parseInlineImages(['data:text/html;base64,AAAA']).length === 0, 'parseInlineImages rejects a non-image data-URL')
   assert(parseInlineImages(['https://example.com/x.png']).length === 0, 'parseInlineImages rejects a remote URL')
   assert(parseInlineImages(Array.from({ length: 10 }, () => ({ dataUrl: png }))).length === 4, 'parseInlineImages caps the image count')
+}
+
+// ---- 1e. spliceAttachedImages: model inserts the REAL asset ----------------
+// When the model decides an attachment is an asset, it emits <img data-attach="N">
+// and we swap in the real bytes (SVG kept vector). Unknown markers are dropped.
+{
+  const svg = 'data:image/svg+xml;base64,' + Buffer.from('<svg/>').toString('base64')
+  const png = 'data:image/png;base64,' + Buffer.from('x').toString('base64')
+  const atts = parseInlineImages([{ dataUrl: svg, visionUrl: png }])
+
+  const spliced = spliceAttachedImages('<section><img data-attach="1" style="width:200px"><p>x</p></section>', atts)
+  assert(spliced.includes(svg), 'spliceAttachedImages inserts the original (SVG) bytes at the marker')
+  assert(!spliced.includes('data-attach'), 'spliceAttachedImages removes the data-attach marker')
+  assert(spliced.includes('style="width:200px"'), 'spliceAttachedImages keeps the model-chosen styling')
+
+  assert(spliceAttachedImages('<section><img data-attach="9"></section>', atts) === '<section></section>', 'spliceAttachedImages drops a marker with no matching attachment')
+  assert(spliceAttachedImages('<section><p>no images</p></section>', atts) === '<section><p>no images</p></section>', 'spliceAttachedImages is a no-op without markers')
+  assert(spliceAttachedImages('<section>x</section>', []) === '<section>x</section>', 'spliceAttachedImages is a no-op with no attachments')
 }
 
 // ---- 2. renderPptxFromOps --------------------------------------------------
@@ -175,6 +204,32 @@ const assert = (cond, msg) => {
     { w: 1280, h: 720, ops: [{ type: 'text' /* no runs */ }, { type: 'rect', x: 0, y: 0, w: 100, h: 100, fill: '000000' }] },
   ])
   assert(Buffer.isBuffer(buf) && buf.length > 5_000, 'renderPptxFromOps tolerates a malformed op and still exports')
+}
+
+// image op with object-fit:cover → pptxgenjs `sizing` so the .pptx crops to fill
+// instead of stretching. (contain is letterboxed client-side in domToSlideOps —
+// it emits plain coords, exercised by the app, not this pure-server test.) A 1x1
+// PNG in a wide box with fit:cover must export cleanly and embed the media part.
+{
+  const png1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  const buf = await renderPptxFromOps({ title: 'x' }, [
+    { w: 1280, h: 720, ops: [{ type: 'image', x: 100, y: 100, w: 600, h: 200, dataUrl: png1x1, fit: 'cover' }] },
+  ])
+  const zip = await JSZip.loadAsync(buf)
+  const hasMedia = Object.keys(zip.files).some((p) => /ppt\/media\/image[-\d].*\.png$/i.test(p))
+  assert(Buffer.isBuffer(buf) && hasMedia, 'renderPptxFromOps embeds an image op with object-fit (cover) as a media part')
+}
+
+// a plain image op (no fit — the contain-letterbox case, coords precomputed
+// client-side) must still export cleanly as a media part.
+{
+  const png1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  const buf = await renderPptxFromOps({ title: 'x' }, [
+    { w: 1280, h: 720, ops: [{ type: 'image', x: 340, y: 100, w: 200, h: 200, dataUrl: png1x1 }] },
+  ])
+  const zip = await JSZip.loadAsync(buf)
+  const hasMedia = Object.keys(zip.files).some((p) => /ppt\/media\/image[-\d].*\.png$/i.test(p))
+  assert(Buffer.isBuffer(buf) && hasMedia, 'renderPptxFromOps embeds a plain (contain-letterboxed) image op')
 }
 
 // brand-font embedding: a TTF data-URI ends up embedded in the zip
