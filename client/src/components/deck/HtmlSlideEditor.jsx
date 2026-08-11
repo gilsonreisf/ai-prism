@@ -41,7 +41,8 @@ const RUNTIME = `
   var layer = null;             // overlay layer (rings/hover), outside <section>
   var hoverBox = null;
   var marquee = null;           // create/drag preview box
-  var drag = null;              // {mode:'create'|'move'|'resize', ...}
+  var drag = null;              // {mode:'create'|'move'|'resize'|'marquee', ...}
+  var suppressClick = false;    // swallow the click synthesized right after a marquee drag
   var handles = [];             // 8 resize handles (single selection only)
   var HANDLE_DIRS = ['nw','n','ne','e','se','s','sw','w'];
 
@@ -413,6 +414,9 @@ const RUNTIME = `
       var next = drag.additive ? drag.base.slice() : [];
       hits.forEach(function(el){ if (next.indexOf(el) === -1) next.push(el); });
       setSelection(next);
+      // the browser fires a click on the empty area right after this mouseup,
+      // and the click handler would clear the selection we just made — swallow it
+      suppressClick = true;
     }
     else if (drag.mode === 'move'){ serialize(); emitSelect(); }
     else if (drag.mode === 'resize'){ serialize(); emitSelect(); }
@@ -421,6 +425,9 @@ const RUNTIME = `
 
   document.addEventListener('click', function(ev){
     if (tool !== 'select') return;
+    // swallow the click the browser synthesizes right after a marquee drag, so
+    // it doesn't clear the just-made selection
+    if (suppressClick){ suppressClick = false; ev.preventDefault(); ev.stopPropagation(); return; }
     var el = ev.target;
     if (el && el.getAttribute && el.getAttribute('data-prism-handle')) return; // resize handle
     if (el === editingEl) return;
