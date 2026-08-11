@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useT } from '../../lib/i18n.jsx'
+import { zoneFromRatio, canDrop } from '../../lib/treeDnd.js'
 import * as Icon from '../Icons.jsx'
 
 // Ancestor paths of a child-index path: "1.0.2" → ["", "1", "1.0"]. The root is
@@ -83,10 +84,18 @@ function buildTree(html) {
   return walk(root, '')
 }
 
-function TreeRow({ node, depth, selectedPaths, onSelect, expanded, toggle }) {
+// Which third of a row the cursor is over → where a drop would land. Delegates
+// the zone decision to the pure helper so the tree and the QA harness agree.
+function dropZone(e, el, isRoot) {
+  const r = el.getBoundingClientRect()
+  return zoneFromRatio((e.clientY - r.top) / (r.height || 1), isRoot)
+}
+
+function TreeRow({ node, depth, selectedPaths, onSelect, expanded, toggle, dnd }) {
   const isSel = selectedPaths.includes(node.path)
   const hasKids = node.children.length > 0
   const isOpen = expanded.has(node.path)
+  const isRoot = node.path === ''
   // When this row becomes the (single) selection — e.g. the user clicked the
   // element on the canvas — scroll it into view inside the tree's scroll box so
   // the highlight is never off-screen (item 2). Only the primary selected row
@@ -97,16 +106,43 @@ function TreeRow({ node, depth, selectedPaths, onSelect, expanded, toggle }) {
       rowRef.current?.scrollIntoView({ block: 'nearest' })
     }
   }, [isSel, selectedPaths, node.path])
+  // Drop feedback: this row is the current target and where the drop lands.
+  const isTarget = dnd?.over?.path === node.path
+  const zone = isTarget ? dnd.over.zone : null
   return (
     <div>
       <div
         ref={rowRef}
+        draggable={!isRoot}
+        onDragStart={(e) => {
+          e.stopPropagation()
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData('text/plain', node.path) // Firefox needs a payload
+          dnd?.onStart(node.path)
+        }}
+        onDragEnd={() => dnd?.onEnd()}
+        onDragOver={(e) => {
+          if (!dnd?.dragging) return
+          // can't drop a node into itself or its own subtree — the runtime
+          // rejects it too, but suppressing the target avoids a misleading hint.
+          if (!canDrop(dnd.dragging, node.path)) return
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'move'
+          dnd.onOver(node.path, dropZone(e, e.currentTarget, isRoot))
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          dnd?.onDrop(node.path)
+        }}
         onClick={(e) => onSelect(node.path, e.shiftKey || e.metaKey || e.ctrlKey)}
-        className={`group/row flex items-center gap-1.5 h-7 rounded-md pr-1.5 cursor-pointer select-none transition-colors ${
+        className={`group/row relative flex items-center gap-1.5 h-7 rounded-md pr-1.5 cursor-pointer select-none transition-colors ${
           isSel ? 'bg-[var(--accent-soft)] text-[var(--text)]' : 'text-[var(--muted)] hover:bg-[var(--surface-3)] hover:text-[var(--text)]'
-        }`}
+        } ${zone === 'inside' ? 'ring-1 ring-inset ring-[var(--accent)]' : ''}`}
         style={{ paddingLeft: `${8 + depth * 13}px` }}
       >
+        {zone === 'before' && <span className="pointer-events-none absolute left-1 right-1 -top-px h-0.5 rounded bg-[var(--accent)]" />}
+        {zone === 'after' && <span className="pointer-events-none absolute left-1 right-1 -bottom-px h-0.5 rounded bg-[var(--accent)]" />}
         {hasKids ? (
           <button
             onClick={(e) => {
@@ -128,7 +164,7 @@ function TreeRow({ node, depth, selectedPaths, onSelect, expanded, toggle }) {
       {hasKids && isOpen && (
         <div>
           {node.children.map((c) => (
-            <TreeRow key={c.path} node={c} depth={depth + 1} selectedPaths={selectedPaths} onSelect={onSelect} expanded={expanded} toggle={toggle} />
+            <TreeRow key={c.path} node={c} depth={depth + 1} selectedPaths={selectedPaths} onSelect={onSelect} expanded={expanded} toggle={toggle} dnd={dnd} />
           ))}
         </div>
       )}
@@ -274,6 +310,7 @@ export default function HtmlSlideInspector({
   onText,
   onAttr,
   onOp,
+  onMove,
   onUploadImage,
 }) {
   const t = useT()
@@ -300,6 +337,30 @@ export default function HtmlSlideInspector({
       return next
     })
   }, [primaryPath])
+
+  // Drag-and-drop reorder/reparent in the tree (item 1). `dragging` is the path
+  // being dragged; `over` is the current hover target + zone (before/after/
+  // inside). On drop we hand the move to the parent, which relays it to the
+  // iframe runtime (opMove) — the re-serialized HTML round-trips back and pushes
+  // an undo entry, so no separate undo bookkeeping is needed here.
+  const [dragging, setDragging] = useState(null)
+  const [over, setOver] = useState(null)
+  const dnd = onMove && {
+    dragging,
+    over,
+    onStart: (path) => setDragging(path),
+    onEnd: () => {
+      setDragging(null)
+      setOver(null)
+    },
+    onOver: (path, zone) => setOver((o) => (o?.path === path && o?.zone === zone ? o : { path, zone })),
+    onDrop: (path) => {
+      const zone = over?.path === path ? over.zone : 'inside'
+      if (dragging && dragging !== path) onMove(dragging, path, zone)
+      setDragging(null)
+      setOver(null)
+    },
+  }
 
   const info = selectedInfo
   const multi = info?.multi
@@ -336,7 +397,7 @@ export default function HtmlSlideInspector({
         </div>
         <div className="max-h-44 overflow-y-auto px-1.5 pb-1.5">
           {tree ? (
-            <TreeRow node={tree} depth={0} selectedPaths={selectedPaths} onSelect={onSelectPath} expanded={expanded} toggle={toggle} />
+            <TreeRow node={tree} depth={0} selectedPaths={selectedPaths} onSelect={onSelectPath} expanded={expanded} toggle={toggle} dnd={dnd} />
           ) : (
             <p className="text-[11px] text-[var(--faint)] px-2 py-1.5">{t('deckStudio.htmlEdit.noTree')}</p>
           )}

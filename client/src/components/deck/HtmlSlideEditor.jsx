@@ -312,6 +312,27 @@ const RUNTIME = `
     });
     reselect(); serialize();
   }
+  // Move a node in the tree (drag-and-drop reorder / reparent, item 1). Both
+  // endpoints are resolved BEFORE mutating — a child-index path shifts the moment
+  // the source detaches, so resolving by reference first keeps the drop correct.
+  // position: 'before' | 'after' (sibling of ref) | 'inside' (last child of ref).
+  // Guards: never move the root, never drop a node into itself or its own subtree
+  // (that would detach the branch), and 'inside' the root means append at top level.
+  function opMove(fromPath, toPath, position){
+    var src = nodeAt(fromPath), ref = nodeAt(toPath);
+    if (!src || !ref || src === root || src === ref) return;
+    if (src.contains(ref)) return; // ref is inside src → illegal reparent
+    if (position === 'inside'){
+      ref.appendChild(src);
+    } else if (ref === root){
+      root.appendChild(src); // no siblings of the slide itself — nest at top level
+    } else if (position === 'before'){
+      ref.parentNode.insertBefore(src, ref);
+    } else {
+      ref.parentNode.insertBefore(src, ref.nextSibling);
+    }
+    setSelection([src]); serialize();
+  }
 
   // ---- pointer interactions --------------------------------------------------
   function stagePoint(ev){ return { x: ev.clientX + window.scrollX, y: ev.clientY + window.scrollY }; }
@@ -535,6 +556,7 @@ const RUNTIME = `
       else if (m.op==='wrapFlex') opWrapFlex();
       else if (m.op==='front'||m.op==='back'||m.op==='forward'||m.op==='backward') opReorder(m.op);
     }
+    else if (m.kind === 'move'){ opMove(m.from, m.to, m.position); }
     else if (m.kind === 'reselect'){ reselect(); }
   });
   send({ kind:'ready' });
@@ -626,6 +648,7 @@ const HtmlSlideEditor = forwardRef(function HtmlSlideEditor(
     select: (paths) => post({ kind: 'select', paths }),
     clear: () => post({ kind: 'clear' }),
     op: (op, paths) => post({ kind: 'op', op, paths }),
+    move: (from, to, position) => post({ kind: 'move', from, to, position }),
     paste: (clips) => post({ kind: 'paste', clips }),
     createImage: (dataUrl, w, h) => post({ kind: 'createImage', dataUrl, w, h }),
     setHtml: (html, silent) => post({ kind: 'setHtml', html, silent }),
