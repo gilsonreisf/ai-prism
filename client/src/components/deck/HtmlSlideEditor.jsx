@@ -41,7 +41,8 @@ const RUNTIME = `
   var layer = null;             // overlay layer (rings/hover), outside <section>
   var hoverBox = null;
   var marquee = null;           // create/drag preview box
-  var drag = null;              // {mode:'create'|'move'|'resize', ...}
+  var drag = null;              // {mode:'create'|'move'|'resize'|'marquee', ...}
+  var suppressClick = false;    // swallow the click synthesized right after a marquee drag
   var handles = [];             // 8 resize handles (single selection only)
   var HANDLE_DIRS = ['nw','n','ne','e','se','s','sw','w'];
 
@@ -252,6 +253,21 @@ const RUNTIME = `
   }
 
   // ---- structural ops --------------------------------------------------------
+  // Direct children of the slide root whose on-screen box intersects the marquee
+  // rect (page coords). Marquee selects only TOP-LEVEL elements — the same grain
+  // the tree/canvas click selects — so a drag-select doesn't grab every nested
+  // span at once. A tiny threshold ignores zero-area nodes.
+  function marqueeHits(mx, my, mw, mh){
+    var out = [];
+    for (var i=0;i<root.children.length;i++){
+      var el = root.children[i];
+      var r = el.getBoundingClientRect();
+      var ex = r.left + window.scrollX, ey = r.top + window.scrollY;
+      if (r.width < 2 || r.height < 2) continue;
+      if (ex < mx+mw && ex+r.width > mx && ey < my+mh && ey+r.height > my) out.push(el);
+    }
+    return out;
+  }
   function opDelete(){ selected.forEach(function(e){ if (e.parentNode) e.parentNode.removeChild(e); }); setSelection([]); serialize(); }
   function opDuplicate(){
     var clones = selected.map(function(e){
@@ -331,12 +347,28 @@ const RUNTIME = `
       var p2 = stagePoint(ev);
       drag = { mode:'move', el: el, x0:p2.x, y0:p2.y, left0: parseFloat(el.style.left)||0, top0: parseFloat(el.style.top)||0 };
       ev.preventDefault();
+      return;
+    }
+    // press-drag on empty area (the slide root/body) → marquee select. A plain
+    // click without drag still clears the selection via the click handler.
+    if (el === root || el === document.body || el === document.documentElement){
+      // preventDefault stops the browser from starting a NATIVE text selection
+      // as the drag sweeps over headings/paragraphs (the blue highlight bug).
+      ev.preventDefault();
+      var pm = stagePoint(ev);
+      drag = { mode:'marquee', x0: pm.x, y0: pm.y, additive: ev.shiftKey || ev.metaKey || ev.ctrlKey, base: selected.slice() };
+      ensureLayer(); marquee.style.display='block';
+      marquee.style.left=pm.x+'px'; marquee.style.top=pm.y+'px'; marquee.style.width='0px'; marquee.style.height='0px';
     }
   }, true);
   document.addEventListener('mousemove', function(ev){
     if (!drag) return;
     var p = stagePoint(ev);
-    if (drag.mode === 'create'){
+    if (drag.mode === 'create' || drag.mode === 'marquee'){
+      ev.preventDefault();
+      // clear any native text selection the drag may have begun before the
+      // mousedown preventDefault caught it, so no blue highlight lingers
+      if (drag.mode === 'marquee'){ var s = window.getSelection && window.getSelection(); if (s && s.removeAllRanges) s.removeAllRanges(); }
       var x=Math.min(p.x,drag.x0), y=Math.min(p.y,drag.y0), w=Math.abs(p.x-drag.x0), h=Math.abs(p.y-drag.y0);
       marquee.style.left=x+'px'; marquee.style.top=y+'px'; marquee.style.width=w+'px'; marquee.style.height=h+'px';
     } else if (drag.mode === 'move'){
@@ -373,13 +405,29 @@ const RUNTIME = `
       if (drag.type === 'text') startEditing(el);
       serialize();
       send({ kind:'toolDone' }); tool = 'select';
-    } else if (drag.mode === 'move'){ serialize(); emitSelect(); }
+    } else if (drag.mode === 'marquee'){
+      marquee.style.display='none';
+      var mx=Math.min(p.x,drag.x0), my=Math.min(p.y,drag.y0), mw=Math.abs(p.x-drag.x0), mh=Math.abs(p.y-drag.y0);
+      if (mw < 5 && mh < 5){ drag = null; return; } // treat as a click (clear handled elsewhere)
+      var hits = marqueeHits(mx, my, mw, mh);
+      // additive marquee (shift/meta) unions with the prior selection
+      var next = drag.additive ? drag.base.slice() : [];
+      hits.forEach(function(el){ if (next.indexOf(el) === -1) next.push(el); });
+      setSelection(next);
+      // the browser fires a click on the empty area right after this mouseup,
+      // and the click handler would clear the selection we just made — swallow it
+      suppressClick = true;
+    }
+    else if (drag.mode === 'move'){ serialize(); emitSelect(); }
     else if (drag.mode === 'resize'){ serialize(); emitSelect(); }
     drag = null;
   }, true);
 
   document.addEventListener('click', function(ev){
     if (tool !== 'select') return;
+    // swallow the click the browser synthesizes right after a marquee drag, so
+    // it doesn't clear the just-made selection
+    if (suppressClick){ suppressClick = false; ev.preventDefault(); ev.stopPropagation(); return; }
     var el = ev.target;
     if (el && el.getAttribute && el.getAttribute('data-prism-handle')) return; // resize handle
     if (el === editingEl) return;
@@ -409,6 +457,25 @@ const RUNTIME = `
     ensureLayer(); position(hoverBox, el);
   }, true);
   document.addEventListener('mouseout', function(){ if(hoverBox) hoverBox.style.display='none'; }, true);
+  // Arrow-key nudge: move selected ABSOLUTE elements by 1px (10px with Shift).
+  // Only absolute elements move — nudging a flowing element by pixels would
+  // fight the layout — so a selection with none is a no-op (arrows pass through).
+  // Skipped while editing text so caret navigation still works.
+  document.addEventListener('keydown', function(ev){
+    if (editingEl) return;
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight' && ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return;
+    var movable = selected.filter(function(e){ return e && e !== root && getComputedStyle(e).position === 'absolute'; });
+    if (!movable.length) return;
+    ev.preventDefault();
+    var step = ev.shiftKey ? 10 : 1;
+    var dx = ev.key === 'ArrowLeft' ? -step : ev.key === 'ArrowRight' ? step : 0;
+    var dy = ev.key === 'ArrowUp' ? -step : ev.key === 'ArrowDown' ? step : 0;
+    movable.forEach(function(e){
+      e.style.left = Math.round((parseFloat(e.style.left)||0) + dx)+'px';
+      e.style.top = Math.round((parseFloat(e.style.top)||0) + dy)+'px';
+    });
+    reselect(); serialize(); emitSelect();
+  }, true);
   document.addEventListener('blur', function(ev){ if (ev.target === editingEl) stopEditing(); }, true);
   document.addEventListener('input', function(ev){ if (ev.target === editingEl) reselect(); }, true);
   window.addEventListener('resize', reselect);
