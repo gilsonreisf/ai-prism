@@ -21,6 +21,12 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   - **Marquee select**: arrastar um retângulo numa área vazia do slide seleciona
     vários elementos de uma vez (Shift, opcional, soma à seleção atual em vez de
     substituí-la).
+- **Reordenar/reparentar elementos arrastando na árvore**: a árvore de elementos
+  do editor agora aceita drag-and-drop — arraste uma camada para soltá-la ANTES
+  ou DEPOIS de outra (linha-guia) ou DENTRO dela (realce), reordenando ou
+  mudando o pai. Um nó não pode ser solto dentro da própria subárvore. O
+  movimento é aplicado no DOM (a fonte de verdade) e entra no histórico de
+  undo/redo como qualquer outra edição.
 - **Imagens no prompt de edição por IA (deck e planilha)**: os prompts de tweak
   eram texto puro; agora aceitam imagens por colar (Cmd/Ctrl+V) ou anexar, com
   thumbnails removíveis antes de enviar. Cap de 4 imagens (~6MB cada).

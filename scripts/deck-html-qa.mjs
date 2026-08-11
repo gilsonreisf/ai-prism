@@ -18,6 +18,7 @@ import JSZip from 'jszip'
 import { sanitizeHtmlDeck, clientWorkingSlides, parseInlineImages, spliceAttachedImages } from '../server/blocks.js'
 import { renderPptxFromOps } from '../server/decks.js'
 import { resolveDeckAssets } from '../client/src/lib/deckAssets.js'
+import { zoneFromRatio, canDrop } from '../client/src/lib/treeDnd.js'
 
 let failures = 0
 const assert = (cond, msg) => {
@@ -255,6 +256,24 @@ const assert = (cond, msg) => {
     fontAssets: [{ family: 'X', dataUrl: 'not-a-data-uri' }],
   })
   assert(Buffer.isBuffer(buf) && buf.length > 5_000, 'renderPptxFromOps falls back cleanly when a font asset is unembeddable')
+}
+
+// tree drag-and-drop (item 1): the pure decision helpers behind reorder/reparent
+{
+  // drop zone from the cursor's vertical position within a row
+  assert(zoneFromRatio(0.1) === 'before', 'zoneFromRatio: top band drops before')
+  assert(zoneFromRatio(0.5) === 'inside', 'zoneFromRatio: middle band reparents inside')
+  assert(zoneFromRatio(0.9) === 'after', 'zoneFromRatio: bottom band drops after')
+  assert(zoneFromRatio(0.1, true) === 'inside', 'zoneFromRatio: the slide root only accepts inside')
+
+  // legality: no self-drop, no dropping a node into its own subtree
+  assert(canDrop('1', '2') === true, 'canDrop allows a move between unrelated nodes')
+  assert(canDrop('1.0', '0') === true, 'canDrop allows reparenting up the tree')
+  assert(canDrop('1', '1') === false, 'canDrop forbids dropping a node onto itself')
+  assert(canDrop('1', '1.0') === false, 'canDrop forbids dropping a node into its own child')
+  assert(canDrop('1', '1.2.3') === false, 'canDrop forbids dropping a node deep into its own subtree')
+  assert(canDrop('12', '120') === true, 'canDrop is not fooled by a shared path prefix (12 vs 120)')
+  assert(canDrop(null, '1') === false, 'canDrop rejects a null source')
 }
 
 if (failures) {
