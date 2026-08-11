@@ -427,6 +427,39 @@ export default function HtmlSlideInspector({
                 <Icon.Trash size={12} /> {t('common.delete')}
               </button>
             </div>
+            {/* align / distribute — free-position (absolute) elements only */}
+            <section className="space-y-1.5">
+              <SectionHead>{t('deckStudio.htmlEdit.align')}</SectionHead>
+              <div className="flex rounded-md border border-[var(--border)] overflow-hidden">
+                {[
+                  ['alignLeft', '⇤', 'alignLeft'],
+                  ['alignHCenter', '⇔', 'alignHCenter'],
+                  ['alignRight', '⇥', 'alignRight'],
+                  ['alignTop', '⤒', 'alignTop'],
+                  ['alignVMiddle', '⇳', 'alignVMiddle'],
+                  ['alignBottom', '⤓', 'alignBottom'],
+                ].map(([op, glyph, key], i) => (
+                  <button
+                    key={op}
+                    onClick={() => onOp?.(op)}
+                    title={t(`deckStudio.htmlEdit.${key}`)}
+                    className={`flex-1 h-7 grid place-items-center text-[13px] text-[var(--muted)] hover:bg-[var(--surface-3)] hover:text-[var(--text)] ${i ? 'border-l border-[var(--border)]' : ''}`}
+                  >
+                    {glyph}
+                  </button>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button onClick={() => onOp?.('distributeH')} className="rounded-md border border-[var(--border)] bg-[var(--surface)] hover:brightness-110 text-[11px] py-1.5" title={t('deckStudio.htmlEdit.distributeH')}>
+                  {t('deckStudio.htmlEdit.distribute')} ↔
+                </button>
+                <button onClick={() => onOp?.('distributeV')} className="rounded-md border border-[var(--border)] bg-[var(--surface)] hover:brightness-110 text-[11px] py-1.5" title={t('deckStudio.htmlEdit.distributeV')}>
+                  {t('deckStudio.htmlEdit.distribute')} ↕
+                </button>
+              </div>
+              <p className="text-[9.5px] text-[var(--faint)]">{t('deckStudio.htmlEdit.alignHint')}</p>
+            </section>
+
             {/* shared color for a quick multi-restyle */}
             <Field label={t('deckStudio.htmlEdit.color')}>
               <input type="color" defaultValue="#FFFFFF" onChange={(e) => set({ color: e.target.value.toUpperCase() })} className="w-6 h-6 rounded cursor-pointer border border-[var(--border)] bg-transparent" />
