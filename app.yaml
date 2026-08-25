@@ -58,8 +58,11 @@ env:
   - name: SQL_WAREHOUSE_ID
     valueFrom: 'sql-warehouse'
   # Tools UDF + image-store locations. Everything AI Prism owns lives in the
-  # dedicated `ai_prism` catalog (built-in Python UDF and the image volume), so
-  # it's all in one place. The app falls back to these same defaults in code.
+  # dedicated `ai_prism` catalog (built-in Python UDF and the image
+  # volume), so it's all in one place. The app falls back to these same defaults
+  # in code. KEEP IN SYNC with `var.tools_catalog` / `var.image_volume_catalog`
+  # in databricks.yml: the bundle provisions the UDF and the volume THERE, and a
+  # mismatch here makes the app look for them in a catalog that doesn't exist.
   - name: TOOLS_CATALOG
     value: 'ai_prism'
   - name: TOOLS_SCHEMA

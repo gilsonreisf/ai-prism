@@ -22,19 +22,29 @@ variables:
   tools_catalog:
     description: >-
       Catalog where the built-in Python UDF is provisioned. Defaults to the
-      dedicated `ai_prism` catalog so all AI Prism assets (UDF + image volume)
-      live in one place.
+      dedicated `ai_prism` catalog so all AI Prism assets
+      (UDF + image volume) live in one place.
     default: ai_prism
   tools_schema:
     description: Schema where the built-in Python UDF is provisioned.
     default: default
+  warehouse_id:
+    description: >-
+      SQL warehouse usado pelo app (tools de UC Function + a UDF Python), pelo
+      dashboard de custos e pelo job de auto-config. O padrao e o warehouse que
+      ESTE bundle cria, para que um `bundle deploy` limpo provisione tudo sem
+      passo extra. Para reaproveitar um warehouse que ja existe no workspace,
+      deploie com `--var warehouse_id=<id>`: voce precisa de CAN_MANAGE nele,
+      porque o recurso `sql-warehouse` do app concede CAN_USE ao service
+      principal do app.
+    default: ${resources.sql_warehouses.ai_prism_wh.id}
   lakebase_database:
     description: Lakebase (Postgres) database name.
     default: databricks_postgres
   image_volume_catalog:
     description: >-
       Catalog for AI Prism's generated-image storage. Defaults to the dedicated
-      `ai_prism` catalog (same as the tools catalog) so all AI Prism assets live
+      `ai_prism` catalog (same as the tools catalog) so all assets live
       in one place; the app owner can point it anywhere.
     default: ai_prism
   image_volume_schema:
@@ -94,7 +104,7 @@ resources:
     ai_prism_costs:
       display_name: "AI Prism — AI costs per user"
       file_path: ./dashboards/ai-costs.lvdash.json
-      warehouse_id: ${resources.sql_warehouses.ai_prism_wh.id}
+      warehouse_id: ${var.warehouse_id}
 
   # --- Post-deploy auto-config: provisions the Python UDF, surfaces config ---
   jobs:
@@ -107,14 +117,15 @@ resources:
             base_parameters:
               catalog: ${var.tools_catalog}
               schema: ${var.tools_schema}
-              warehouse_id: ${resources.sql_warehouses.ai_prism_wh.id}
+              warehouse_id: ${var.warehouse_id}
               lakebase_host: ${resources.postgres_endpoints.ai_prism_pg_rw.status.hosts.host}
               lakebase_db: ${var.lakebase_database}
               lakebase_port: "5432"
               # endpoint path for the Lakebase credentials API (mints a PG JWT so
               # the deploy job can create the app SP's Postgres role)
               lakebase_endpoint: projects/${resources.postgres_projects.ai_prism_pg.project_id}/branches/production/endpoints/primary
-              app_name: ai-prism
+              # referencia o recurso para nao voltar a divergir do nome real do app
+              app_name: ${resources.apps.ai_prism.name}
               # The bundle deploys the cost dashboard as a draft; the job publishes
               # it so admins see it live right after deploy.
               dashboard_id: ${resources.dashboards.ai_prism_costs.id}
@@ -155,7 +166,7 @@ resources:
       resources:
         - name: sql-warehouse
           sql_warehouse:
-            id: ${resources.sql_warehouses.ai_prism_wh.id}
+            id: ${var.warehouse_id}
             permission: CAN_USE
         # Lakebase as an app resource. The Apps runtime injects the endpoint path
         # for value_from: lakebase (see PG_ENDPOINT below) and lets the app SP

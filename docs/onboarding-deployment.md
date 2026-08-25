@@ -51,6 +51,12 @@ Python e o Volume de imagens, e semeia quem deployou como **admin bootstrap**.
   precisa poder criar (ou já ter) o catálogo `ai_prism` — se não tiver `CREATE
   CATALOG` no metastore, aponte para um catálogo existente com
   `--var tools_catalog=<cat> --var image_volume_catalog=<cat>`.
+- Por padrão o bundle **cria** o SQL Warehouse. Para reaproveitar um que já
+  existe, deploie com `--var warehouse_id=<id>` — você precisa de **CAN_MANAGE**
+  nesse warehouse, porque o recurso `sql-warehouse` da App concede CAN_USE ao
+  service principal dela (sem CAN_MANAGE o deploy falha ao aplicar o grant).
+  Nesse caso o bundle ainda cria o warehouse dele, que fica sem uso: se você não
+  quer isso, remova o bloco `sql_warehouses` do `databricks.yml`.
 - **Node.js 18+** e **npm** para o build local.
 
 **Checagem:** `databricks current-user me -p <PROFILE>` retorna seu e-mail.
