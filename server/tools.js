@@ -15,7 +15,8 @@ import { askGenie, askGenieOne } from './genie.js'
 import { getGenieConversationId, setGenieConversationId } from './db.js'
 import { chartCandidatesFromRows } from './analysis.js'
 import { listMcpTools, callMcpTool } from './mcpClient.js'
-import { externalMcpUrl } from './externalMcp.js'
+import { externalMcpUrl, getManagedGoogleProvider } from './externalMcp.js'
+import { googleToolSpecs, execGoogleTool } from './googleConnector.js'
 import { describeVectorIndexColumns, queryVectorIndex } from './vectorSearch.js'
 import { pythonUdfDDL } from '../shared/pythonUdf.js'
 import { randomUUID } from 'node:crypto'
@@ -475,6 +476,26 @@ export async function buildToolDefs(
     }
 
     if (ref?.kind === 'mcp-external' && ref.connectionName) {
+      // Conector gerenciado do Google? Ele não fala MCP — expõe tools curadas
+      // executadas via passthrough REST (googleConnector.js). Detecta pelo cache
+      // de conexões (barato). Só então cai no caminho MCP genérico.
+      const gProvider = await getManagedGoogleProvider(token, email, ref.connectionName).catch(() => null)
+      if (gProvider) {
+        for (const spec of googleToolSpecs(gProvider)) {
+          const toolName = sanitizeToolName(`google__${ref.connectionName}__${spec.name}`)
+          tools.push({
+            type: 'function',
+            function: { name: toolName, description: spec.description.slice(0, 1000), parameters: spec.parameters },
+          })
+          resolvers.set(toolName, {
+            kind: 'google-connector',
+            connectionName: ref.connectionName,
+            provider: gProvider,
+            googleToolName: spec.name,
+          })
+        }
+        continue
+      }
       const url = externalMcpUrl(ref.connectionName)
       let mcpTools = []
       try {
@@ -665,6 +686,19 @@ export async function invokeTool(token, resolver, args, ctx = {}) {
   if (resolver.kind === 'mcp-external') {
     const { text } = await callMcpTool(resolver.url, token, resolver.mcpToolName, args)
     return { resultText: text, chartCandidates: [] }
+  }
+
+  if (resolver.kind === 'google-connector') {
+    // Passthrough REST autenticado como o usuário (googleConnector.js). Um erro
+    // de consentimento vira texto acionável (com link de login) em vez de throw,
+    // para o modelo poder repassar ao usuário — igual ao padrão do MCP externo.
+    try {
+      const resultText = await execGoogleTool(token, resolver.connectionName, resolver.googleToolName, args)
+      return { resultText, chartCandidates: [] }
+    } catch (e) {
+      const extra = e?.loginUrl ? ` Faça login na conexão: ${e.loginUrl}` : ''
+      return { resultText: `ERROR: ${e.message}${extra}`, chartCandidates: [] }
+    }
   }
 
   if (resolver.kind === 'web-search') {

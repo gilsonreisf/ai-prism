@@ -576,6 +576,8 @@ function toolCallLabel(resolver, args, fallbackName) {
       return withParts('Web Search', intent)
     case 'mcp-external':
       return withParts(resolver.ref?.connectionName || 'MCP', resolver.mcpToolName)
+    case 'google-connector':
+      return withParts(resolver.connectionName || 'Google', resolver.googleToolName)
     case 'mcp-external-error':
       return `${resolver.connectionName} · indisponível`
     default:
@@ -1188,8 +1190,12 @@ app.get('/api/mcp/connections', auth, async (req, res) => {
   try {
     await ensureReady(req)
     const q = (req.query.q || '').toString().trim()
+    // A busca precisa ranquear o catálogo INTEIRO — senão conexões além da
+    // primeira página (ordem alfabética) nunca aparecem em workspaces com muitas
+    // conexões. Com query, puxamos tudo (os embeddings ficam cacheados por
+    // processo); sem query, mostramos uma primeira página maior.
     const [catalog, adopted] = await Promise.all([
-      searchExternalMcpConnections(req.token, req.email, ''),
+      searchExternalMcpConnections(req.token, req.email, '', q ? 10000 : 50),
       listUserMcpConnections(req.email, req.token),
     ])
     const adoptedByName = new Map(adopted.map((a) => [a.connectionName, a]))
@@ -1204,6 +1210,21 @@ app.get('/api/mcp/connections', auth, async (req, res) => {
         lastCheckedAt: a?.lastCheckedAt || null,
       }
     })
+    // Garante que as conexões JÁ ADOTADAS pelo usuário sempre apareçam, mesmo que
+    // fiquem fora da página do catálogo (ex.: nome alfabeticamente tardio num
+    // workspace grande) — senão o usuário adota o Gmail e ele "some" da aba.
+    const inList = new Set(connections.map((c) => c.connectionName))
+    for (const a of adopted) {
+      if (!inList.has(a.connectionName)) {
+        connections.push({
+          connectionName: a.connectionName,
+          comment: a.comment || '',
+          adopted: true,
+          status: a.status || 'unknown',
+          lastCheckedAt: a.lastCheckedAt || null,
+        })
+      }
+    }
     // semantic search over name + description (item 3). Only when a query is
     // present; ranks by embedding cosine similarity, so "ferramentas de
     // git/código" surfaces "ah-github" even without a literal match. Falls back
