@@ -68,26 +68,13 @@ export default {
     'Um ambiente multimodelo. Escreva, anexe documentos, dite por voz ou converse — tudo sobre o Databricks AI Gateway.',
 
   // composer
-  'composer.listening': 'Ouvindo… fale agora',
   'composer.placeholder': 'Pergunte algo, ou anexe um documento…',
   'composer.attach': 'Anexar documentos',
   'composer.attachMedia': 'Anexar documentos, imagens, áudio ou vídeo',
   'composer.segmenting': 'Preparando áudio ({name}) — parte {done} de {total}…',
-  'composer.dictate': 'Ditar (voz para texto)',
-  'composer.voiceMode': 'Modo de voz — conversar com a IA',
   'composer.stop': 'Parar',
   'composer.send': 'Enviar',
   'composer.disclaimer': 'A IA pode cometer erros. Conteúdo de anexos é enviado no contexto do modelo.',
-
-  // voice overlay
-  'voice.listening': 'Ouvindo…',
-  'voice.thinking': 'Pensando…',
-  'voice.speaking': 'Falando…',
-  'voice.idle': 'Toque para falar',
-  'voice.unsupported': 'O reconhecimento de voz não é suportado neste navegador. Use o Chrome ou Edge.',
-  'voice.speakAgain': 'Falar de novo',
-  'voice.end': 'Encerrar',
-  'voice.footer': 'Modo de voz · Powered by Databricks AI Gateway',
 
   // settings shell
   'settings.title': 'Configurações',
@@ -248,7 +235,6 @@ export default {
   'message.saveAndRegenerate': 'Salvar e regenerar',
   'message.previousVersion': 'Versão anterior',
   'message.nextVersion': 'Próxima versão',
-  'message.listenResponse': 'Ouvir resposta',
   'message.pdfTitle': 'Resposta — AI Prism',
   'message.exportPdf': 'Exportar como PDF',
   'message.regenerate': 'Regenerar',

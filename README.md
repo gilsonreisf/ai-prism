@@ -118,19 +118,17 @@ ai-prism/
 │   │   ├── App.jsx             # estado global, orquestra sessões/streaming/tema
 │   │   ├── api.js               # cliente HTTP + parser do stream SSE
 │   │   ├── lib/pptxMining.js     # mineração de design system de .pptx (cores, ícones, diagramas)
-│   │   ├── components/
-│   │   │   ├── Sidebar.jsx        # histórico, busca semântica, tema, sessão
-│   │   │   ├── Composer.jsx       # input, anexos (drag&drop), ditado por voz
-│   │   │   ├── Message.jsx        # renderização markdown, blocos, custo/tokens, ações
-│   │   │   ├── ModelPicker.jsx    # seletor de modelo do AI Gateway
-│   │   │   ├── SettingsModal.jsx  # personas, system prompt, temperatura
-│   │   │   ├── VoiceOverlay.jsx   # modo de conversação por voz (full-duplex)
-│   │   │   ├── ToolsPicker.jsx    # habilita ferramentas nativas por sessão
-│   │   │   ├── DeckStudio.jsx     # editor de slides (HTML/DOM editável) + export .pptx
-│   │   │   ├── SpreadsheetStudio.jsx # editor de planilha + export .xlsx
-│   │   │   ├── Welcome.jsx        # tela inicial com sugestões de prompt
-│   │   │   └── blocks/             # Chart/Table/Insight/Deck/Spreadsheet + BlockRenderer
-│   │   └── lib/speech.js         # wrappers da Web Speech API (STT/TTS)
+│   │   └── components/
+│   │       ├── Sidebar.jsx        # histórico, busca semântica, tema, sessão
+│   │       ├── Composer.jsx       # input, anexos (drag&drop)
+│   │       ├── Message.jsx        # renderização markdown, blocos, custo/tokens, ações
+│   │       ├── ModelPicker.jsx    # seletor de modelo do AI Gateway
+│   │       ├── SettingsModal.jsx  # personas, system prompt, temperatura
+│   │       ├── ToolsPicker.jsx    # habilita ferramentas nativas por sessão
+│   │       ├── DeckStudio.jsx     # editor de slides (HTML/DOM editável) + export .pptx
+│   │       ├── SpreadsheetStudio.jsx # editor de planilha + export .xlsx
+│   │       ├── Welcome.jsx        # tela inicial com sugestões de prompt
+│   │       └── blocks/             # Chart/Table/Insight/Deck/Spreadsheet + BlockRenderer
 │   └── dist/                 # build de produção (servido pelo Express)
 └── server-dist/index.cjs   # bundle CJS do servidor (gerado por esbuild)
 ```
@@ -306,14 +304,6 @@ Além de markdown, uma resposta do assistente pode carregar **blocos estruturado
   `ai_prism.default.ai_prism_images`), provisionado no deploy e concedido ao SP.
 - O **modelo padrão de imagem é o Nano Banana 2**, já pré-selecionado em *Configurações →
   Pessoal → Modelo de geração de imagem*; o usuário pode escolher outro modelo habilitado.
-
-### Voz
-- **Ditado** (fala → texto) no campo de mensagem via Web Speech API.
-- **Modo de voz** full-duplex (`VoiceOverlay`): ouve a fala do usuário, envia ao modelo,
-  fala a resposta em voz alta e volta a escutar automaticamente — um loop de conversa
-  hands-free em pt-BR.
-- Texto-para-fala (TTS) sob demanda em qualquer resposta do assistente, com sanitização de
-  markdown antes de falar.
 
 ### Personalização
 - Personas pré-definidas (Padrão, Conciso, Executivo, Engenheiro, Analista de dados,

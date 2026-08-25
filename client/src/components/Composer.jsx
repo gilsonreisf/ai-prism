@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Icon from './Icons.jsx'
-import { createRecognizer, dictationSupported } from '../lib/speech.js'
 import { useT } from '../lib/i18n.jsx'
 
 // One attachment chip. Image attachments show a live thumbnail (from an object
@@ -68,14 +67,10 @@ export default function Composer({
   setFiles,
   supportedExt,
   mediaExt,
-  onOpenVoice,
 }) {
   const t = useT()
   const fileInput = useRef(null)
   const taRef = useRef(null)
-  const recRef = useRef(null)
-  const baseRef = useRef('')
-  const [listening, setListening] = useState(false)
   const [dragOver, setDragOver] = useState(false)
 
   // images are always acceptable (pasted or attached) — they go to the model as
@@ -157,24 +152,6 @@ export default function Composer({
     onSend(value, files)
   }
 
-  const toggleDictation = () => {
-    if (listening) {
-      recRef.current?.stop()
-      return
-    }
-    baseRef.current = value ? value.replace(/\s+$/, '') + ' ' : ''
-    const rec = createRecognizer({
-      lang: 'pt-BR',
-      onResult: (t) => onChange(baseRef.current + t),
-      onEnd: () => setListening(false),
-      onError: () => setListening(false),
-    })
-    if (!rec) return
-    recRef.current = rec
-    rec.start()
-    setListening(true)
-  }
-
   return (
     <div className="px-3 md:px-0">
       <div
@@ -222,7 +199,7 @@ export default function Composer({
               }
             }}
             onPaste={onPaste}
-            placeholder={listening ? t('composer.listening') : t('composer.placeholder')}
+            placeholder={t('composer.placeholder')}
             className="w-full max-h-48 resize-none bg-transparent outline-none text-[0.95rem] leading-relaxed placeholder:text-[var(--faint)]"
           />
         </div>
@@ -246,31 +223,6 @@ export default function Composer({
             }}
           />
           <span className="flex-1" />
-          {dictationSupported && (
-            <button
-              onClick={toggleDictation}
-              className={`shrink-0 p-2 rounded-xl transition relative ${
-                listening
-                  ? 'text-white bg-[var(--accent)]'
-                  : 'hover:bg-[var(--surface-3)] text-[var(--muted)]'
-              }`}
-              title={t('composer.dictate')}
-            >
-              {listening && (
-                <span className="absolute inset-0 rounded-xl bg-[var(--accent)] animate-pulse-ring" />
-              )}
-              <Icon.Mic size={19} />
-            </button>
-          )}
-
-          <button
-            onClick={onOpenVoice}
-            className="shrink-0 p-2 rounded-xl hover:bg-[var(--surface-3)] text-[var(--muted)] transition"
-            title={t('composer.voiceMode')}
-          >
-            <Icon.Waveform size={19} />
-          </button>
-
           {streaming ? (
             <button
               onClick={onStop}

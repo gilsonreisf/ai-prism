@@ -7,14 +7,12 @@ import SessionSkeleton from './components/SessionSkeleton.jsx'
 import ModelPicker from './components/ModelPicker.jsx'
 import ToolsPicker from './components/ToolsPicker.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
-import VoiceOverlay from './components/VoiceOverlay.jsx'
 import HistoryPage from './components/HistoryPage.jsx'
 import DeckStudio from './components/DeckStudio.jsx'
 import SpreadsheetStudio from './components/SpreadsheetStudio.jsx'
 import DocumentStudio from './components/DocumentStudio.jsx'
 import * as Icon from './components/Icons.jsx'
 import { getJSON, patchJSON, postJSON, del, streamChat, streamContinue, streamRegenerate } from './api.js'
-import { speak, plainForSpeech } from './lib/speech.js'
 import { prepareMediaFiles } from './lib/mediaChunk.js'
 import { parseHash, pushHash, replaceHash } from './lib/hashRouter.js'
 import { useT } from './lib/i18n.jsx'
@@ -198,7 +196,6 @@ export default function App({ uiLang, setUiLang }) {
   const [loadingSession, setLoadingSession] = useState(false)
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [deletingId, setDeletingId] = useState(null)
-  const [voiceOpen, setVoiceOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -906,7 +903,6 @@ export default function App({ uiLang, setUiLang }) {
 
   // Stable across renders so memo(Message) can skip re-rendering finished
   // bubbles while another message streams (see the message list below).
-  const speakText = useCallback((t) => speak(plainForSpeech(t), { lang: 'pt-BR' }), [])
   const openDeck = useCallback((deckId) => setDeckStudioId(deckId), [])
   const openSpreadsheet = useCallback((id) => setSpreadsheetStudioId(id), [])
   const openDocument = useCallback((id) => setDocumentStudioId(id), [])
@@ -1023,7 +1019,6 @@ export default function App({ uiLang, setUiLang }) {
                   msg={m}
                   models={models}
                   streaming={m.streaming}
-                  onSpeak={speakText}
                   canRegenerate={!streaming && m.role === 'assistant'}
                   onRegenerate={regenerateMessage}
                   onSwitchVariant={switchVariant}
@@ -1069,7 +1064,6 @@ export default function App({ uiLang, setUiLang }) {
               setFiles={setFiles}
               supportedExt={supportedExt}
               mediaExt={mediaExt}
-              onOpenVoice={() => setVoiceOpen(true)}
             />
           </div>
         </div>
@@ -1089,12 +1083,6 @@ export default function App({ uiLang, setUiLang }) {
         onModelsChanged={refreshModels}
         onCreateWithClaude={startSkillCreator}
         personal={{ theme, setTheme, uiLang, setUiLang, responseLang, setResponseLang, notify, setNotify, imageModel, setImageModel, imageModels, imageModelDefaultId }}
-      />
-
-      <VoiceOverlay
-        open={voiceOpen}
-        onClose={() => setVoiceOpen(false)}
-        onSend={(t) => sendMessage(t, [], { viaVoice: true })}
       />
 
       <DeckStudio

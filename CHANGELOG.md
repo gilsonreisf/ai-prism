@@ -64,6 +64,16 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   continua marcado como não salvo (retry pela barra Save) e a edição segue
   desfazível (undo/redo).
 
+### Removed
+
+- **Recursos de voz**: o ditado por microfone no composer, o **modo de voz**
+  full-duplex (`VoiceOverlay`) e o botão *ouvir resposta* (TTS) foram removidos,
+  junto do wrapper `lib/speech.js` da Web Speech API e das strings de i18n
+  correspondentes. Dependiam do suporte do navegador a
+  `SpeechRecognition`/`speechSynthesis` e não funcionavam de forma confiável no
+  ambiente de uso. A transcrição de áudio e vídeo **anexado**
+  (`server/transcribe.js`) não foi afetada — continua disponível.
+
 ### Fixed
 
 - **Troca de imagem agora reflete no export `.pptx`**: substituir a imagem de um

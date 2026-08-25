@@ -438,7 +438,7 @@ function CodeBlock({ children }) {
 // overridden (fenced code blocks). Inline `code` keeps the default rendering.
 const MARKDOWN_COMPONENTS = { pre: CodeBlock }
 
-function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUser, onOpenDeck, onOpenSpreadsheet, onOpenDocument, canRegenerate, streaming, isLatest, onSubmitAnswers }) {
+function Message({ msg, models, onRegenerate, onSwitchVariant, onEditUser, onOpenDeck, onOpenSpreadsheet, onOpenDocument, canRegenerate, streaming, isLatest, onSubmitAnswers }) {
   const t = useT()
   const { locale } = useI18n()
   const isUser = msg.role === 'user'
@@ -458,7 +458,7 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
     segments.filter((s) => s.kind === 'toolcall').map((s) => s.tc.id)
   )
   const unreferencedToolCalls = (toolCalls || []).filter((tc) => !referencedToolCallIds.has(tc.id))
-  // for copy/speak: plain prose only, placeholders (and any dangling live
+  // for copy: plain prose only, placeholders (and any dangling live
   // fence) stripped since they're not meant to be read/copied literally
   const plainText = text
     .replace(PLACEHOLDER_RE, '')
@@ -689,13 +689,6 @@ function Message({ msg, models, onSpeak, onRegenerate, onSwitchVariant, onEditUs
               </span>
             )}
             <CopyBtn text={plainText} />
-            <button
-              onClick={() => onSpeak(plainText)}
-              className="p-1 rounded-md hover:bg-[var(--surface-3)] hover:text-[var(--text)] transition"
-              title={t('message.listenResponse')}
-            >
-              <Icon.Speaker size={14} />
-            </button>
             <button
               onClick={() => exportMessageToPdf(exportRef.current, t('message.pdfTitle'))}
               className="p-1 rounded-md hover:bg-[var(--surface-3)] hover:text-[var(--text)] transition"
