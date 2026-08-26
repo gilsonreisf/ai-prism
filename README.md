@@ -362,10 +362,20 @@ disponível via `.env.example` + `npm run dev`.
 ## Build e deploy
 
 ```bash
-npm install --include=dev  # traz o tooling de build (vite/esbuild); .npmrc tem omit=dev, então npm install puro não instala nada
+npm run setup       # instala o toolchain de build (= npm install --include=dev --ignore-scripts)
 npm run bundle      # build:client (Vite) + build:server (esbuild -> server-dist/index.cjs)
 npm start           # roda o bundle de produção (node server-dist/index.cjs)
 ```
+
+> **Por que `npm run setup` e não `npm install`?** O `.npmrc` tem `omit=dev` (para
+> que o install do lado Databricks não baixe nada — ver comentário no arquivo), e
+> todo o toolchain de build vive em `devDependencies`. Então um `npm install` puro
+> **não instala nada** e o `npm run bundle` falharia. O `npm run setup` cobre isso
+> com `--include=dev` e silencia os avisos inofensivos de postinstall do esbuild
+> com `--ignore-scripts` (o binário nativo já vem do pacote de plataforma). Se a
+> sua organização roteia o npm por um **registry/proxy privado**, configure o npm
+> (`npm config set registry <url>` e as vars de proxy) antes do setup — este repo
+> não impõe registry, então o seu `~/.npmrc` prevalece.
 
 O deploy usa um **Databricks Asset Bundle** (`databricks.yml`), em três comandos:
 

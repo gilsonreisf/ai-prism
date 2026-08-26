@@ -57,7 +57,10 @@ Python e o Volume de imagens, e semeia quem deployou como **admin bootstrap**.
   service principal dela (sem CAN_MANAGE o deploy falha ao aplicar o grant).
   Nesse caso o bundle ainda cria o warehouse dele, que fica sem uso: se você não
   quer isso, remova o bloco `sql_warehouses` do `databricks.yml`.
-- **Node.js 18+** e **npm** para o build local.
+- **Node.js 18+** e **npm** para o build local. Instale o toolchain com
+  `npm run setup` (não `npm install` puro — ver passo 2). Atrás de um
+  registry/proxy corporativo? Configure o npm antes (`npm config set registry
+  <url>` + vars de proxy); o repo não impõe registry, então o seu `~/.npmrc` vale.
 
 **Checagem:** `databricks current-user me -p <PROFILE>` retorna seu e-mail.
 
@@ -75,13 +78,15 @@ A App roda os artefatos pré-compilados (`client/dist` + `server-dist/index.cjs`
 não o código-fonte — então **sempre** reconstrua antes de deployar:
 
 ```bash
-npm ci --include=dev   # só na 1ª vez (ver nota sobre devDeps abaixo)
+npm run setup          # só na 1ª vez: instala o toolchain de build (ver nota abaixo)
 npm run bundle         # client/dist + server-dist/index.cjs
 ```
 
-> **Nota (devDeps):** neste projeto, `npm install <pkg>` avulso pode podar as
-> devDependencies necessárias ao build. Use `npm ci --include=dev` /
-> `npm install --include=dev`.
+> **Nota (devDeps):** o `.npmrc` tem `omit=dev`, então um `npm install` puro **não
+> instala** o toolchain de build (que vive todo em `devDependencies`) e o
+> `npm run bundle` falharia. Use `npm run setup`
+> (= `npm install --include=dev --ignore-scripts`). O `bundle` tem um guard que
+> avisa, com a instrução exata, se o toolchain estiver faltando.
 
 ---
 

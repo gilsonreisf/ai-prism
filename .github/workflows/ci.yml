@@ -21,15 +21,12 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        # Usa o registry público (registry-url acima): fora da VPN da Databricks o
-        # proxy interno (npm-proxy.cloud.databricks.com) é inalcançável e o `npm ci`
-        # pendura em silêncio. As URLs do package-lock.json apontam para o registry
-        # público; localmente, o `~/.npmrc` + replace-registry-host as reescrevem
-        # transparentemente para o proxy interno.
         # --include=dev: o .npmrc do repo tem omit=dev (o app deployado roda
-        # pré-compilado), mas TODO o toolchain vive em devDependencies.
-        # --ignore-scripts: pula o postinstall do esbuild (baixa binário da rede); o
-        # binário já vem do pacote optional @esbuild/linux-x64 no lockfile.
+        # pré-compilado e não precisa de pacotes), mas TODO o toolchain de build
+        # vive em devDependencies, então QA e build precisam dele.
+        # --ignore-scripts: pula o postinstall do esbuild (que baixaria o binário
+        # pela rede); o binário nativo já vem do pacote @esbuild/<plataforma> no
+        # lockfile, então o esbuild funciona sem o postinstall.
         run: npm ci --include=dev --ignore-scripts
 
       - name: QA (checagens offline de deck/planilha/documento)
