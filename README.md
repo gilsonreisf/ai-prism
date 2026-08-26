@@ -362,6 +362,7 @@ disponível via `.env.example` + `npm run dev`.
 ## Build e deploy
 
 ```bash
+npm install --include=dev  # traz o tooling de build (vite/esbuild); .npmrc tem omit=dev, então npm install puro não instala nada
 npm run bundle      # build:client (Vite) + build:server (esbuild -> server-dist/index.cjs)
 npm start           # roda o bundle de produção (node server-dist/index.cjs)
 ```
